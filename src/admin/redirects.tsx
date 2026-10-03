@@ -6,7 +6,7 @@ import { ArrowRight, ArrowsSplit, DotsThree, PencilSimple, Plus, Trash, UploadSi
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
-const API = "/_emdash/api/plugins/coywolf/redirects";
+const API = "/_emdash/api/plugins/coywolf-pack/redirects";
 
 interface Rule {
 	id: string;
