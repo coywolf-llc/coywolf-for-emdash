@@ -18,8 +18,10 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install github:coywolf-llc/coywolf-for-emdash#v0.1.0
+npm install https://codeload.github.com/coywolf-llc/coywolf-for-emdash/tar.gz/refs/tags/v0.1.0
 ```
+
+Use the tarball URL rather than `github:coywolf-llc/coywolf-for-emdash`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
 
 ```js
 // astro.config.mjs
