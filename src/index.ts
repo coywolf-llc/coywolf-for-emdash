@@ -1,5 +1,5 @@
 /**
- * Coywolf for EmDash: one native plugin with Coywolf's features for EmDash
+ * Coywolf Pack for EmDash: one native plugin with Coywolf's features for EmDash
  * sites on Cloudflare. Enable modules in astro.config.mjs:
  *
  * ```js
@@ -23,8 +23,8 @@ import { type RedirectsOptions, redirectsModule } from "./redirects/module.js";
 export type { BackupsOptions } from "./backups/module.js";
 export type { RedirectsOptions } from "./redirects/module.js";
 
-const ID = "coywolf";
-const VERSION = "0.1.0";
+const ID = "coywolf-pack";
+const VERSION = "0.2.0";
 const PACKAGE = "@coywolf/emdash";
 
 export interface CoywolfOptions {

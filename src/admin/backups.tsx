@@ -16,7 +16,7 @@ import {
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
-const API = "/_emdash/api/plugins/coywolf/backups";
+const API = "/_emdash/api/plugins/coywolf-pack/backups";
 
 interface Backup {
 	stamp: string;

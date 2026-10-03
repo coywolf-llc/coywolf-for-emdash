@@ -1,4 +1,4 @@
-# Coywolf for EmDash
+# Coywolf Pack for EmDash
 
 One plugin with [Coywolf](https://coywolf.com)'s features for [EmDash](https://emdashcms.com) sites on Cloudflare: the things Coywolf's WordPress plugins do that EmDash doesn't do natively. Enable only the modules you want.
 
@@ -18,10 +18,10 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-for-emdash/tar.gz/refs/tags/v0.1.0
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.2.0
 ```
 
-Use the tarball URL rather than `github:coywolf-llc/coywolf-for-emdash`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
+Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
 
 ```js
 // astro.config.mjs
@@ -38,7 +38,7 @@ emdash({
 });
 ```
 
-Each module appears under **Plugins → Coywolf** in the admin. Omit a module (or set it to `false`) to turn it off.
+Each module appears under **Plugins → Coywolf Pack** in the admin. Omit a module (or set it to `false`) to turn it off.
 
 In development, keep Vite from pre-bundling the plugin. A pre-bundled copy gets its own instance of `emdash`, which breaks plugin error handling. Its UI libraries should stay pre-bundled:
 
