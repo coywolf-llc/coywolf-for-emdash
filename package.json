@@ -1,0 +1,40 @@
+{
+	"name": "@coywolf/emdash",
+	"version": "0.1.0",
+	"description": "Coywolf for EmDash: one plugin with Coywolf's features for EmDash sites on Cloudflare. Full backups and restore, a redirect manager, and more to come.",
+	"license": "MIT",
+	"author": "Coywolf LLC (https://coywolf.com)",
+	"homepage": "https://github.com/coywolf-llc/coywolf-for-emdash",
+	"repository": { "type": "git", "url": "git+https://github.com/coywolf-llc/coywolf-for-emdash.git" },
+	"type": "module",
+	"keywords": ["emdash", "emdash-plugin", "coywolf", "backup", "restore", "redirects", "cloudflare", "d1", "r2"],
+	"main": "./src/index.ts",
+	"exports": {
+		".": "./src/index.ts",
+		"./admin": "./src/admin/index.tsx",
+		"./middleware": "./src/redirects/middleware.ts"
+	},
+	"files": ["src", "README.md", "LICENSE"],
+	"scripts": {
+		"typecheck": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"@cloudflare/kumo": "*",
+		"@phosphor-icons/react": "^2.1.0",
+		"astro": ">=6.0.0",
+		"emdash": ">=1.1.0",
+		"react": "^18.0.0 || ^19.0.0",
+		"zod": "^3.24.0 || ^4.0.0"
+	},
+	"devDependencies": {
+		"@cloudflare/kumo": "*",
+		"@cloudflare/workers-types": "^4.0.0",
+		"@phosphor-icons/react": "^2.1.0",
+		"@types/react": "^19.0.0",
+		"astro": "^7.3.0",
+		"emdash": "^1.1.0",
+		"react": "^19.0.0",
+		"typescript": "^5.9.0",
+		"zod": "^4.6.0"
+	}
+}

@@ -1,0 +1,244 @@
+/**
+ * Backups module: D1 dumps + R2 media mirror, with rewind (D1 Time Travel),
+ * undo, restore to a new database, and missing-media restore.
+ */
+import { PluginRouteError, definePluginRoute, pluginResponse } from "emdash";
+import { z } from "zod";
+
+import { type CronScheduler, type SettingsReader, parseInput, secret, workerEnv } from "../shared.js";
+import { dumpDatabase } from "./dump.js";
+import {
+	type RestoreConfig,
+	currentBookmark,
+	getUndo,
+	restoreMissingMedia,
+	restoreToNewDatabase,
+	rewind,
+	undoRewind,
+} from "./restore.js";
+import { FILE, type Manifest, STAMP, gzip, listBackups, makeStamp, mirrorMedia, pruneBackups, writeDump } from "./store.js";
+
+export interface BackupsOptions {
+	/** D1 binding of the site database. Default "DB". */
+	database?: string;
+	/** R2 binding of the media bucket. Default "MEDIA". */
+	media?: string;
+	/** R2 binding of the backup bucket (use a separate bucket). Default "BACKUPS". */
+	backups?: string;
+	/** Dump file name prefix (e.g. "mysite" -> mysite.sql.gz). Default "database". */
+	name?: string;
+	/**
+	 * Restore via the Cloudflare API: the account and D1 database IDs, plus a
+	 * Worker secret with an API token (Account → D1 → Edit). These live outside
+	 * the database on purpose: a rewind rolls back plugin settings too.
+	 */
+	restore?: { accountId: string; databaseId: string; tokenSecret?: string };
+}
+
+export const backupsSettingsSchema = {
+	backupsScheduled: {
+		type: "boolean" as const,
+		label: "Backups: daily scheduled backup",
+		description: "Back up once a day from the site itself. Leave off if an external job (such as a GitHub Action) already does.",
+		default: false,
+	},
+	backupsRetentionDays: {
+		type: "number" as const,
+		label: "Backups: keep for (days)",
+		description: "Older database backups and replaced media copies are deleted daily. The media mirror itself is kept.",
+		min: 1,
+		max: 365,
+		default: 30,
+	},
+	backupsStaleAfterHours: {
+		type: "number" as const,
+		label: "Backups: warn when the newest backup is older than (hours)",
+		min: 1,
+		max: 720,
+		default: 36,
+	},
+};
+
+async function settings(ctx: SettingsReader) {
+	return {
+		scheduled: (await ctx.settings.get<boolean>("backupsScheduled")) ?? false,
+		retentionDays: (await ctx.settings.get<number>("backupsRetentionDays")) ?? 30,
+		staleAfterHours: (await ctx.settings.get<number>("backupsStaleAfterHours")) ?? 36,
+	};
+}
+
+/** Daily task for scheduled backups and retention. schedule() is an upsert, so it's safe to repeat. */
+export const BACKUPS_TASK = "backups-daily";
+export async function ensureBackupsTask(ctx: CronScheduler) {
+	await ctx.cron?.schedule(BACKUPS_TASK, { schedule: "@daily" });
+}
+
+const confirmed = (word: string) => z.literal(word, { message: `Type ${word} to confirm.` });
+
+export function backupsModule(options: BackupsOptions) {
+	const name = options.name ?? "database";
+
+	async function bindings() {
+		const env = await workerEnv();
+		const db = env[options.database ?? "DB"] as D1Database | undefined;
+		const media = env[options.media ?? "MEDIA"] as R2Bucket | undefined;
+		const backups = env[options.backups ?? "BACKUPS"] as R2Bucket | undefined;
+		const missing = [!db && "database", !media && "media", !backups && "backups"].filter(Boolean);
+		if (missing.length) throw PluginRouteError.badRequest(`Backups: missing ${missing.join(", ")} binding (see README).`);
+		const tokenName = options.restore?.tokenSecret ?? "BACKUPS_API_TOKEN";
+		const token = secret(env, tokenName);
+		const restore: RestoreConfig | null =
+			options.restore && token ? { token, accountId: options.restore.accountId, databaseId: options.restore.databaseId } : null;
+		const restoreStatus = restore
+			? { enabled: true as const }
+			: {
+					enabled: false as const,
+					reason: options.restore
+						? `Set the ${tokenName} Worker secret to an API token with D1 Edit permission.`
+						: "Add the backups.restore option (accountId, databaseId) in astro.config.mjs.",
+				};
+		return { db: db!, media: media!, backups: backups!, restore, restoreStatus };
+	}
+
+	async function readDump(backups: R2Bucket, stamp: string): Promise<{ manifest: Manifest; sql: string }> {
+		const manifestObject = await backups.get(`d1/${stamp}/manifest.json`);
+		if (!manifestObject) throw PluginRouteError.notFound("Backup not found");
+		const manifest = (await manifestObject.json()) as Manifest;
+		const dump = await backups.get(`d1/${stamp}/${manifest.file}`);
+		if (!dump) throw PluginRouteError.notFound("Backup file not found");
+		return { manifest, sql: await new Response(dump.body.pipeThrough(new DecompressionStream("gzip"))).text() };
+	}
+
+	async function runBackup(source: "admin" | "scheduled") {
+		const { db, media, backups, restore } = await bindings();
+		const stamp = makeStamp();
+		const timeTravelBookmark = restore ? await currentBookmark(restore).catch(() => undefined) : undefined;
+		const dump = await dumpDatabase(db);
+		const body = await gzip(dump.sql);
+		const extra = { database: name, source, timeTravelBookmark, tables: dump.tables, rows: dump.rows };
+		// Save the database first so a media problem can't cost the dump.
+		const manifest = await writeDump(backups, stamp, `${name}.sql.gz`, body, extra);
+		try {
+			const mediaResult = await mirrorMedia(media, backups, stamp);
+			return await writeDump(backups, stamp, `${name}.sql.gz`, body, { ...extra, media: mediaResult });
+		} catch (error) {
+			console.error("coywolf backups: media mirror failed; the database backup was saved", error);
+			return manifest;
+		}
+	}
+
+	async function daily(ctx: SettingsReader & { log: { info(msg: string, data?: unknown): void } }) {
+		const s = await settings(ctx);
+		if (s.scheduled) {
+			const manifest = await runBackup("scheduled");
+			ctx.log.info("Scheduled backup complete", { stamp: manifest.stamp, bytes: manifest.bytes });
+		}
+		const { backups } = await bindings();
+		const pruned = await pruneBackups(backups, s.retentionDays);
+		if (pruned) ctx.log.info("Pruned old backups", { pruned });
+	}
+
+	const routes = {
+		"backups/list": {
+			permission: "plugins:manage" as const,
+			handler: async (ctx: SettingsReader & CronScheduler) => {
+				await ensureBackupsTask(ctx);
+				const { backups, restoreStatus } = await bindings();
+				return { items: await listBackups(backups), ...(await settings(ctx)), restore: restoreStatus, undo: await getUndo(backups) };
+			},
+		},
+
+		"backups/run": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "none" },
+			handler: async (ctx) => {
+				await ensureBackupsTask(ctx);
+				const manifest = await runBackup("admin");
+				ctx.log.info("Backup complete", { stamp: manifest.stamp, bytes: manifest.bytes });
+				const { backups } = await bindings();
+				await pruneBackups(backups, (await settings(ctx)).retentionDays);
+				return manifest;
+			},
+		}),
+
+		"backups/rewind": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				const input = parseInput(z.object({ stamp: z.string().regex(STAMP), confirm: confirmed("REWIND") }), ctx.input);
+				const { backups, restore } = await bindings();
+				if (!restore) throw PluginRouteError.badRequest("Restore isn't configured.");
+				const manifestObject = await backups.get(`d1/${input.stamp}/manifest.json`);
+				const manifest = manifestObject ? ((await manifestObject.json()) as Manifest) : undefined;
+				const undo = await rewind(restore, backups, { stamp: input.stamp, bookmark: manifest?.timeTravelBookmark });
+				ctx.log.warn("Database rewound", { to: input.stamp, undoBookmark: undo.bookmark });
+				return undo;
+			},
+		}),
+
+		"backups/undo": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				parseInput(z.object({ confirm: confirmed("UNDO") }), ctx.input);
+				const { backups, restore } = await bindings();
+				if (!restore) throw PluginRouteError.badRequest("Restore isn't configured.");
+				const undo = await undoRewind(restore, backups);
+				ctx.log.warn("Rewind undone", { bookmark: undo.bookmark });
+				return undo;
+			},
+		}),
+
+		"backups/restore-new": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				const input = parseInput(z.object({ stamp: z.string().regex(STAMP), confirm: confirmed("RESTORE") }), ctx.input);
+				const { backups, restore } = await bindings();
+				if (!restore) throw PluginRouteError.badRequest("Restore isn't configured.");
+				const { sql } = await readDump(backups, input.stamp);
+				const result = await restoreToNewDatabase(restore, `${name}-restore-${input.stamp.toLowerCase()}`, sql);
+				ctx.log.warn("Backup restored to a new database", { stamp: input.stamp, database: result.databaseName });
+				return result;
+			},
+		}),
+
+		"backups/restore-media": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "none" },
+			handler: async (ctx) => {
+				const { media, backups } = await bindings();
+				const result = await restoreMissingMedia(media, backups);
+				ctx.log.info("Missing media restored", result);
+				return result;
+			},
+		}),
+
+		"backups/download": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["GET"],
+			request: { body: "none" },
+			input: z.object({ stamp: z.string().regex(STAMP), file: z.string().regex(FILE) }),
+			response: "raw",
+			handler: async (ctx) => {
+				const { backups } = await bindings();
+				const object = await backups.get(`d1/${ctx.input.stamp}/${ctx.input.file}`);
+				if (!object) return pluginResponse({ status: 404, body: { kind: "text", value: "Backup not found" } });
+				return pluginResponse({
+					headers: {
+						"content-type": object.httpMetadata?.contentType ?? "application/octet-stream",
+						"content-disposition": `attachment; filename="${name}-${ctx.input.stamp}-${ctx.input.file}"`,
+					},
+					body: { kind: "bytes", value: new Uint8Array(await object.arrayBuffer()) },
+				});
+			},
+		}),
+	};
+
+	return { routes, daily };
+}
