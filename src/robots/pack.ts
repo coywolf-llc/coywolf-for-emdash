@@ -23,7 +23,7 @@ const FEATURES = [
 ];
 registerFeatures(FEATURES);
 
-export const ROBOTS_TASK = "robots.refreshBots";
+export const ROBOTS_TASK = "robots-refresh-bots";
 
 export function robotsPack(options: RobotsOptions): PackModule {
 	return {
