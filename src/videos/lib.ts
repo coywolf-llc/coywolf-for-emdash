@@ -57,6 +57,27 @@ export function watchUrl(host: string | null, uid: string): string {
 	return host ? `https://${host}/${uid}/watch` : `https://iframe.videodelivery.net/${uid}`;
 }
 
+/** An http(s) URL or a root-relative path (EmDash media is /_emdash/api/media/file/<key>). */
+export function isImageUrl(value: unknown): value is string {
+	return typeof value === "string" && (/^https?:\/\/[^\s]+$/i.test(value) || /^\/(?!\/)[^\s]*$/.test(value));
+}
+
+/** Resolve a root-relative URL against the site origin; absolute http(s) URLs pass through; anything else → undefined. */
+export function absoluteUrl(url: unknown, origin?: string | null): string | undefined {
+	if (!isImageUrl(url)) return undefined;
+	if (/^https?:/i.test(url)) return url;
+	if (!origin) return undefined;
+	try {
+		return new URL(url, origin).href;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Largest caption track kept (D1 rows max out at 2 MB). */
+export const MAX_CAPTION_BYTES = 1_500_000;
+export const utf8Bytes = (text: string) => new TextEncoder().encode(text).byteLength;
+
 // ── Formatting ───────────────────────────────────────────────────
 
 /** Seconds → ISO 8601 duration (PT1H2M3S). Zero or invalid → null. */
@@ -177,7 +198,7 @@ function refFromBlock(node: Record<string, unknown>, legacy = false): VideoRef |
 	if (title) ref.title = title;
 	if (caption) ref.caption = caption;
 	if (posterTime !== undefined) ref.posterTime = posterTime;
-	if (posterImage && /^(https?:)?\//.test(posterImage)) ref.posterImage = posterImage;
+	if (isImageUrl(posterImage)) ref.posterImage = posterImage;
 	if (legacy) ref.legacy = true;
 	return ref;
 }
@@ -225,6 +246,17 @@ export function findVideoBlocks(data: unknown): VideoRef[] {
 	return out;
 }
 
+/**
+ * Which copy of an entry to index. Save hooks can carry draft-hydrated data
+ * (with the live status), so prefer the live row read back from the database;
+ * without one, only trust the event when the entry has no pending draft.
+ */
+export function indexSource<T extends Record<string, unknown>>(event: T, live: T | null | undefined): T | null {
+	if (live && typeof live.data === "object" && live.data !== null) return live;
+	if (event.draftRevisionId) return null;
+	return typeof event.data === "object" && event.data !== null ? event : null;
+}
+
 export interface PlayerConfig {
 	controls: boolean;
 	autoplay: boolean;
@@ -264,8 +296,15 @@ export function playerConfig(block: VideoBlock): PlayerConfig {
 }
 
 /** The poster for a video: an explicit image, else a frame at the block's (or the video's) poster time. */
-export function posterUrl(host: string | null, uid: string, ref: { posterImage?: string; posterTime?: number }, fallback: { posterImage?: string; posterTime?: number } = {}, width = SCHEMA_THUMB_WIDTH): string {
-	const image = ref.posterImage ?? (ref.posterTime === undefined ? fallback.posterImage : undefined);
+export function posterUrl(
+	host: string | null,
+	uid: string,
+	ref: { posterImage?: string; posterTime?: number },
+	fallback: { posterImage?: string; posterTime?: number } = {},
+	width = SCHEMA_THUMB_WIDTH,
+	origin?: string | null,
+): string {
+	const image = absoluteUrl(ref.posterImage, origin) ?? (ref.posterTime === undefined ? absoluteUrl(fallback.posterImage, origin) : undefined);
 	if (image) return image;
 	const time = ref.posterTime ?? fallback.posterTime ?? 0;
 	return thumbnailUrl(host, uid, { time: `${time}s`, width });
@@ -274,7 +313,7 @@ export function posterUrl(host: string | null, uid: string, ref: { posterImage?:
 /** The Stream iframe src for a block. */
 export function playerSrc(host: string | null, uid: string, cfg: PlayerConfig, extra: { startTime?: number; poster?: string; accent?: string; background?: string } = {}): string {
 	return iframeUrl(host, uid, {
-		preload: cfg.preload === "auto" ? "true" : cfg.preload,
+		preload: cfg.preload,
 		autoplay: cfg.autoplay ? "true" : undefined,
 		muted: cfg.muted ? "true" : undefined,
 		loop: cfg.loop ? "true" : undefined,
@@ -332,7 +371,7 @@ export function buildVideoObject(input: SchemaInput): Record<string, unknown> {
 	const { ref, video = { uid: ref.uid }, host, page } = input;
 	const name = ref.title ?? video.name ?? page.title ?? "Video";
 	const description = plainText(ref.caption ?? video.description ?? "") || plainText(page.description ?? "") || name;
-	const thumb = posterUrl(host, ref.uid, ref, video);
+	const thumb = posterUrl(host, ref.uid, ref, video, SCHEMA_THUMB_WIDTH, input.siteUrl);
 	const schema: Record<string, unknown> = {
 		"@context": "https://schema.org",
 		"@type": "VideoObject",
@@ -450,4 +489,33 @@ export async function verifyWebhookSignature(header: string | null, body: string
 	let diff = 0;
 	for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ sig.charCodeAt(i);
 	return diff === 0;
+}
+
+// ── Bounded recent-key memory ───────────────────────────────────
+
+/** An LRU of keys seen within a time window, capped at `max` entries (oldest evicted first). */
+export class RecentKeys {
+	private readonly map = new Map<string, number>();
+	private readonly max: number;
+	private readonly windowMs: number;
+	constructor(max: number, windowMs: number) {
+		this.max = max;
+		this.windowMs = windowMs;
+	}
+
+	/** Record `key`; true when it was already seen within the window. */
+	seen(key: string, now = Date.now()): boolean {
+		const last = this.map.get(key);
+		this.map.delete(key);
+		this.map.set(key, now);
+		while (this.map.size > this.max) {
+			const oldest = this.map.keys().next().value as string;
+			this.map.delete(oldest);
+		}
+		return last !== undefined && now - last < this.windowMs;
+	}
+
+	get size(): number {
+		return this.map.size;
+	}
 }

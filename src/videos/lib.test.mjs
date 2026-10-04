@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+	MAX_CAPTION_BYTES,
+	RecentKeys,
+	absoluteUrl,
 	aspectRatio,
 	buildVideoObject,
 	buildVideoSitemap,
@@ -10,11 +13,14 @@ import {
 	customerHostFromUrl,
 	findVideoBlocks,
 	hmacHex,
+	indexSource,
+	isImageUrl,
 	isoDuration,
 	normalizeCustomerHost,
 	playerConfig,
 	playerSrc,
 	posterUrl,
+	utf8Bytes,
 	verifyWebhookSignature,
 	vttToTranscript,
 } from "./lib.ts";
@@ -86,7 +92,7 @@ test("player config and src", () => {
 	assert.equal(src.origin + src.pathname, `https://${HOST}/${UID}/iframe`);
 	assert.equal(src.searchParams.get("autoplay"), "true");
 	assert.equal(src.searchParams.get("controls"), "false");
-	assert.equal(src.searchParams.get("preload"), "true");
+	assert.equal(src.searchParams.get("preload"), "auto");
 	assert.equal(src.searchParams.get("startTime"), "12s");
 	assert.equal(src.searchParams.get("primaryColor"), "#ff0000");
 	assert.equal(src.searchParams.get("letterboxColor"), "transparent");
@@ -193,4 +199,49 @@ test("webhook signature", async () => {
 	assert.equal(await verifyWebhookSignature(`time=${time},sig1=${sig}`, body, "s3cret", time + 601), false, "stale");
 	assert.equal(await verifyWebhookSignature(null, body, "s3cret", time), false);
 	assert.equal(await verifyWebhookSignature("garbage", body, "s3cret", time), false);
+});
+
+test("indexSource prefers the live row and never trusts draft-hydrated events", () => {
+	const draftEvent = { id: "e1", status: "published", draftRevisionId: "r2", data: { content: [{ _type: "coywolf-video", uid: UID2 }] } };
+	const live = { id: "e1", status: "published", data: { content: [{ _type: "coywolf-video", uid: UID }] } };
+	assert.equal(indexSource(draftEvent, live), live);
+	assert.deepEqual(findVideoBlocks(indexSource(draftEvent, live).data).map((r) => r.uid), [UID]);
+	assert.equal(indexSource(draftEvent, null), null, "draft data without a live row isn't indexed");
+	const plain = { id: "e2", status: "published", data: {} };
+	assert.equal(indexSource(plain, null), plain);
+	assert.equal(indexSource({ id: "e3" }, null), null);
+});
+
+test("relative poster images resolve against the site origin", () => {
+	assert.equal(isImageUrl("/_emdash/api/media/file/abc.jpg"), true);
+	assert.equal(isImageUrl("//evil.example/x.jpg"), false);
+	assert.equal(isImageUrl("javascript:alert(1)"), false);
+	assert.equal(absoluteUrl("/_emdash/api/media/file/abc.jpg", "https://example.com"), "https://example.com/_emdash/api/media/file/abc.jpg");
+	assert.equal(absoluteUrl("/x.jpg", null), undefined);
+	assert.equal(absoluteUrl("https://cdn/x.jpg", null), "https://cdn/x.jpg");
+	assert.equal(posterUrl(HOST, UID, { posterImage: "/_emdash/api/media/file/k.jpg" }, {}, 1200, "https://example.com/"), "https://example.com/_emdash/api/media/file/k.jpg");
+	assert.equal(posterUrl(HOST, UID, {}, { posterImage: "/m/k.jpg" }, 1200, "https://example.com"), "https://example.com/m/k.jpg");
+	assert.ok(posterUrl(HOST, UID, { posterImage: "/m/k.jpg" }).includes("/thumbnails/"), "no origin → fall back to a Stream frame");
+	const schema = buildVideoObject({ ref: { uid: UID, posterImage: "/m/k.jpg" }, host: HOST, siteUrl: "https://example.com", page: {} });
+	assert.deepEqual(schema.thumbnailUrl, ["https://example.com/m/k.jpg"]);
+	const refs = findVideoBlocks([{ _type: "coywolf-video", uid: UID, posterImage: "/m/k.jpg" }, { _type: "coywolf-video", uid: UID2, posterImage: "//evil/x.jpg" }]);
+	assert.equal(refs[0].posterImage, "/m/k.jpg");
+	assert.equal(refs[1].posterImage, undefined);
+});
+
+test("RecentKeys is a bounded LRU with a time window", () => {
+	const r = new RecentKeys(3, 1000);
+	assert.equal(r.seen("a", 0), false);
+	assert.equal(r.seen("a", 500), true);
+	assert.equal(r.seen("a", 2000), false, "outside the window");
+	r.seen("b", 2000);
+	r.seen("c", 2000);
+	r.seen("d", 2000);
+	assert.equal(r.size, 3);
+	assert.equal(r.seen("a", 2100), false, "oldest key was evicted");
+});
+
+test("caption size cap", () => {
+	assert.equal(MAX_CAPTION_BYTES, 1_500_000);
+	assert.equal(utf8Bytes("é"), 2);
 });

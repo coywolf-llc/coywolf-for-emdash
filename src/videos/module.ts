@@ -16,9 +16,14 @@ import {
 	buildVideoSitemap,
 	findVideoBlocks,
 	iframeUrl,
+	indexSource,
+	isImageUrl,
+	RecentKeys,
 	isUid,
 	posterUrl,
 	sha256Hex,
+	MAX_CAPTION_BYTES,
+	utf8Bytes,
 	verifyWebhookSignature,
 	watchUrl,
 } from "./lib.js";
@@ -45,6 +50,7 @@ import {
 	patchMeta,
 	publicConfig,
 	refreshCaptions,
+	refreshDownload,
 	refreshVideo,
 	statsStore,
 } from "./store.js";
@@ -64,7 +70,7 @@ export const F = {
 	webhook: "videos.webhook",
 } as const;
 
-export const TASKS = { captions: "videos-captions-refresh", likes: "videos-likes-prune" } as const;
+export const TASKS = { captions: "videos-captions-refresh", likes: "videos-likes-prune", downloads: "videos-downloads-refresh" } as const;
 
 const uidSchema = z.string().regex(/^[0-9a-f]{32}$/, "Not a Stream video ID.");
 const langSchema = z.string().regex(/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/, "Use a language code such as en or pt-BR.");
@@ -87,15 +93,24 @@ async function requireClient(ctx: Ctx) {
 
 // ── Embed index ──────────────────────────────────────────────────
 
-async function indexEntry(ctx: Ctx, collection: string, content: Record<string, unknown>, fetchMissing = true): Promise<number> {
+/**
+ * Index one entry. Hook events can carry draft-hydrated data under the live
+ * status, so hooks re-read the live row; `isLive` is for rows that already
+ * came from the database (reindex).
+ */
+async function indexEntry(ctx: Ctx, collection: string, content: Record<string, unknown>, fetchMissing = true, isLive = false): Promise<number> {
 	const id = typeof content.id === "string" ? content.id : null;
 	if (!id) return 0;
-	let item = content;
-	if (!item.data || typeof item.data !== "object") {
-		const loaded = await ctx.content?.get(collection, id);
-		if (!loaded) return 0;
-		item = loaded as unknown as Record<string, unknown>;
+	let live: Record<string, unknown> | null = isLive ? content : null;
+	if (!isLive && ctx.content) {
+		live = ((await ctx.content.get(collection, id)) as unknown as Record<string, unknown> | null) ?? null;
+		if (!live) {
+			await unindexEntry(ctx, collection, id);
+			return 0;
+		}
 	}
+	const item = indexSource(content, live);
+	if (!item) return 0;
 	const data = item.data as Record<string, unknown>;
 	const videos = findVideoBlocks(data);
 	const store = embedStore(ctx);
@@ -212,7 +227,7 @@ async function sitemapXml(ctx: Ctx, origin: string): Promise<string> {
 			videos: e.videos.map((ref: VideoRef) => {
 				const v = meta.get(ref.uid);
 				return {
-					thumbnail: posterUrl(cfg.host, ref.uid, ref, v),
+					thumbnail: posterUrl(cfg.host, ref.uid, ref, v, undefined, origin),
 					title: ref.title ?? v?.name ?? e.title ?? "Video",
 					description: ref.caption ?? v?.description ?? e.title ?? ref.title ?? v?.name ?? "Video",
 					contentLoc: v?.downloadUrl,
@@ -255,16 +270,8 @@ async function visitorHash(ctx: Ctx & { requestMeta: { ip: string | null; userAg
 }
 
 /** Plays already counted by this isolate (visitor+video → time), so reloads don't inflate counts. */
-const recentPlays = new Map<string, number>();
-const PLAY_WINDOW = 30 * 60_000;
-
-function seenRecently(key: string): boolean {
-	const now = Date.now();
-	if (recentPlays.size > 5000) for (const [k, t] of recentPlays) if (now - t > PLAY_WINDOW) recentPlays.delete(k);
-	const last = recentPlays.get(key);
-	recentPlays.set(key, now);
-	return last !== undefined && now - last < PLAY_WINDOW;
-}
+const recentPlays = new RecentKeys(5000, 30 * 60_000);
+const seenRecently = (key: string) => recentPlays.seen(key);
 
 // ── Routes ───────────────────────────────────────────────────────
 
@@ -273,7 +280,12 @@ const updateInput = z.object({
 	name: z.string().max(200).optional(),
 	description: z.string().max(5000).optional(),
 	posterTime: z.number().min(0).max(86_400).nullable().optional(),
-	posterImage: z.string().max(2000).nullable().optional(),
+	posterImage: z
+		.string()
+		.max(2000)
+		.refine((v) => v === "" || isImageUrl(v.trim()), "The poster image must be an http(s) URL or a site path starting with /.")
+		.nullable()
+		.optional(),
 	allowedOrigins: z.array(z.string().max(253)).max(50).optional(),
 	downloads: z.boolean().optional(),
 });
@@ -332,7 +344,7 @@ export function videosModule(options: VideosOptions) {
 							...v,
 							meta: undefined,
 							description: m?.description ?? "",
-							thumbnail: posterUrl(cfg.host, v.uid, {}, m ?? {}, 320),
+							thumbnail: posterUrl(cfg.host, v.uid, {}, m ?? {}, 320, ctx.site.url || new URL(ctx.request.url).origin),
 							plays: counts.get(v.uid)?.plays ?? 0,
 							likes: counts.get(v.uid)?.likes ?? 0,
 							usedIn: used.get(v.uid) ?? [],
@@ -443,7 +455,7 @@ export function videosModule(options: VideosOptions) {
 			request: { body: "json" },
 			handler: async (ctx) => {
 				await requireFeature(ctx, F.main);
-				const { state } = parseInput(z.object({ state: z.object({ collections: z.array(z.string()), index: z.number().int(), cursor: z.string().nullable() }).nullish() }), ctx.input ?? {});
+				const { state } = parseInput(z.object({ state: z.object({ collections: z.array(z.string()), index: z.number().int(), cursor: z.string().nullable(), cleanup: z.number().int().optional() }).nullish() }), ctx.input ?? {});
 				if (!ctx.content || !ctx.schema) throw PluginRouteError.internal("Content access is unavailable.");
 				const collections = state?.collections ?? (await ctx.schema.listCollections()).map((c) => c.slug);
 				let index = state?.index ?? 0;
@@ -455,7 +467,7 @@ export function videosModule(options: VideosOptions) {
 					const page = await ctx.content.list(collections[index], { limit: 50, ...(cursor ? { cursor } : {}) });
 					for (const item of page.items) {
 						scanned++;
-						found += await indexEntry(ctx, collections[index], item as unknown as Record<string, unknown>, false);
+						found += await indexEntry(ctx, collections[index], item as unknown as Record<string, unknown>, false, true);
 					}
 					if (page.hasMore && page.cursor) cursor = page.cursor;
 					else {
@@ -463,8 +475,27 @@ export function videosModule(options: VideosOptions) {
 						cursor = null;
 					}
 				}
-				const done = index >= collections.length;
-				return { done, scanned, found, state: done ? null : { collections, index, cursor }, progress: `${Math.min(index + 1, collections.length)} of ${collections.length} collections` };
+				if (index < collections.length) {
+					return { done: false, scanned, found, removed: 0, state: { collections, index, cursor }, progress: `${Math.min(index + 1, collections.length)} of ${collections.length} collections` };
+				}
+				// Then drop index rows whose entries no longer exist.
+				invalidateEmbeds();
+				const entries = await allEmbeds(ctx);
+				let at = state?.cleanup ?? 0;
+				let removed = 0;
+				while (at < entries.length && Date.now() - started < 10_000) {
+					const e = entries[at++];
+					if (!(await ctx.content.get(e.collection, e.entryId))) {
+						await embedStore(ctx).delete(embedKey(e.collection, e.entryId));
+						removed++;
+					}
+				}
+				if (removed) {
+					invalidateEmbeds();
+					await invalidateSitemap(ctx);
+				}
+				const done = at >= entries.length;
+				return { done, scanned, found, removed, state: done ? null : { collections, index, cursor, cleanup: at }, progress: "checking for deleted entries" };
 			},
 		}),
 
@@ -483,10 +514,11 @@ export function videosModule(options: VideosOptions) {
 		"videos/captions/upload": definePluginRoute({
 			permission: "media:edit_any",
 			methods: ["POST"],
-			request: { body: "json", maxBytes: 4 * 1024 * 1024 },
+			request: { body: "json", maxBytes: 2 * 1024 * 1024 },
 			handler: async (ctx) => {
 				await requireFeature(ctx, F.captions);
-				const { uid, lang, vtt } = parseInput(z.object({ uid: uidSchema, lang: langSchema, vtt: z.string().min(8).max(3_500_000) }), ctx.input);
+				const { uid, lang, vtt } = parseInput(z.object({ uid: uidSchema, lang: langSchema, vtt: z.string().min(8).max(MAX_CAPTION_BYTES) }), ctx.input);
+				if (utf8Bytes(vtt) > MAX_CAPTION_BYTES) throw PluginRouteError.badRequest("Caption files must be under 1.5 MB.");
 				if (!/^﻿?WEBVTT/.test(vtt)) throw PluginRouteError.badRequest("That isn't a WebVTT file (it must start with WEBVTT).");
 				const api = await requireClient(ctx);
 				await stream(() => api.uploadCaption(uid, lang, vtt));
@@ -581,7 +613,9 @@ export function videosModule(options: VideosOptions) {
 			handler: async (ctx) => {
 				await requireFeature(ctx, F.main);
 				const { uid } = parseInput(z.object({ uid: uidSchema }), ctx.input);
-				const [features, cfg, meta] = await Promise.all([ctxFeatures(ctx), publicConfig(ctx), metaStore(ctx).get(uid)]);
+				// Only videos embedded in indexed content get metadata (no probing the library by ID).
+				const embedded = (await allEmbeds(ctx)).some((e) => e.uids.includes(uid));
+				const [features, cfg, meta] = await Promise.all([ctxFeatures(ctx), publicConfig(ctx), embedded ? metaStore(ctx).get(uid) : Promise.resolve(null)]);
 				const engagement = isOn(features, F.engagement);
 				const counts = engagement ? ((await statsStore(ctx).get(uid)) ?? { plays: 0, likes: 0 }) : null;
 				return {
@@ -687,7 +721,8 @@ export function videosModule(options: VideosOptions) {
 				await invalidateSitemap(ctx);
 				if (isUid(uid)) {
 					try {
-						await refreshVideo(ctx, uid);
+						const meta = await refreshVideo(ctx, uid);
+						if (meta?.downloadStatus === "inprogress") await refreshDownload(ctx, uid);
 					} catch (error) {
 						ctx.log.warn("Videos: webhook refresh failed", { uid, error: String(error) });
 					}
@@ -707,6 +742,26 @@ export function videosModule(options: VideosOptions) {
 	};
 
 	const tasks = [
+		{
+			// MP4 downloads take a while to generate; record the URL (schema contentUrl) once ready.
+			name: TASKS.downloads,
+			schedule: "@hourly",
+			feature: F.main,
+			handler: async (ctx: Ctx) => {
+				const pending = await metaStore(ctx).query({ where: { downloadStatus: "inprogress" }, limit: 20 });
+				if (!pending.items.length) return;
+				const api = await client(ctx);
+				if (!api) return;
+				for (const item of pending.items) {
+					try {
+						await refreshDownload(ctx, item.id, api);
+					} catch (error) {
+						ctx.log.warn("Videos: download refresh failed", { uid: item.id, error: String(error) });
+					}
+				}
+				await invalidateSitemap(ctx);
+			},
+		},
 		{
 			name: TASKS.captions,
 			schedule: "@hourly",

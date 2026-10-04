@@ -267,8 +267,8 @@ function CaptionsDialog(props: { video: Video | null; onClose: () => void }) {
 
 	const upload = async () => {
 		if (!file) return;
-		if (file.size > 3_000_000) {
-			setError("Caption files must be under 3 MB.");
+		if (file.size > 1_500_000) {
+			setError("Caption files must be under 1.5 MB.");
 			return;
 		}
 		await run("Upload", "captions/upload", { lang: lang.trim(), vtt: await file.text() });
@@ -508,8 +508,10 @@ export function VideosPage() {
 			let state: unknown = null;
 			let found = 0;
 			let scanned = 0;
+			let removed = 0;
 			for (let i = 0; i < 500; i++) {
-				const r = await post<{ done: boolean; state: unknown; found: number; scanned: number; progress: string }>("reindex", { state });
+				const r = await post<{ done: boolean; state: unknown; found: number; scanned: number; removed: number; progress: string }>("reindex", { state });
+				removed += r.removed;
 				found += r.found;
 				scanned += r.scanned;
 				setBusy(`Rebuilding the index (${r.progress})`);
@@ -517,7 +519,7 @@ export function VideosPage() {
 				state = r.state;
 			}
 			await load();
-			return `Scanned ${numberFormat.format(scanned)} entries and found ${numberFormat.format(found)} embedded ${found === 1 ? "video" : "videos"}.`;
+			return `Scanned ${numberFormat.format(scanned)} entries and found ${numberFormat.format(found)} embedded ${found === 1 ? "video" : "videos"}${removed ? `, and removed ${numberFormat.format(removed)} deleted ${removed === 1 ? "entry" : "entries"} from the index` : ""}.`;
 		});
 
 	const webhook = (subscribe: boolean) =>

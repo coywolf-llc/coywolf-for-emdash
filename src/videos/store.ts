@@ -11,8 +11,10 @@ import {
 	type VideoRef,
 	customerHostFromUrl,
 	isHex,
+	MAX_CAPTION_BYTES,
 	isUid,
 	normalizeCustomerHost,
+	utf8Bytes,
 	vttToTranscript,
 } from "./lib.js";
 import { type StreamClient, type StreamCredentials, type StreamVideo, streamClient } from "./stream.js";
@@ -26,7 +28,7 @@ export const COLLECTIONS = {
 } as const;
 
 export const STORAGE = {
-	[COLLECTIONS.meta]: { indexes: ["captionsPending"] },
+	[COLLECTIONS.meta]: { indexes: ["captionsPending", "downloadStatus"] },
 	[COLLECTIONS.stats]: { indexes: [] },
 	[COLLECTIONS.likes]: { indexes: ["day"] },
 	[COLLECTIONS.embeds]: { indexes: ["status", "collection"] },
@@ -266,6 +268,21 @@ export async function patchMeta(ctx: Ctx, uid: string, patch: Partial<VideoMeta>
 	return next;
 }
 
+/** Check a pending MP4 download and record its URL once Stream has it ready. */
+export async function refreshDownload(ctx: Ctx, uid: string, api?: StreamClient | null): Promise<VideoMeta | null> {
+	const stream = api ?? (await client(ctx));
+	if (!stream) return null;
+	let d: { status?: string; url?: string } | undefined;
+	try {
+		d = (await stream.getDownloads(uid))?.default;
+	} catch (error) {
+		if ((error as { status?: number }).status === 404) return patchMeta(ctx, uid, { downloadStatus: undefined, downloadUrl: undefined });
+		throw error;
+	}
+	if (!d) return patchMeta(ctx, uid, { downloadStatus: undefined, downloadUrl: undefined });
+	return patchMeta(ctx, uid, { downloadStatus: d.status, downloadUrl: d.status === "ready" ? d.url : undefined });
+}
+
 // ── Captions cache ───────────────────────────────────────────────
 
 export interface CaptionDoc {
@@ -288,7 +305,12 @@ export async function refreshCaptions(ctx: Ctx, uid: string, api?: StreamClient 
 	const docs: CaptionDoc[] = [];
 	for (const c of ready) {
 		try {
-			docs.push({ uid, language: c.language, label: c.label || c.language, vtt: await stream.captionVtt(uid, c.language) });
+			const vtt = await stream.captionVtt(uid, c.language);
+			if (utf8Bytes(vtt) > MAX_CAPTION_BYTES) {
+				ctx.log.warn("Videos: caption track too large to copy, skipped", { uid, language: c.language, bytes: utf8Bytes(vtt) });
+				continue;
+			}
+			docs.push({ uid, language: c.language, label: c.label || c.language, vtt });
 		} catch (error) {
 			ctx.log.warn("Videos: caption download failed", { uid, language: c.language, error: String(error) });
 		}

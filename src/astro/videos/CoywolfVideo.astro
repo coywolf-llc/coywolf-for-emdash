@@ -81,7 +81,7 @@ const name = str(node?.title) ?? str(node?.name) ?? video?.name ?? "Video";
 const description = str(node?.caption) ?? str(node?.description) ?? video?.description ?? "";
 const block = { posterTime: num(node?.posterTime), posterImage: str(node?.posterImage) };
 const poster = uid
-	? posterUrl(host, uid, block, { posterTime: video?.posterTime ?? (node?.host ? 1 : undefined), posterImage: video?.posterImage ?? undefined })
+	? posterUrl(host, uid, block, { posterTime: video?.posterTime ?? (node?.host ? 1 : undefined), posterImage: video?.posterImage ?? undefined }, undefined, Astro.url.origin)
 	: undefined;
 const src = uid ? playerSrc(host, uid, cfg, { startTime: num(node?.startTime), poster, accent: data?.accent ?? undefined, background: data?.background ?? undefined }) : "";
 const ratio = aspectRatio(video?.width, video?.height, num(node?.aspect));
@@ -94,7 +94,7 @@ const dateText = created && !Number.isNaN(created.getTime()) ? new Intl.DateTime
 const length = clockDuration(video?.duration ?? num(node?.seconds));
 const caption = (cfg.showName && name !== "Video") || (cfg.showDescription && description);
 const track = data?.engagement && !cfg.autoplay;
-const fallbackHref = str(node?.url);
+const fallbackHref = /^https?:\/\//i.test(str(node?.url) ?? "") ? str(node?.url) : undefined;
 const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px` : "", data?.background ? `--cw-video-bg:${data.background}` : ""]
 	.filter(Boolean)
 	.join(";");
