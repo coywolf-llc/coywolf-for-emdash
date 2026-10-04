@@ -5,6 +5,7 @@
  */
 import { backupsPack } from "./backups/pack.js";
 import type { PackMiddleware, PackModule } from "./core/module.js";
+import { headingsPack } from "./headings/pack.js";
 import { redirectsMiddleware, redirectsPack } from "./redirects/pack.js";
 import type { CoywolfOptions } from "./options.js";
 
@@ -13,6 +14,7 @@ type Factory = (options: CoywolfOptions) => PackModule | null;
 export const MODULES: Factory[] = [
 	(o) => (o.backups ? backupsPack(o.backups) : null),
 	(o) => (o.redirects === false ? null : redirectsPack(o.redirects ?? {})),
+	(o) => (o.headings === false ? null : headingsPack(o.headings ?? {})),
 ];
 
 export const MIDDLEWARE: PackMiddleware[] = [redirectsMiddleware];

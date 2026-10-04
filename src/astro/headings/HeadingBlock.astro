@@ -1,0 +1,122 @@
+---
+/**
+ * Portable Text `block` override that gives H2–H6 headings their anchor id.
+ * EmDash's PortableText only lets plugins add custom block *types*, so a
+ * theme opts in by passing this as the `block` component:
+ *
+ *   import { portableTextComponents } from "@coywolf/emdash/astro";
+ *   <PortableText value={...} components={portableTextComponents} />
+ *
+ * Every block is rendered by EmDash's own Block component (same markup,
+ * text-align classes included); headings additionally get `id` (the anchor
+ * stamped on save, or one derived from the text for content saved before the
+ * feature was on), an optional scroll margin, and an optional copy-link.
+ */
+import { isOn, siteFeatures } from "../../core/features.js";
+import { siteHeadingsSettings } from "../../headings/settings.js";
+import { blockText, headingLevel, uniqueSlug, validAnchor } from "../../headings/slug.js";
+import { firstInRequest, takenIds } from "./request.js";
+
+// Imported at render time: emdash/ui imports PortableText, which imports this module.
+const { Block } = await import("emdash/ui");
+
+const props = Astro.props as Record<string, unknown> & { node: Record<string, unknown> };
+const node = props.node;
+const level = headingLevel(node);
+
+let id: string | undefined;
+let style: string | undefined;
+let copyLink = false;
+let copyScript = false;
+let text = "";
+
+if (level && level >= 2) {
+	const features = await siteFeatures();
+	if (isOn(features, "headings.anchors") || isOn(features, "headings.toc")) {
+		const settings = await siteHeadingsSettings();
+		const taken = takenIds(Astro.request);
+		text = blockText(node);
+		if (validAnchor(node.anchor)) {
+			id = node.anchor;
+			taken.add(id);
+		} else if (text) {
+			id = uniqueSlug(text, taken, settings.prefix);
+		}
+		if (id && settings.scrollOffset > 0) style = `scroll-margin-top:${settings.scrollOffset}${settings.scrollUnit}`;
+		copyLink = Boolean(id) && isOn(features, "headings.anchors") && settings.copyLink;
+		copyScript = copyLink && firstInRequest(Astro.request, "copy-link");
+	}
+}
+---
+
+<Block {...props} id={id} style={style}><slot />{copyLink && (<a class="cw-heading-link" href={`#${id}`}><span class="cw-sr">Copy link to section: {text}</span><span aria-hidden="true">#</span></a>)}</Block>
+{copyScript && (
+	<script is:inline>
+		(() => {
+			if (window.__cwCopyLink) return;
+			window.__cwCopyLink = true;
+			let live;
+			document.addEventListener("click", (event) => {
+				const link = event.target instanceof Element ? event.target.closest("a.cw-heading-link") : null;
+				if (!link || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || !navigator.clipboard) return;
+				event.preventDefault();
+				const url = new URL(link.getAttribute("href"), location.href).href;
+				navigator.clipboard.writeText(url).then(
+					() => {
+						history.replaceState(null, "", url);
+						if (!live) {
+							live = document.createElement("div");
+							live.className = "cw-sr";
+							live.setAttribute("aria-live", "polite");
+							document.body.append(live);
+						}
+						live.textContent = "";
+						setTimeout(() => (live.textContent = "Link copied"), 50);
+						link.setAttribute("data-copied", "");
+						setTimeout(() => link.removeAttribute("data-copied"), 1500);
+					},
+					() => (location.hash = link.hash),
+				);
+			});
+		})();
+	</script>
+)}
+
+<style is:global>
+	.cw-sr {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+	.cw-heading-link {
+		margin-inline-start: 0.35em;
+		font-weight: 400;
+		text-decoration: none;
+		opacity: 0;
+		transition: opacity 0.15s;
+	}
+	:is(h2, h3, h4, h5, h6):hover > .cw-heading-link,
+	.cw-heading-link:focus-visible,
+	.cw-heading-link[data-copied] {
+		opacity: 0.6;
+	}
+	.cw-heading-link[data-copied]::after {
+		content: " \2713";
+	}
+	@media (hover: none) {
+		.cw-heading-link {
+			opacity: 0.4;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.cw-heading-link {
+			transition: none;
+		}
+	}
+</style>
