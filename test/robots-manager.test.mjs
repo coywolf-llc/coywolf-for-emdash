@@ -414,7 +414,7 @@ test("templates pass the checks and do what they say", () => {
 });
 
 test("plain-English rule sentences and file summary", () => {
-	assert.equal(ex.describeRule(blockAi()), "Block AI training crawlers (11) from the whole site");
+	assert.equal(ex.describeRule(blockAi()), "Block AI training crawlers (10) from the whole site");
 	assert.equal(ex.describeRule(rule({ kind: "folder", path: "/private/" })), "Block all crawlers from the /private/ section and everything in it");
 	assert.equal(ex.describeRule(rule({ directive: "allow", agents: ["GPTBot"], kind: "filetype", exts: ["pdf", "docx"] })), "Let GPTBot crawl PDF and Word files anywhere on the site");
 	assert.match(ex.describeRule(rule({ kind: "folder", path: "/m/", except: ["/m/hi/"] })), /except \/m\/hi\//);
@@ -528,7 +528,9 @@ test("discovery files stay readable for crawlers blocked from the whole site", (
 	const c = cfg([blockAi(), rule({ name: "Private", kind: "folder", path: "/private/" })], { automatic, discoveryPaths: ["/agents.json"] });
 	const txt = gen(c);
 	for (const bot of ["GPTBot", "CCBot"]) {
-		for (const p of ["/llms.txt", "/llms-full.txt", "/.well-known/security.txt", "/.well-known/ai-plugin.json", "/agents.json"]) assert.equal(allowed(txt, bot, p), true, `${bot} ${p}`);
+		for (const p of ["/llms.txt", "/.well-known/security.txt", "/.well-known/ai-plugin.json", "/agents.json"]) assert.equal(allowed(txt, bot, p), true, `${bot} ${p}`);
+		// llms-full.txt carries the full text: only when the owner adds it.
+		assert.equal(allowed(txt, bot, "/llms-full.txt"), false, bot);
 		assert.equal(allowed(txt, bot, "/a-post/"), false, bot);
 		assert.equal(allowed(txt, bot, "/a-post/index.html.md"), false, bot);
 		assert.equal(allowed(txt, bot, "/_emdash/api/media/f/a.jpg"), false, bot);
@@ -570,4 +572,116 @@ test("saved includeSitemap:false (production) is respected; missing defaults on"
 	assert.equal(rules.normalizeConfig({ rules: [], includeSitemap: false, sitemaps: [], allowMedia: true, comments: true, extra: "" }).includeSitemap, false);
 	assert.equal(rules.normalizeConfig({ rules: [] }).includeSitemap, true);
 	assert.equal(imp.importRobots(imp.emdashDefaultRobots(SITE), SITE).config.includeSitemap, true);
+});
+
+/* ---------------- presets by purpose ---------------- */
+
+import { readFileSync } from "node:fs";
+const BUNDLED = JSON.parse(readFileSync(new URL("../src/robots/data/bots.json", import.meta.url), "utf8")).bots;
+const VERIFIED = JSON.parse(readFileSync(new URL("../src/robots/data/verified.json", import.meta.url), "utf8"));
+
+test("preset membership snapshot", () => {
+	const members = Object.fromEntries(rules.CRAWLER_GROUPS.map((g) => [g.id, rules.groupTokens(g, BUNDLED)]));
+	assert.deepEqual(members, {
+		search_engines: ["Googlebot", "Googlebot-Image", "Googlebot-Video", "Googlebot-News", "bingbot", "Applebot", "DuckDuckBot", "YandexBot", "Baiduspider", "PetalBot"],
+		ai_training: ["GPTBot", "ClaudeBot", "Google-Extended", "Applebot-Extended", "CCBot", "meta-externalagent", "Bytespider", "Amazonbot", "MistralAI-Training", "Webzio-Extended"],
+		ai_search: ["OAI-SearchBot", "Claude-SearchBot", "PerplexityBot", "Amzn-SearchBot", "MistralAI-Index", "ChatGPT-User", "Claude-User", "Perplexity-User", "meta-externalfetcher", "MistralAI-User", "DuckAssistBot", "Amzn-User"],
+		seo_tools: ["AhrefsBot", "SemrushBot", "MJ12bot", "DotBot", "BLEXBot", "DataForSeoBot", "Barkrowler"],
+	});
+});
+
+test("every preset member is a bundled, verified bot with a matching documented purpose and source", () => {
+	for (const g of rules.CRAWLER_GROUPS) {
+		for (const t of g.tokens) {
+			const b = BUNDLED.find((x) => x.token.toLowerCase() === t.toLowerCase());
+			assert.ok(b, `${g.id}: ${t} missing`);
+			assert.equal(b.status, "verified", `${g.id}: ${t}`);
+			assert.ok(g.purposes.includes(b.purpose), `${g.id}: ${t} is ${b.purpose}`);
+			assert.match(VERIFIED.purposes[b.slug]?.sourceUrl ?? "", /^https?:\/\//, `${t} source`);
+		}
+		// And no bundled bot with that purpose is left out.
+		for (const b of BUNDLED.filter((x) => g.purposes.includes(x.purpose) && x.status === "verified" && VERIFIED.purposes[x.slug]?.inPresets !== false)) assert.ok(g.tokens.includes(b.token), `${g.id} misses ${b.token}`);
+	}
+});
+
+test("no search engine (or non-training bot) in an AI preset; Radar-only and unverified bots never join", () => {
+	const search = new Set(BUNDLED.filter((b) => b.purpose === "search-engine").map((b) => b.token.toLowerCase()));
+	for (const id of ["ai_training", "ai_search"]) {
+		for (const t of rules.groupTokens(rules.CRAWLER_GROUPS.find((g) => g.id === id), BUNDLED)) assert.ok(!search.has(t.toLowerCase()), `${id}: ${t}`);
+	}
+	const training = rules.groupTokens(rules.CRAWLER_GROUPS.find((g) => g.id === "ai_training"), BUNDLED);
+	for (const t of ["PetalBot", "GoogleOther", "ImagesiftBot", "Diffbot", "Omgilibot", "Timpibot", "img2dataset", "anthropic-ai", "SemrushBot-SWA", "Peer39_crawler"]) assert.ok(!training.includes(t), t);
+	const radarOnly = [{ token: "NewAIBot", category: "AI_CRAWLER", status: "verified", origin: "radar", purpose: undefined }];
+	assert.ok(!rules.groupTokens(rules.CRAWLER_GROUPS[1], radarOnly).includes("NewAIBot"));
+	const custom = [{ token: "MyTrainer", category: "OTHER", status: "verified", origin: "custom", purpose: "training" }, { token: "Unchecked", category: "OTHER", status: "unverified", origin: "custom", purpose: "training" }];
+	const withCustom = rules.groupTokens(rules.CRAWLER_GROUPS[1], custom);
+	assert.ok(withCustom.includes("MyTrainer") && !withCustom.includes("Unchecked"));
+});
+
+test("rules made from a preset follow it (legacy lists and the 0.7.0 category expansion)", () => {
+	const legacy = { ...rule({ name: "Block AI training crawlers", agents: ["GPTBot", "ClaudeBot", "Google-Extended", "Applebot-Extended", "CCBot", "meta-externalagent", "Bytespider", "Amazonbot", "MistralAI-Training", "Webzio-Extended", "ImagesiftBot"] }) };
+	delete legacy.group;
+	const expanded = rule({ name: "Wide", agents: [...AI, "PetalBot", "GoogleOther"], group: "ai_training" });
+	const mine = rule({ name: "Mine", agents: ["GPTBot", "CCBot"] });
+	const { config, changes } = rules.refreshGroups(cfg([legacy, expanded, mine]), []);
+	assert.deepEqual(config.rules[0].agents, AI);
+	assert.equal(config.rules[0].group, "ai_training");
+	assert.deepEqual(changes.find((c) => c.ruleName === "Block AI training crawlers").removed, ["ImagesiftBot"]);
+	assert.deepEqual(changes.find((c) => c.ruleName === "Wide").removed, ["PetalBot", "GoogleOther"]);
+	assert.deepEqual(config.rules[2].agents, ["GPTBot", "CCBot"]);
+	assert.equal(changes.length, 2);
+	assert.equal(rules.refreshGroups(config, []).changes.length, 0);
+});
+
+/* ---------------- review fixes ---------------- */
+
+test("exceptions must sit inside the blocked area and can't reopen all of it", () => {
+	const ok = rule({ kind: "folder", path: "/m/", except: ["/m/free/"] });
+	assert.deepEqual(val.shapeFindings(ok), []);
+	for (const [except, code] of [[["*"], "except-everything"], [["/"], "except-everything"], [["/m/"], "except-everything"], [["/other/"], "except-outside"], [["/m"], "except-everything"], [["/mx/"], "except-outside"]]) {
+		const f = val.shapeFindings(rule({ kind: "folder", path: "/m/", except }));
+		assert.ok(codes(f).includes(code), `${except}: ${codes(f)}`);
+		assert.notEqual(val.checkConfig(cfg([rule({ kind: "folder", path: "/m/", except })]), SITE), null);
+	}
+	assert.deepEqual(val.shapeFindings(rule({ kind: "entire_site", except: ["/public/"] })), []);
+});
+
+test("exact addresses never get a double $", () => {
+	assert.deepEqual(rules.directives(rule({ kind: "exact_url", path: "/search$" })).map((l) => l.value), ["/search$"]);
+	assert.deepEqual(rules.directives(rule({ kind: "single_page", path: "/a$$", strict: true })).map((l) => l.value), ["/a$"]);
+});
+
+test("Extra lines that block everything are reported (without blocking the save)", () => {
+	const c = cfg([], { extra: "User-agent: *\nDisallow: /" });
+	assert.ok(val.extraLineWarnings(c, SITE).some((f) => f.code === "search-whole-site"));
+	assert.equal(val.checkConfig(c, SITE), null);
+	assert.deepEqual(val.extraLineWarnings(cfg([]), SITE), []);
+});
+
+test("takeover: a failed read of EmDash's settings imports nothing and serves EmDash's file", async () => {
+	const mw = await import("../src/robots/middleware.ts");
+	let writes = 0;
+	// A tiny fake: SELECTs return null except site:seo, which fails.
+	const db = {
+		prepare(sql) {
+			let arg;
+			return {
+				bind(a) {
+					arg = a;
+					return this;
+				},
+				async first() {
+					if (arg === "site:seo") throw new Error("D1 timeout");
+					return null;
+				},
+				async run() {
+					writes++;
+				},
+			};
+		},
+	};
+	const res = await mw.serveRobots(new URL("https://example.com/robots.txt"), "GET", { DB: db });
+	assert.equal(res, undefined);
+	assert.equal(writes, 0);
+	await assert.rejects(() => mw.readEmdashCustomRobots(db));
 });

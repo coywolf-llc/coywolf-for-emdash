@@ -110,7 +110,8 @@ export interface AutomaticInfo {
 
 /** Machine-discovery locations kept reachable by default (RFC 8615 well-known URIs cover security.txt, ai-plugin.json and future manifests). */
 export const WELL_KNOWN_PATH = "/.well-known/";
-export const LLMS_PATHS = ["/llms.txt", "/llms-full.txt"];
+/** Only llms.txt by default: llms-full.txt carries the full site text, so adding it is the owner's call (a discovery path). */
+export const LLMS_PATHS = ["/llms.txt"];
 
 /** What the pack's other features add to robots.txt, from the feature switches. */
 export function automaticFrom(features: Record<string, boolean | undefined>): AutomaticInfo {
@@ -237,10 +238,10 @@ export function directives(rule: RobotsRule): DirectiveLine[] {
 			out = [line(lead(path))];
 			break;
 		case "single_page":
-			out = [line(lead(path) + (rule.strict ? "$" : ""))];
+			out = [line(lead(path).replace(/\$+$/, "") + (rule.strict ? "$" : ""))];
 			break;
 		case "exact_url":
-			out = [line(`${lead(path)}$`)];
+			out = [line(`${lead(path).replace(/\$+$/, "")}$`)];
 			break;
 		case "filetype":
 			out = ruleExts(rule).map((ext) => line(`/*.${ext}$`));
@@ -648,10 +649,14 @@ export interface CrawlerGroup {
 	/** Lowercase phrase for sentences ("AI training crawlers"). */
 	phrase: string;
 	description: string;
-	/** Operator-documented tokens always included. */
+	/**
+	 * Members: bundled bots whose documented purpose matches and whose token
+	 * is verified (see src/robots/data/verified.json → purposes; a test keeps
+	 * this list and the data in step). Radar-only bots never join a group.
+	 */
 	tokens: string[];
-	/** Directory categories whose verified bots are included too. */
-	categories: string[];
+	/** Purposes this group stands for; verified custom bots with one of these join it too. */
+	purposes: string[];
 }
 
 export const CRAWLER_GROUPS: CrawlerGroup[] = [
@@ -659,15 +664,15 @@ export const CRAWLER_GROUPS: CrawlerGroup[] = [
 		id: "search_engines",
 		label: "Search engines",
 		phrase: "search engines",
-		description: "Google, Bing, Apple, DuckDuckGo, Yandex, Baidu and other search engine crawlers. Blocking them removes pages from search results.",
-		tokens: ["Googlebot", "bingbot", "Applebot", "DuckDuckBot", "YandexBot", "Baiduspider"],
-		categories: ["SEARCH_ENGINE_CRAWLER"],
+		description: "Google, Bing, Apple, DuckDuckGo, Yandex, Baidu and Huawei Petal Search. Blocking them removes pages from search results.",
+		tokens: ["Googlebot", "Googlebot-Image", "Googlebot-Video", "Googlebot-News", "bingbot", "Applebot", "DuckDuckBot", "YandexBot", "Baiduspider", "PetalBot"],
+		purposes: ["search-engine"],
 	},
 	{
 		id: "ai_training",
 		label: "AI training",
 		phrase: "AI training crawlers",
-		description: "Crawlers that collect pages to train AI models (GPTBot, ClaudeBot, Google-Extended, CCBot…). Blocking them doesn't affect search.",
+		description: "Crawlers whose operators say they collect pages to train AI models (GPTBot, ClaudeBot, Google-Extended, CCBot, Amazonbot…). Blocking them doesn't affect search.",
 		tokens: [
 			"GPTBot",
 			"ClaudeBot",
@@ -679,36 +684,37 @@ export const CRAWLER_GROUPS: CrawlerGroup[] = [
 			"Amazonbot",
 			"MistralAI-Training",
 			"Webzio-Extended",
-			"ImagesiftBot",
 		],
-		categories: ["AI_CRAWLER"],
+		purposes: ["training"],
 	},
 	{
 		id: "ai_search",
 		label: "AI search and assistants",
 		phrase: "AI search and assistant crawlers",
-		description: "AI answer engines and assistants that fetch pages to answer questions and cite them (ChatGPT search, Perplexity, Claude…).",
+		description: "AI answer engines and assistants that fetch pages to answer questions and cite them (ChatGPT search, Perplexity, Claude…). Their operators say they don't train on them.",
 		tokens: [
 			"OAI-SearchBot",
-			"ChatGPT-User",
 			"Claude-SearchBot",
-			"Claude-User",
 			"PerplexityBot",
+			"Amzn-SearchBot",
+			"MistralAI-Index",
+			"ChatGPT-User",
+			"Claude-User",
 			"Perplexity-User",
 			"meta-externalfetcher",
 			"MistralAI-User",
 			"DuckAssistBot",
 			"Amzn-User",
 		],
-		categories: ["AI_SEARCH", "AI_ASSISTANT"],
+		purposes: ["ai-search", "ai-assistant"],
 	},
 	{
 		id: "seo_tools",
 		label: "SEO tools",
 		phrase: "SEO tool crawlers",
-		description: "Backlink and site-audit crawlers (Ahrefs, Semrush, Majestic…). They don't send visitors.",
+		description: "Backlink and site-audit crawlers (Ahrefs, Semrush, Majestic, Moz…). They don't send visitors.",
 		tokens: ["AhrefsBot", "SemrushBot", "MJ12bot", "DotBot", "BLEXBot", "DataForSeoBot", "Barkrowler"],
-		categories: ["SEARCH_ENGINE_OPTIMIZATION"],
+		purposes: ["seo"],
 	},
 ];
 
@@ -716,20 +722,65 @@ export interface DirectoryBot {
 	token: string;
 	category: string;
 	status: string;
+	purpose?: string;
+	origin?: string;
 }
 
-/** The tokens in a crawler group: its documented tokens plus verified directory bots in its categories. */
+/** The tokens in a crawler group: its curated members plus verified custom bots (added on this site) with a matching purpose. */
 export function groupTokens(group: CrawlerGroup, bots: DirectoryBot[] = []): string[] {
-	// A crawler documented in another group (e.g. Bytespider, an AI training crawler Radar files under search engines) stays there.
-	const elsewhere = new Set(CRAWLER_GROUPS.filter((g) => g.id !== group.id).flatMap((g) => g.tokens.map((t) => t.toLowerCase())));
-	const extra = bots.filter((b) => b.status === "verified" && group.categories.includes(b.category) && !elsewhere.has(b.token.toLowerCase())).map((b) => b.token);
-	return uniq([...group.tokens, ...extra]).filter(isValidToken);
+	const custom = bots.filter((b) => b.origin === "custom" && b.status === "verified" && b.purpose && group.purposes.includes(b.purpose)).map((b) => b.token);
+	return uniq([...group.tokens, ...custom]).filter(isValidToken);
 }
 
 /** Which crawler group a token list covers (all of the group's documented tokens), if any. */
 export function matchGroup(agents: string[]): CrawlerGroup | undefined {
 	const set = new Set(agents.map((a) => a.toLowerCase()));
 	return CRAWLER_GROUPS.find((g) => g.tokens.every((t) => set.has(t.toLowerCase())));
+}
+
+/** Crawler lists the presets wrote before 0.7.0, so rules made from them can follow the presets now. */
+const LEGACY_PRESET_TOKENS: Record<string, string[]> = {
+	ai_training: ["GPTBot", "ClaudeBot", "Google-Extended", "Applebot-Extended", "CCBot", "meta-externalagent", "Bytespider", "Amazonbot", "MistralAI-Training", "Webzio-Extended", "ImagesiftBot"],
+	ai_search: ["OAI-SearchBot", "ChatGPT-User", "Claude-SearchBot", "Claude-User", "PerplexityBot", "Perplexity-User", "meta-externalfetcher", "MistralAI-User", "DuckAssistBot", "Amzn-User"],
+	search_engines: ["Googlebot", "bingbot", "Applebot", "DuckDuckBot", "YandexBot", "Baiduspider"],
+	seo_tools: ["AhrefsBot", "SemrushBot", "MJ12bot", "DotBot", "BLEXBot", "DataForSeoBot", "Barkrowler"],
+};
+
+export interface GroupChange {
+	ruleId: string;
+	ruleName: string;
+	group: string;
+	added: string[];
+	removed: string[];
+}
+
+/**
+ * Rules whose crawlers came from a preset (they carry its id, or match a
+ * pre-0.7.0 preset list exactly) get the preset's current members.
+ */
+export function refreshGroups(config: RobotsConfig, bots: DirectoryBot[] = []): { config: RobotsConfig; changes: GroupChange[] } {
+	const changes: GroupChange[] = [];
+	const rules = config.rules.map((rule) => {
+		let groupId = rule.group;
+		if (!groupId) {
+			const set = new Set(rule.agents.map((a) => a.toLowerCase()));
+			groupId = Object.keys(LEGACY_PRESET_TOKENS).find((id) => {
+				const list = LEGACY_PRESET_TOKENS[id];
+				return list.length === set.size && list.every((t) => set.has(t.toLowerCase()));
+			});
+		}
+		const group = groupId ? CRAWLER_GROUPS.find((g) => g.id === groupId) : undefined;
+		if (!group) return rule;
+		const next = groupTokens(group, bots);
+		const have = new Set(rule.agents.map((a) => a.toLowerCase()));
+		const want = new Set(next.map((a) => a.toLowerCase()));
+		const added = next.filter((t) => !have.has(t.toLowerCase()));
+		const removed = rule.agents.filter((t) => !want.has(t.toLowerCase()));
+		if (!added.length && !removed.length && rule.group === group.id) return rule;
+		if (added.length || removed.length) changes.push({ ruleId: rule.id, ruleName: rule.name, group: group.id, added, removed });
+		return { ...rule, agents: next, group: group.id };
+	});
+	return { config: { ...config, rules }, changes };
 }
 
 const groupById = (id: string) => CRAWLER_GROUPS.find((g) => g.id === id) as CrawlerGroup;

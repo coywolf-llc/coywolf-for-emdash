@@ -12,11 +12,11 @@ import { ctxFeatures, requireFeature } from "../core/features.js";
 import { parseInput, workerEnv } from "../shared.js";
 import { type BotOverride, applyOverrides, customSlug, mergeDirectory } from "./bots.js";
 import { BASELINE_DATE, baselineBots } from "./directory.js";
-import { emdashRobots, importRobots } from "./importer.js";
+import { ADDITIONS_NOTES, emdashRobots, importRobots } from "./importer.js";
 import { CONFIG_SETTING, invalidateRobotsCache, readEmdashCustomRobots } from "./middleware.js";
 import { RADAR_TOKEN_SETTING, SYNC_STATE_KEY, type SyncState, radarTokenSource, readOverlays, syncRadar } from "./radar.js";
-import { PRESETS, RULE_KINDS, type RobotsConfig, automaticFrom, generate, isValidToken, normalizeConfig } from "./rules.js";
-import { checkConfig } from "./validate.js";
+import { type GroupChange, PRESETS, RULE_KINDS, type RobotsConfig, automaticFrom, generate, isValidToken, normalizeConfig, refreshGroups } from "./rules.js";
+import { checkConfig, extraLineWarnings } from "./validate.js";
 
 export const HISTORY_COLLECTION = "robots_history";
 export const BOT_OVERRIDES_COLLECTION = "robots_bot_overrides";
@@ -90,7 +90,14 @@ async function siteDb(database: string): Promise<D1Database | undefined> {
 /** The robots.txt EmDash itself would serve right now. */
 async function emdashServed(database: string, siteUrl: string): Promise<{ text: string; custom: boolean }> {
 	const db = await siteDb(database);
-	const custom = db ? await readEmdashCustomRobots(db) : null;
+	let custom: string | null;
+	try {
+		if (!db) throw new Error(`no ${database} binding`);
+		custom = await readEmdashCustomRobots(db);
+	} catch (error) {
+		// Never fall back to EmDash's default here: importing or resetting from it could replace a custom file.
+		throw PluginRouteError.badRequest(`Couldn't read EmDash's robots.txt settings (${error instanceof Error ? error.message : "database error"}). Nothing was changed; try again.`);
+	}
 	return { text: emdashRobots(custom, siteUrl || "https://example.com"), custom: Boolean(custom) };
 }
 
@@ -150,6 +157,13 @@ async function readBotOverrides(ctx: PluginContext): Promise<BotOverride[]> {
  */
 async function loadOrImport(ctx: PluginContext, database: string): Promise<RobotsConfig> {
 	const stored = await ctx.settings.get<Partial<RobotsConfig>>(CONFIG_SETTING);
+	if (stored && !stored.version) {
+		// Saved before 0.7.0: store the migrated shape once, and say what's new.
+		const migrated = { ...normalizeConfig(stored), importNotes: [...ADDITIONS_NOTES] };
+		await ctx.settings.set(CONFIG_SETTING, migrated);
+		invalidateRobotsCache();
+		return migrated;
+	}
 	if (stored) return normalizeConfig(stored);
 	const siteUrl = siteUrlOf(ctx);
 	const { text } = await emdashServed(database, siteUrl);
@@ -178,11 +192,17 @@ async function persist(ctx: PluginContext, config: RobotsConfig, label: string, 
 	invalidateRobotsCache();
 	await pushHistory(ctx, { at: new Date().toISOString(), by, label, config: stored }).catch((error) => ctx.log.warn("Robots: history not saved", { error: String(error) }));
 	ctx.log.info("Robots.txt rules saved", { rules: config.rules.length, label });
-	return { config: live, preview, saved: true };
+	return { config: live, preview, saved: true, warnings: extraLineWarnings(live, siteUrl || undefined) };
 }
 
+const httpUrl = z
+	.string()
+	.url()
+	.max(2000)
+	.refine((u) => /^https?:\/\//i.test(u), "Use a web address starting with https:// or http://.");
+
 const botAction = z.discriminatedUnion("action", [
-	z.object({ action: z.literal("verify"), slug: z.string().min(1).max(120), sourceUrl: z.string().url().max(2000), note: z.string().max(500).optional() }),
+	z.object({ action: z.literal("verify"), slug: z.string().min(1).max(120), sourceUrl: httpUrl, note: z.string().max(500).optional() }),
 	z.object({ action: z.literal("unverify"), slug: z.string().min(1).max(120) }),
 	z.object({ action: z.literal("rename"), slug: z.string().min(1).max(120), name: z.string().trim().min(1).max(120) }),
 	z.object({
@@ -191,8 +211,9 @@ const botAction = z.discriminatedUnion("action", [
 		name: z.string().trim().min(1).max(120),
 		token: z.string().trim().min(1).max(100),
 		category: z.string().min(1).max(60),
+		purpose: z.enum(["training", "ai-search", "ai-assistant", "search-engine", "seo", "other"]).optional(),
 		operator: z.string().max(120).optional(),
-		sourceUrl: z.union([z.string().url().max(2000), z.literal("")]).optional(),
+		sourceUrl: z.union([httpUrl, z.literal("")]).optional(),
 		notes: z.string().max(500).optional(),
 	}),
 	z.object({ action: z.literal("delete"), slug: z.string().min(1).max(120) }),
@@ -208,10 +229,24 @@ export function robotsModule(options: RobotsOptions) {
 			permission: "plugins:manage" as const,
 			handler: async (ctx: PluginContext) => {
 				await requireFeature(ctx, "robots");
-				const config: RobotsConfig = { ...(await loadOrImport(ctx, database)), automatic: automaticFrom(await ctxFeatures(ctx)) };
+				const loaded = await loadOrImport(ctx, database);
+				// Rules made from a crawler preset follow the preset's current members.
+				const [overlays, overrides] = await Promise.all([readOverlays(ctx), readBotOverrides(ctx)]);
+				const refreshed = refreshGroups(loaded, applyOverrides(mergeDirectory(baselineBots(), overlays), overrides));
+				let groupChanges: GroupChange[] = [];
+				if (JSON.stringify(refreshed.config.rules) !== JSON.stringify(loaded.rules)) {
+					await ctx.settings.set(CONFIG_SETTING, refreshed.config);
+					invalidateRobotsCache();
+					groupChanges = refreshed.changes;
+					if (groupChanges.length) {
+						await pushHistory(ctx, { at: new Date().toISOString(), label: "Updated crawler groups", config: refreshed.config }).catch(() => undefined);
+						ctx.log.info("Robots: rules updated to the current crawler groups", { rules: groupChanges.length });
+					}
+				}
+				const config: RobotsConfig = { ...refreshed.config, automatic: automaticFrom(await ctxFeatures(ctx)) };
 				const siteUrl = siteUrlOf(ctx);
 				const tokenSource = await radarTokenSource(ctx);
-				const emdash = await emdashServed(database, siteUrl);
+				const emdash = await emdashServed(database, siteUrl).catch(() => ({ text: "EmDash's robots.txt couldn't be read right now.", custom: false }));
 				let history = await readHistory(ctx).catch(() => []);
 				if (!history.length) {
 					// Rules imported by the middleware (or saved before 0.7.0) get a first version to restore to.
@@ -225,6 +260,8 @@ export function robotsModule(options: RobotsOptions) {
 					preview: generate(config, { siteUrl }),
 					emdash,
 					history: history.map((h) => ({ id: h.id, at: h.data.at, by: h.data.by, label: h.data.label, rules: h.data.config.rules.length })),
+					groupChanges,
+					warnings: extraLineWarnings(config, siteUrl || undefined),
 					sitemapNoteDismissed: (await ctx.kv.get<boolean>(SITEMAP_NOTE_KEY)) === true,
 					presets: PRESETS,
 					sections: await siteSections(database),
@@ -330,7 +367,7 @@ export function robotsModule(options: RobotsOptions) {
 						const slug = input.slug || customSlug(input.token);
 						const existing = ((await collection.get(slug)) as BotOverride | null) ?? null;
 						if (!input.slug && existing) throw PluginRouteError.badRequest(`You already added a bot with the token ${input.token}.`);
-						if (input.slug && existing && !existing.custom) throw PluginRouteError.badRequest("Only bots you added can be edited this way.");
+						if (input.slug && !existing?.custom) throw PluginRouteError.badRequest("Only bots you added can be edited this way.");
 						const directory = mergeDirectory(baselineBots(), await readOverlays(ctx));
 						const clash = directory.find((b) => b.token.toLowerCase() === input.token.toLowerCase());
 						if (clash && !input.slug) throw PluginRouteError.badRequest(`${input.token} is already in the directory as ${clash.name}.`);
@@ -341,6 +378,7 @@ export function robotsModule(options: RobotsOptions) {
 							custom: {
 								token: input.token,
 								category: input.category,
+								purpose: input.purpose,
 								operator: input.operator?.trim() || undefined,
 								sourceUrl: input.sourceUrl || undefined,
 								notes: input.notes?.trim() || undefined,

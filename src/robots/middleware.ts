@@ -29,14 +29,14 @@ async function readOption<T>(db: D1Database, name: string): Promise<T | null> {
 	return row?.value ? (JSON.parse(row.value) as T) : null;
 }
 
-/** EmDash's custom robots.txt (SEO settings), or null when it serves its default. */
+/**
+ * EmDash's custom robots.txt (SEO settings), or null when it serves its
+ * default. Throws when the setting can't be read, so a transient database
+ * error never makes the takeover import EmDash's default file instead.
+ */
 export async function readEmdashCustomRobots(db: D1Database): Promise<string | null> {
-	try {
-		const seo = await readOption<{ robotsTxt?: string }>(db, "site:seo");
-		return seo?.robotsTxt?.trim() ? seo.robotsTxt : null;
-	} catch {
-		return null;
-	}
+	const seo = await readOption<{ robotsTxt?: string }>(db, "site:seo");
+	return seo?.robotsTxt?.trim() ? seo.robotsTxt : null;
 }
 
 /** Site origin the way EmDash's robots.txt computes it: the Site URL setting, else the request origin. */
@@ -61,13 +61,20 @@ async function insertIfAbsent(db: D1Database, config: RobotsConfig): Promise<Rob
 async function importOnce(db: D1Database, siteUrl: string): Promise<RobotsConfig | null> {
 	if (!importing) {
 		importing = (async () => {
-			const custom = await readEmdashCustomRobots(db);
+			let custom: string | null;
+			try {
+				custom = await readEmdashCustomRobots(db);
+			} catch (error) {
+				// Can't tell what EmDash serves: keep serving EmDash's file and try again on a later request.
+				console.error("coywolf robots: could not read EmDash's robots.txt; not importing yet", error);
+				return null;
+			}
 			const { config } = importRobots(emdashRobots(custom, siteUrl), siteUrl);
 			try {
 				return await insertIfAbsent(db, config);
 			} catch (error) {
 				console.error("coywolf robots: could not save the imported rules", error);
-				return config;
+				return null;
 			}
 		})().finally(() => {
 			importing = null;
@@ -89,6 +96,7 @@ export async function serveRobots(url: URL, method: string, env: Record<string, 
 			]);
 			const site = typeof siteUrl === "string" ? siteUrl : null;
 			const config = stored ? normalizeConfig(stored) : await importOnce(db, siteOrigin(site, url));
+			if (!config) return undefined; // Import deferred: EmDash's robots.txt is served, and nothing is cached.
 			cache = { config, siteUrl: site, at: Date.now() };
 		} catch (error) {
 			console.error("coywolf robots: could not load rules", error);

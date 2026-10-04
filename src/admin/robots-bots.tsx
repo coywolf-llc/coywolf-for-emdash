@@ -7,7 +7,7 @@ import { Badge, Banner, Button, Dialog, DropdownMenu, Input, InputArea, Select }
 import { ArrowsClockwise, CaretDown, CaretRight, DotsThree, MagnifyingGlass, Plus, XCircle } from "@phosphor-icons/react";
 import * as React from "react";
 
-import { type BotEntry, CATEGORY_LABELS, categoryLabel } from "../robots/bots.js";
+import { type BotEntry, type BotPurpose, CATEGORY_LABELS, PURPOSE_LABELS, categoryLabel } from "../robots/bots.js";
 import type { RobotsRule } from "../robots/rules.js";
 import { isValidToken } from "../robots/rules.js";
 import { EVIDENCE_LABELS, StatusBadge, TriCheckbox, UnverifiedIcon, dateFormat, errorText, post, tokenIndex } from "./robots-shared.js";
@@ -187,6 +187,7 @@ export function BotsTab(props: {
 	const [operator, setOperator] = React.useState("all");
 	const [status, setStatus] = React.useState<StatusFilter>("all");
 	const [usedOnly, setUsedOnly] = React.useState(false);
+	const [purpose, setPurpose] = React.useState("all");
 	const [limit, setLimit] = React.useState(100);
 	const [dialog, setDialog] = React.useState<BotDialog>(null);
 	const [message, setMessage] = React.useState<string>();
@@ -204,6 +205,7 @@ export function BotsTab(props: {
 		(b) =>
 			(category === "all" || b.category === category) &&
 			(operator === "all" || b.operator === operator) &&
+			(purpose === "all" || (purpose === "none" ? !b.purpose : b.purpose === purpose)) &&
 			(status === "all" || statusOf(b) === status) &&
 			(!usedOnly || usage.has(b.token.toLowerCase())) &&
 			(!q || `${b.name} ${b.token} ${b.operator} ${b.description}`.toLowerCase().includes(q)),
@@ -236,7 +238,7 @@ export function BotsTab(props: {
 			<div aria-live="polite">{message && <Banner variant="default" role="status" title={message} />}</div>
 			{error && !dialog && <Banner variant="error" role="alert" description={error} />}
 
-			<div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+			<div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
 				<div className="lg:col-span-2">
 					<Input label="Search" placeholder="Name, token, company or description" value={query} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)} />
 				</div>
@@ -251,6 +253,12 @@ export function BotsTab(props: {
 					value={operator}
 					onValueChange={(v: string | null) => setOperator(v ?? "all")}
 					items={[{ value: "all", label: "All operators" }, ...operators.map((o) => ({ value: o, label: o }))]}
+				/>
+				<Select
+					label="Purpose"
+					value={purpose}
+					onValueChange={(v: string | null) => setPurpose(v ?? "all")}
+					items={[{ value: "all", label: "Any purpose" }, ...Object.entries(PURPOSE_LABELS).map(([value, label]) => ({ value, label })), { value: "none", label: "Not documented" }]}
 				/>
 				<Select
 					label="Status"
@@ -279,7 +287,7 @@ export function BotsTab(props: {
 							<th scope="col" className="px-3 py-2 font-medium">Name</th>
 							<th scope="col" className="px-3 py-2 font-medium">Token</th>
 							<th scope="col" className="hidden px-3 py-2 font-medium md:table-cell">Operator</th>
-							<th scope="col" className="hidden px-3 py-2 font-medium md:table-cell">Category</th>
+							<th scope="col" className="hidden px-3 py-2 font-medium md:table-cell">Category and purpose</th>
 							<th scope="col" className="px-3 py-2 font-medium">Status</th>
 							<th scope="col" className="hidden px-3 py-2 font-medium lg:table-cell">Rules</th>
 							<th scope="col" className="px-3 py-2"><span className="sr-only">Actions</span></th>
@@ -297,7 +305,10 @@ export function BotsTab(props: {
 									</td>
 									<td className="px-3 py-2"><code className="text-xs">{bot.token}</code></td>
 									<td className="hidden px-3 py-2 md:table-cell">{bot.operator || "—"}</td>
-									<td className="hidden px-3 py-2 md:table-cell">{catName(bot.category)}</td>
+									<td className="hidden px-3 py-2 md:table-cell">
+										{catName(bot.category)}
+										<div className="text-xs text-kumo-subtle">{bot.purpose ? PURPOSE_LABELS[bot.purpose] : "Purpose not documented"}</div>
+									</td>
 									<td className="px-3 py-2">
 										<StatusBadge bot={bot} />
 										<div className="text-xs text-kumo-subtle">
@@ -305,7 +316,7 @@ export function BotsTab(props: {
 											{bot.verifiedAt ? ` · ${dateFormat.format(new Date(bot.verifiedAt.length === 10 ? `${bot.verifiedAt}T12:00:00Z` : bot.verifiedAt))}` : ""}
 											{bot.verifiedBy ? ` · ${bot.verifiedBy}` : ""}
 										</div>
-										{bot.sourceUrl && (
+										{bot.sourceUrl && /^https?:\/\//i.test(bot.sourceUrl) && (
 											<a className="text-xs underline" href={bot.sourceUrl} target="_blank" rel="noreferrer noopener">
 												Source<span className="sr-only"> for {bot.name}</span>
 											</a>
@@ -393,6 +404,7 @@ function BotDialogView(props: { dialog: NonNullable<BotDialog>; bots: BotEntry[]
 	const [name, setName] = React.useState(bot?.name ?? "");
 	const [token, setToken] = React.useState(bot?.token ?? "");
 	const [category, setCategory] = React.useState(bot?.category ?? "AI_CRAWLER");
+	const [purpose, setPurpose] = React.useState<BotPurpose>(bot?.purpose ?? "other");
 	const [operator, setOperator] = React.useState(bot?.operator ?? "");
 	const [sourceUrl, setSourceUrl] = React.useState(d.kind === "verify" ? "" : (bot?.sourceUrl ?? ""));
 	const [notes, setNotes] = React.useState(d.kind === "custom" ? (bot?.description ?? "") : "");
@@ -423,7 +435,7 @@ function BotDialogView(props: { dialog: NonNullable<BotDialog>; bots: BotEntry[]
 			else if (d.kind === "rename") await props.onSubmit({ action: "rename", slug: bot?.slug, name: name.trim() }, `Renamed to ${name.trim()}. Its token is still ${bot?.token}.`);
 			else
 				await props.onSubmit(
-					{ action: "save-custom", slug: bot?.slug, name: name.trim(), token: token.trim(), category, operator: operator.trim() || undefined, sourceUrl: sourceUrl.trim(), notes: notes.trim() || undefined },
+					{ action: "save-custom", slug: bot?.slug, name: name.trim(), token: token.trim(), category, purpose, operator: operator.trim() || undefined, sourceUrl: sourceUrl.trim(), notes: notes.trim() || undefined },
 					bot ? `${name.trim()} saved.` : `${name.trim()} added. Pick it in any rule.`,
 				);
 		} catch {
@@ -457,6 +469,13 @@ function BotDialogView(props: { dialog: NonNullable<BotDialog>; bots: BotEntry[]
 						<>
 							<Input label="robots.txt token" placeholder="ExampleBot" value={token} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setToken(e.target.value)} />
 							<Select label="Category" value={category} onValueChange={(v: string | null) => setCategory(v ?? "OTHER")} items={categories.map((c) => ({ value: c, label: catName(c) }))} />
+							<Select
+								label="Purpose"
+								labelTooltip="What the operator says it's for. Verified bots with a preset's purpose join that preset (for example, AI training)."
+								value={purpose}
+								onValueChange={(v: string | null) => setPurpose((v ?? "other") as BotPurpose)}
+								items={Object.entries(PURPOSE_LABELS).map(([value, label]) => ({ value, label }))}
+							/>
 							<Input label="Operator (optional)" placeholder="Example Inc." value={operator} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setOperator(e.target.value)} />
 						</>
 					)}

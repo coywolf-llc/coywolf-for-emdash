@@ -99,6 +99,19 @@ export function shapeFindings(rule: RobotsRule): Finding[] {
 	} catch (error) {
 		if (error instanceof RobotsValidationError && !out.length) out.push({ code: "invalid", severity: "error", message: error.message });
 	}
+	// "Except…" items must sit inside the area the rule blocks, and mustn't reopen all of it.
+	if (rule.directive === "disallow" && rule.except?.some((e) => e.trim())) {
+		const lines = safeDirectives({ ...rule, except: [] }).filter((d) => d.directive === "Disallow");
+		const blockSamples = [...new Set(lines.flatMap((d) => samplePaths(d.value)))];
+		for (const raw of rule.except.filter((e) => e.trim())) {
+			const e = safeDirectives({ ...rule, kind: "custom", path: "/x/", except: [raw] }).find((d) => d.directive === "Allow")?.value ?? raw;
+			const own = samplePaths(e);
+			const inside = own.length > 0 && own.every((p) => lines.some((d) => matchRaw(d.value, p)));
+			const neutralizes = blockSamples.length > 0 && blockSamples.every((p) => matchRaw(e, p));
+			if (neutralizes) out.push({ code: "except-everything", severity: "error", message: `The exception “${raw}” would reopen everything this rule blocks. Remove it, or turn the rule off instead.` });
+			else if (!inside) out.push({ code: "except-outside", severity: "error", message: `The exception “${raw}” isn't inside the area this rule blocks, so it would open something else. Exceptions must be inside ${lines.map((d) => d.value).join(" or ")}.` });
+		}
+	}
 	for (const d of safeDirectives(rule)) {
 		if (d.value.length > MAX_VALUE_LENGTH) out.push({ code: "too-long", severity: "error", message: `That pattern is ${d.value.length} characters long. The most is ${MAX_VALUE_LENGTH}; real addresses are shorter.` });
 	}
@@ -476,6 +489,12 @@ export function selfCheck(config: RobotsConfig, siteUrl = SITE.siteUrl, limit = 
 		}
 	}
 	return { ok: failures.length === 0, failures };
+}
+
+/** Risks that Extra lines add (e.g. a raw `Disallow: /` for everyone). Shown, but they don't block saving. */
+export function extraLineWarnings(config: RobotsConfig, siteUrl = SITE.siteUrl): Finding[] {
+	if (!config.extra.trim()) return [];
+	return analyzeConfigChange({ ...config, extra: "" }, config, siteUrl).map((f) => ({ ...f, message: `Extra lines: ${f.message}` }));
 }
 
 /** Server-side gate before saving: shape errors, contradictions, and the self-check. */

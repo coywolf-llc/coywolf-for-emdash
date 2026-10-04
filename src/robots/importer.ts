@@ -29,6 +29,11 @@ import {
 } from "./rules.js";
 import { evaluateParsed } from "./rep.js";
 
+const MEDIA_NOTE = "We added one improvement: images and files in your media library can now be crawled, so they can appear in image search.";
+const DISCOVERY_NOTE = "We now keep /.well-known/ and /llms.txt (while Discovery's llms.txt is on) reachable for crawlers you block, so AI agents and tools can find them. Change this in Settings and history.";
+/** What Coywolf Pack 0.7.0 adds on purpose, shown once to sites that saved rules earlier. */
+export const ADDITIONS_NOTES = ["Updated for Coywolf Pack 0.7.0. " + DISCOVERY_NOTE];
+
 /** EmDash's own robots.txt when no custom one is set (emdash/src/astro/routes/robots.txt.ts). */
 export function emdashDefaultRobots(siteUrl: string): string {
 	return ["User-agent: *", "Allow: /", "", "# Disallow admin and API routes", "Disallow: /_emdash/", "", `Sitemap: ${siteUrl}/sitemap.xml`, ""].join("\n");
@@ -215,14 +220,7 @@ export function importRobots(original: string, siteUrl: string, now = new Date()
 	};
 
 	const notes: string[] = [];
-	const discoveryBlocked = agents.some((a) => !evaluateParsed(parse(original).directives, [a], `${WELL_KNOWN_PATH}security.txt`).allowed);
-	const mediaNote = [
-		...(discoveryBlocked ? ["Discovery files under /.well-known/ (and llms.txt, when Discovery is on) stay readable for every crawler, so AI agents and tools can find them."] : []),
-		...mediaNoteOnly(),
-	];
-	function mediaNoteOnly(): string[] {
-		return mediaAlreadyOpen ? [] : ["We added one improvement: images and files in your media library can now be crawled, so they can appear in image search."];
-	}
+	const mediaNote = [...(mediaAlreadyOpen ? [] : [MEDIA_NOTE]), DISCOVERY_NOTE];
 	for (const [inherit, emdash] of [
 		[true, true],
 		[false, true],
@@ -259,7 +257,7 @@ export function importRobots(original: string, siteUrl: string, now = new Date()
 		importedAt: now,
 		importMode: "verbatim",
 	};
-	notes.push("EmDash's robots.txt uses lines that can't be turned into rules exactly, so it's kept as written under Extra lines. Crawlers see the same rules as before.", ...(config.extra.includes("Added by Coywolf Pack") ? mediaNote : []));
+	notes.push("EmDash's robots.txt uses lines that can't be turned into rules exactly, so it's kept as written under Extra lines. Crawlers see the same rules as before.", ...(config.extra.includes("Added by Coywolf Pack") ? [MEDIA_NOTE] : []), DISCOVERY_NOTE);
 	config.importNotes = notes;
 	return { config, mode: "verbatim", notes };
 }

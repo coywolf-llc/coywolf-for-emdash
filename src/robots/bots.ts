@@ -13,6 +13,16 @@
  */
 
 export type BotStatus = "verified" | "unverified";
+/** What a crawler is for, from the operator's documentation (src/robots/data/verified.json → purposes). */
+export type BotPurpose = "training" | "ai-search" | "ai-assistant" | "search-engine" | "seo" | "other";
+export const PURPOSE_LABELS: Record<BotPurpose, string> = {
+	training: "AI training",
+	"ai-search": "AI search",
+	"ai-assistant": "AI assistant (fetches for a user)",
+	"search-engine": "Search engine",
+	seo: "SEO tool",
+	other: "Other",
+};
 /** How the token was confirmed: operator docs, the bot's published UA string, derived from a pattern, or checked by an admin on this site. */
 export type BotEvidence = "operator-docs" | "user-agent" | "heuristic" | "none" | "manual";
 
@@ -22,6 +32,8 @@ export interface BotEntry {
 	operator: string;
 	/** Radar category, e.g. AI_CRAWLER. */
 	category: string;
+	/** What it's for (set for preset bots and custom bots); presets use this, never the Radar category. */
+	purpose?: BotPurpose;
 	description: string;
 	/** The robots.txt product token (`User-agent:` value). */
 	token: string;
@@ -256,6 +268,7 @@ export interface BotOverride {
 	custom?: {
 		token: string;
 		category: string;
+		purpose?: BotPurpose;
 		operator?: string;
 		sourceUrl?: string;
 		notes?: string;
@@ -276,6 +289,7 @@ export function applyOverrides(directory: BotEntry[], overrides: BotOverride[]):
 				name: o.name || o.custom.token,
 				operator: o.custom.operator ?? "",
 				category: o.custom.category || "OTHER",
+				...(o.custom.purpose ? { purpose: o.custom.purpose } : {}),
 				description: o.custom.notes ?? "",
 				token: o.custom.token,
 				status: o.verified ? "verified" : "unverified",

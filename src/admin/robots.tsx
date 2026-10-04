@@ -43,6 +43,8 @@ interface PageData {
 	emdash: { text: string; custom: boolean };
 	history: HistoryItem[];
 	sitemapNoteDismissed: boolean;
+	warnings: Finding[];
+	groupChanges: Array<{ ruleId: string; ruleName: string; group: string; added: string[]; removed: string[] }>;
 	sections: Array<{ label: string; path: string }>;
 	radar: { tokenConfigured: boolean; tokenSource: "settings" | "env" | null; state: SyncState | null; baselineDate: string };
 }
@@ -184,7 +186,7 @@ function ServedFile(props: { text: string; emdash: PageData["emdash"]; config: R
 			{props.config.importNotes && props.config.importNotes.length > 0 && (
 				<div className="rounded-lg border border-kumo-line bg-kumo-tint/30 p-3 text-sm">
 					<p className="font-medium">
-						Set up from EmDash's robots.txt{props.config.importedAt ? ` on ${dateTimeFormat.format(new Date(props.config.importedAt))}` : ""}
+						{props.config.importedAt ? `Set up from EmDash's robots.txt on ${dateTimeFormat.format(new Date(props.config.importedAt))}` : "What's new"}
 					</p>
 					<ul className="mt-1 list-disc space-y-0.5 pl-5 text-kumo-subtle">
 						{props.config.importNotes.map((n) => (
@@ -537,9 +539,9 @@ export function RobotsPage() {
 	const persist = async (next: RobotsConfig, label: string, message?: string) => {
 		setBusy(true);
 		try {
-			const result = await post<{ config: RobotsConfig; preview: string }>("save", { config: next, label });
+			const result = await post<{ config: RobotsConfig; preview: string; warnings: Finding[] }>("save", { config: next, label });
 			const page = await get<PageData>("get", "Could not reload");
-			setData({ ...page, config: result.config, preview: result.preview });
+			setData({ ...page, config: result.config, preview: result.preview, warnings: result.warnings ?? [] });
 			setNotice(message ?? "Saved. /robots.txt now serves this version (other Worker instances pick it up within a minute).");
 			setError(undefined);
 		} finally {
@@ -616,7 +618,7 @@ export function RobotsPage() {
 
 			<section aria-labelledby="robots-summary" className="rounded-lg border border-kumo-line p-4">
 				<h2 id="robots-summary" className="text-base font-semibold">
-					In short
+					Rules summary
 				</h2>
 				<ul className="mt-2 space-y-1 text-sm">
 					{summary.map((s) => (
@@ -637,6 +639,32 @@ export function RobotsPage() {
 				{config.emdashLines && <p className="mt-2 text-xs text-kumo-subtle">EmDash's admin and API always stay private.</p>}
 			</section>
 
+			{data.groupChanges.length > 0 && (
+				<Banner
+					variant="default"
+					title="Crawler presets were updated"
+					description={
+						<span>
+							Presets now include only crawlers whose operators document that purpose, with verified tokens. Rules made from a preset were updated:{" "}
+							{data.groupChanges.map((c) => `“${c.ruleName}”: ${c.added.length ? `added ${c.added.join(", ")}` : ""}${c.added.length && c.removed.length ? "; " : ""}${c.removed.length ? `removed ${c.removed.join(", ")}` : ""}`).join(". ")}. The previous
+							version is in Version history.
+						</span>
+					}
+				/>
+			)}
+			{data.warnings.length > 0 && (
+				<Banner
+					variant="alert"
+					title="Check your Extra lines"
+					description={
+						<ul className="list-disc pl-5">
+							{data.warnings.map((w, i) => (
+								<li key={`${w.code}-${i}`}>{w.message}</li>
+							))}
+						</ul>
+					}
+				/>
+			)}
 			<div aria-live="polite">{notice && <Banner variant="default" role="status" title={notice} />}</div>
 			{error && <Banner variant="error" role="alert" title="Something went wrong" description={error} />}
 

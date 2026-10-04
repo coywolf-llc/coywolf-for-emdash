@@ -51,6 +51,38 @@ const THING: Record<Area, string> = {
 	advanced: "these addresses",
 };
 
+const PROMPTS: Record<Area, string> = {
+	everything: "",
+	section: "Enter a section address to see what it matches.",
+	page: "Enter a page address to see what it matches.",
+	files: "Pick a kind of file to see what it matches.",
+	params: "Pick a parameter to see what it matches.",
+	advanced: "Write a pattern to see what it matches.",
+};
+
+/** A preset's members, so people can see exactly who's included. */
+function GroupMembers(props: { tokens: string[]; bots: BotEntry[] }) {
+	const byToken = new Map(props.bots.map((b) => [b.token.toLowerCase(), b]));
+	return (
+		<details className="text-xs">
+			<summary className="cursor-pointer text-kumo-subtle">
+				{props.tokens.length} crawler{props.tokens.length === 1 ? "" : "s"}: show who's included
+			</summary>
+			<ul className="mt-1 grid gap-x-4 gap-y-0.5 sm:grid-cols-2">
+				{props.tokens.map((t) => {
+					const b = byToken.get(t.toLowerCase());
+					return (
+						<li key={t}>
+							{b?.name ?? t} <code className="text-kumo-subtle">{t}</code>
+							{b?.operator ? <span className="text-kumo-subtle"> · {b.operator}</span> : null}
+						</li>
+					);
+				})}
+			</ul>
+		</details>
+	);
+}
+
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 export interface WizardProps {
@@ -278,7 +310,7 @@ export function RuleWizard(props: WizardProps) {
 										{w.id === "specific" ? (
 											<BotPicker bots={props.bots} selected={draft.agents} onChange={(agents) => set({ agents })} onAddCustom={props.onAddCustomBot} />
 										) : group ? (
-											<p className="text-xs text-kumo-subtle">Includes {listPhrase(groupTokens(group, props.bots).map((t) => nameOf(props.bots)(t)), 6)}.</p>
+											<GroupMembers tokens={groupTokens(group, props.bots)} bots={props.bots} />
 										) : null}
 									</Choice>
 								);
@@ -303,8 +335,12 @@ export function RuleWizard(props: WizardProps) {
 
 					{step >= 1 && (
 						<section className="space-y-2 rounded-lg border border-kumo-line bg-kumo-tint/30 p-3" aria-label="This rule so far" aria-live="polite">
-							<p className="text-sm font-medium">{capital(describeRule(rule, nameOf(props.bots)))}.</p>
-							{targetFilled(draft) && (examples.matches.length > 0 || examples.misses.length > 0) && (
+							{targetFilled(draft) && targetErrors.length === 0 ? (
+								<p className="text-sm font-medium">{capital(describeRule(rule, nameOf(props.bots)))}.</p>
+							) : (
+								<p className="text-sm text-kumo-subtle">{PROMPTS[draft.area]}</p>
+							)}
+							{targetFilled(draft) && targetErrors.length === 0 && (examples.matches.length > 0 || examples.misses.length > 0) && (
 								<div className="grid gap-2 text-xs sm:grid-cols-2">
 									<div>
 										<p className="text-kumo-subtle">Will match</p>
