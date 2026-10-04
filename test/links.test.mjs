@@ -1,25 +1,12 @@
-// Link Manager unit tests: node --test src/links/links.test.mjs (Node 23.6+ strips the TypeScript types).
-// Plain JS so tsc (Workers types only) doesn't need Node's types; a resolve hook maps the sources' ".js" imports to ".ts".
+import "./ts-resolve.mjs";
 import assert from "node:assert/strict";
-import { registerHooks } from "node:module";
 import { test } from "node:test";
 
-registerHooks({
-	resolve(specifier, context, next) {
-		try {
-			return next(specifier, context);
-		} catch (error) {
-			if (specifier.startsWith(".") && specifier.endsWith(".js")) return next(`${specifier.slice(0, -3)}.ts`, context);
-			throw error;
-		}
-	},
-});
-
-const { extractLinks, extractEntryLinks, transformLinks, transformEntry, isInternal, resolveHref, isTrackable } = await import("./pt.ts");
-const { classify, isBotWall, nextCheckAt, normalizeIgnore, ruleMatches, isIgnored, isPublicTarget, IgnoreRuleError } = await import("./classify.ts");
-const { checkUrl, BudgetExhausted } = await import("./check.ts");
-const store = await import("./store.ts");
-const { isAllowedTarget } = await import("./pt.ts");
+const { extractLinks, extractEntryLinks, transformLinks, transformEntry, isInternal, resolveHref, isTrackable } = await import("../src/links/pt.ts");
+const { classify, isBotWall, nextCheckAt, normalizeIgnore, ruleMatches, isIgnored, isPublicTarget, IgnoreRuleError } = await import("../src/links/classify.ts");
+const { checkUrl, BudgetExhausted } = await import("../src/links/check.ts");
+const store = await import("../src/links/store.ts");
+const { isAllowedTarget } = await import("../src/links/pt.ts");
 
 const deepFreeze = (v) => {
 	if (v && typeof v === "object") {
