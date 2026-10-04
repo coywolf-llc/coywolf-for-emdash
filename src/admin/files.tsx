@@ -14,6 +14,7 @@ import { formatSize, iconFor } from "../files/format.js";
 import { saveFile, siteSlug, today } from "./download.js";
 import { CredentialGuide } from "./guides.js";
 import { PreviewSection } from "./preview.js";
+import { SaveBar, isDirty } from "./save-bar.js";
 import { SecretField, SettingsSection, SetupCard } from "./settings-ui.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/files";
@@ -297,10 +298,13 @@ function SettingsPanel(props: { largeUploadsEnabled: boolean; onSaved: (message:
 	const [error, setError] = React.useState<string>();
 	const [pending, setPending] = React.useState<"save" | "clear">();
 
+	const toDraft = (s: FilesSettings): SettingsDraft => {
+		const { r2SecretSet: _set, filesMaxUploadGb, ...rest } = s;
+		return { ...rest, filesMaxUploadGb: String(filesMaxUploadGb), filesR2SecretAccessKey: "" };
+	};
 	const apply = (s: FilesSettings) => {
 		setSaved(s);
-		const { r2SecretSet: _set, filesMaxUploadGb, ...rest } = s;
-		setDraft({ ...rest, filesMaxUploadGb: String(filesMaxUploadGb), filesR2SecretAccessKey: "" });
+		setDraft(toDraft(s));
 	};
 	React.useEffect(() => {
 		apiFetch(`${API}/settings`)
@@ -344,94 +348,101 @@ function SettingsPanel(props: { largeUploadsEnabled: boolean; onSaved: (message:
 		onChange: (e: React.ChangeEvent<HTMLInputElement>) => set({ [key]: e.target.value }),
 	});
 
+	const dirty = isDirty(draft, toDraft(saved));
+
 	return (
-		<form
-			className="space-y-6"
-			onSubmit={(e) => {
-				e.preventDefault();
-				void save();
-			}}
-		>
-			<SettingsSection id="files-links" title="Download links" description="Where download links point. Changing the base changes every download link on the site.">
-				<div className="grid gap-4 sm:grid-cols-2">
-					<Input label="Download URL base" placeholder="download" description={`Links look like /${draft.filesBase || "download"}/<id>/<file name>. One path segment.`} {...field("filesBase")} />
-					<Input
-						label="Public bucket or CDN URL (optional)"
-						placeholder="https://files.example.com"
-						description="Redirect downloads to this URL plus the object key instead of streaming them through the Worker. Use only when media and large uploads share that bucket."
-						{...field("filesPublicBaseUrl")}
-					/>
-				</div>
-			</SettingsSection>
-
-			<SettingsSection id="files-card" title="Download card" description="How the File download block looks on the site.">
-				<div className="grid gap-4 sm:grid-cols-2">
-					<Select
-						label="Color scheme"
-						value={draft.filesScheme}
-						onValueChange={(value: string | null) => set({ filesScheme: value === "light" || value === "dark" ? value : "auto" })}
-						items={[
-							{ value: "auto", label: "Auto (follow the visitor's system setting)" },
-							{ value: "light", label: "Light" },
-							{ value: "dark", label: "Dark" },
-						]}
-					/>
-					<Input label="Accent color (optional)" placeholder="#007392" description="Hex color for the download button and focus ring. Empty uses the default." {...field("filesAccent")} />
-				</div>
-				<PreviewSection
-					id="files-card-preview"
-					title="Download card preview"
-					css={FILE_CSS}
-					html={renderFileCardHtml(SAMPLE_FILE, { scheme: draft.filesScheme, accent: draft.filesAccent })}
-					note="A sample file with every part of the block shown. Auto follows your computer's light or dark setting here, and each visitor's on the site."
-				/>
-			</SettingsSection>
-
-			<SettingsSection
-				id="files-r2"
-				title="Large uploads"
-				description={
-					<>
-						Files over 50 MB, or of any type, upload straight from the browser to R2 through its S3 API. Create an R2 API token with Object Read &amp; Write
-						on the bucket. R2 storage and operations are billed to your account.
-						{!props.largeUploadsEnabled && " Turn on Large uploads under Plugins → Coywolf Pack to use them."}
-					</>
-				}
+		<>
+			<form
+				id="cw-files-settings-form"
+				className="space-y-6"
+				onSubmit={(e) => {
+					e.preventDefault();
+					void save();
+				}}
 			>
-				<div className="grid gap-4 sm:grid-cols-2">
-					<Input label="R2 account ID" description="Your Cloudflare account ID (32 characters)." {...field("filesR2AccountId")} />
-					<Input label="R2 bucket name" placeholder="mysite-media" description="The bucket bound as MEDIA, unless you set a separate uploads binding." {...field("filesR2Bucket")} />
-					<Input label="R2 access key ID" autoComplete="off" {...field("filesR2AccessKeyId")} />
-					<SecretField
-						label="R2 secret access key"
-						saved={saved.r2SecretSet}
-						value={draft.filesR2SecretAccessKey}
-						onChange={(value) => set({ filesR2SecretAccessKey: value })}
-						description="Stored encrypted."
-						onClear={() => void save(true)}
-						clearing={pending === "clear"}
-						disabled={Boolean(pending)}
-					/>
-					<Input
-						type="number"
-						min={1}
-						max={5000}
-						label="Largest upload (GB)"
-						description="Larger uploads are refused. Default 5."
-						value={draft.filesMaxUploadGb}
-						onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ filesMaxUploadGb: e.target.value })}
-					/>
-				</div>
-				<CredentialGuide id="r2" />
-			</SettingsSection>
+				<SettingsSection id="files-links" title="Download links" description="Where download links point. Changing the base changes every download link on the site.">
+					<div className="grid gap-4 sm:grid-cols-2">
+						<Input label="Download URL base" placeholder="download" description={`Links look like /${draft.filesBase || "download"}/<id>/<file name>. One path segment.`} {...field("filesBase")} />
+						<Input
+							label="Public bucket or CDN URL (optional)"
+							placeholder="https://files.example.com"
+							description="Redirect downloads to this URL plus the object key instead of streaming them through the Worker. Use only when media and large uploads share that bucket."
+							{...field("filesPublicBaseUrl")}
+						/>
+					</div>
+				</SettingsSection>
 
-			{error && <Banner variant="error" role="alert" description={error} />}
-			<div className="flex justify-end">
-				<Button type="submit" variant="primary" disabled={Boolean(pending)}>
-					{pending === "save" ? "Saving…" : "Save settings"}
-				</Button>
-			</div>
-		</form>
+				<SettingsSection id="files-card" title="Download card" description="How the File download block looks on the site.">
+					<div className="grid gap-4 sm:grid-cols-2">
+						<Select
+							label="Color scheme"
+							value={draft.filesScheme}
+							onValueChange={(value: string | null) => set({ filesScheme: value === "light" || value === "dark" ? value : "auto" })}
+							items={[
+								{ value: "auto", label: "Auto (follow the visitor's system setting)" },
+								{ value: "light", label: "Light" },
+								{ value: "dark", label: "Dark" },
+							]}
+						/>
+						<Input label="Accent color (optional)" placeholder="#007392" description="Hex color for the download button and focus ring. Empty uses the default." {...field("filesAccent")} />
+					</div>
+					<PreviewSection
+						id="files-card-preview"
+						title="Download card preview"
+						css={FILE_CSS}
+						html={renderFileCardHtml(SAMPLE_FILE, { scheme: draft.filesScheme, accent: draft.filesAccent })}
+						note="A sample file with every part of the block shown. Auto follows your computer's light or dark setting here, and each visitor's on the site."
+					/>
+				</SettingsSection>
+
+				<SettingsSection
+					id="files-r2"
+					title="Large uploads"
+					description={
+						<>
+							Files over 50 MB, or of any type, upload straight from the browser to R2 through its S3 API. Create an R2 API token with Object Read &amp; Write
+							on the bucket. R2 storage and operations are billed to your account.
+							{!props.largeUploadsEnabled && " Turn on Large uploads under Plugins → Coywolf Pack to use them."}
+						</>
+					}
+				>
+					<div className="grid gap-4 sm:grid-cols-2">
+						<Input label="R2 account ID" description="Your Cloudflare account ID (32 characters)." {...field("filesR2AccountId")} />
+						<Input label="R2 bucket name" placeholder="mysite-media" description="The bucket bound as MEDIA, unless you set a separate uploads binding." {...field("filesR2Bucket")} />
+						<Input label="R2 access key ID" autoComplete="off" {...field("filesR2AccessKeyId")} />
+						<SecretField
+							label="R2 secret access key"
+							saved={saved.r2SecretSet}
+							value={draft.filesR2SecretAccessKey}
+							onChange={(value) => set({ filesR2SecretAccessKey: value })}
+							description="Stored encrypted."
+							onClear={() => void save(true)}
+							clearing={pending === "clear"}
+							disabled={Boolean(pending)}
+						/>
+						<Input
+							type="number"
+							min={1}
+							max={5000}
+							label="Largest upload (GB)"
+							description="Larger uploads are refused. Default 5."
+							value={draft.filesMaxUploadGb}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ filesMaxUploadGb: e.target.value })}
+						/>
+					</div>
+					<CredentialGuide id="r2" />
+				</SettingsSection>
+
+				{error && <Banner variant="error" role="alert" description={error} />}
+			</form>
+			<SaveBar
+				form="cw-files-settings-form"
+				dirty={dirty}
+				saving={pending === "save"}
+				canSave={!pending}
+				onDiscard={() => apply(saved)}
+			/>
+		</>
 	);
 }
 

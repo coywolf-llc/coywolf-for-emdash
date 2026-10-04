@@ -8,6 +8,8 @@ import { ImageSquare, MagnifyingGlass, PencilSimple, Plus, Trash, TreeStructure 
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { SaveBar, isDirty } from "./save-bar.js";
+
 const API = "/_emdash/api/plugins/coywolf-pack/schema";
 
 type RowValue = string | Record<string, string>;
@@ -101,16 +103,12 @@ function Section(props: { title: string; description?: React.ReactNode; children
 	);
 }
 
-function SaveBar(props: { pending: boolean; onSave: () => void; label?: string; status?: string; disabled?: boolean }) {
+/** The last save's result ("Saved."), hidden again once there are new unsaved changes. */
+function SavedStatus(props: { status?: string; dirty: boolean }) {
 	return (
-		<div className="flex items-center justify-end gap-3">
-			<span className="text-sm text-kumo-subtle" aria-live="polite">
-				{props.status}
-			</span>
-			<Button variant="primary" disabled={props.pending || props.disabled} onClick={props.onSave}>
-				{props.pending ? "Saving…" : (props.label ?? "Save")}
-			</Button>
-		</div>
+		<p className="text-sm text-kumo-subtle" aria-live="polite">
+			{props.dirty ? "" : props.status}
+		</p>
 	);
 }
 
@@ -296,6 +294,7 @@ function SiteTab(props: { config: Config; bylines: Byline[] | undefined; onSaved
 	const [pending, setPending] = React.useState(false);
 	const [status, setStatus] = React.useState<string>();
 	const [error, setError] = React.useState<string>();
+	const dirty = isDirty(site, props.config.site);
 
 	const save = async () => {
 		setPending(true);
@@ -313,58 +312,61 @@ function SiteTab(props: { config: Config; bylines: Byline[] | undefined; onSaved
 	};
 
 	return (
-		<Section
-			title="Publisher"
-			description="Who publishes this site. It's the publisher of every article and the subject of the home page in the graph."
-		>
-			<Select
-				label="Publisher type"
-				value={site.publisherType}
-				onValueChange={(value: string | null) => setSite({ ...site, publisherType: value === "person" ? "person" : "organization" })}
-				items={[
-					{ value: "organization", label: "Organization" },
-					{ value: "person", label: "Person" },
-				]}
-			/>
-			{site.publisherType === "organization" ? (
-				<>
+		<div className="space-y-6">
+			<Section
+				title="Publisher"
+				description="Who publishes this site. It's the publisher of every article and the subject of the home page in the graph."
+			>
 				<Select
-					label="Organization type"
-					value={site.organizationType || "Organization"}
-					onValueChange={(value: string | null) => setSite({ ...site, organizationType: value || "Organization" })}
-					items={props.config.catalog.organizationTypes.map(([value, label]) => ({ value, label }))}
+					label="Publisher type"
+					value={site.publisherType}
+					onValueChange={(value: string | null) => setSite({ ...site, publisherType: value === "person" ? "person" : "organization" })}
+					items={[
+						{ value: "organization", label: "Organization" },
+						{ value: "person", label: "Person" },
+					]}
 				/>
-				<PropertyEditor
-					label="Organization"
-					rows={site.orgRows}
-					onChange={(orgRows) => setSite({ ...site, orgRows })}
-					properties={props.config.catalog.organization}
-					inputs={props.config.catalog.inputs}
-				/>
-				</>
-			) : (
-				<div className="space-y-2">
-					{props.bylines === undefined ? (
-						<Loader />
-					) : props.bylines.length === 0 ? (
-						<p className="text-sm text-kumo-subtle">Create a byline first (Content → Bylines).</p>
-					) : (
-						<Select
-							label="Person (byline)"
-							value={site.personBylineId ?? ""}
-							onValueChange={(value: string | null) => setSite({ ...site, personBylineId: value || null })}
-							items={[{ value: "", label: "Choose a byline" }, ...props.bylines.map((b) => ({ value: b.id, label: `${b.displayName} (${b.locale})` }))]}
-						/>
-					)}
-					<p className="text-sm text-kumo-subtle">The person's properties come from the Authors tab.</p>
-				</div>
-			)}
-			<p className="text-sm text-kumo-subtle">
-				Without a name, url or logo, the site title, site URL and site logo from EmDash's settings are used.
-			</p>
-			{error && <Banner variant="error" role="alert" description={error} />}
-			<SaveBar pending={pending} onSave={() => void save()} status={status} />
-		</Section>
+				{site.publisherType === "organization" ? (
+					<>
+					<Select
+						label="Organization type"
+						value={site.organizationType || "Organization"}
+						onValueChange={(value: string | null) => setSite({ ...site, organizationType: value || "Organization" })}
+						items={props.config.catalog.organizationTypes.map(([value, label]) => ({ value, label }))}
+					/>
+					<PropertyEditor
+						label="Organization"
+						rows={site.orgRows}
+						onChange={(orgRows) => setSite({ ...site, orgRows })}
+						properties={props.config.catalog.organization}
+						inputs={props.config.catalog.inputs}
+					/>
+					</>
+				) : (
+					<div className="space-y-2">
+						{props.bylines === undefined ? (
+							<Loader />
+						) : props.bylines.length === 0 ? (
+							<p className="text-sm text-kumo-subtle">Create a byline first (Content → Bylines).</p>
+						) : (
+							<Select
+								label="Person (byline)"
+								value={site.personBylineId ?? ""}
+								onValueChange={(value: string | null) => setSite({ ...site, personBylineId: value || null })}
+								items={[{ value: "", label: "Choose a byline" }, ...props.bylines.map((b) => ({ value: b.id, label: `${b.displayName} (${b.locale})` }))]}
+							/>
+						)}
+						<p className="text-sm text-kumo-subtle">The person's properties come from the Authors tab.</p>
+					</div>
+				)}
+				<p className="text-sm text-kumo-subtle">
+					Without a name, url or logo, the site title, site URL and site logo from EmDash's settings are used.
+				</p>
+				{error && <Banner variant="error" role="alert" description={error} />}
+				<SavedStatus status={status} dirty={dirty} />
+			</Section>
+			<SaveBar dirty={dirty} saving={pending} onSave={() => void save()} onDiscard={() => setSite(props.config.site)} />
+		</div>
 	);
 }
 
@@ -376,6 +378,7 @@ function TypesTab(props: { config: Config; onSaved: (types: Record<string, TypeC
 	const [pending, setPending] = React.useState(false);
 	const [status, setStatus] = React.useState<string>();
 	const [error, setError] = React.useState<string>();
+	const dirty = isDirty(types, config.types);
 	const pageItems = [{ value: "", label: "Default (Web Page)" }, ...config.catalog.pageTypes.map(([value, label]) => ({ value, label }))];
 	const articleItems = [
 		{ value: "", label: "Default (Blog Posting on article pages)" },
@@ -404,44 +407,47 @@ function TypesTab(props: { config: Config; onSaved: (types: Record<string, TypeC
 	};
 
 	return (
-		<Section
-			title="Page and article types"
-			description="The WebPage subtype and Article subtype for each kind of page. Override them for single entries on the Overrides tab."
-		>
-			<div className="rounded-lg border">
-				<div className="hidden items-center gap-4 border-b bg-kumo-tint/50 px-4 py-2 text-sm font-medium text-kumo-subtle md:flex">
-					<div className="flex-1">Pages</div>
-					<div className="w-60">Page type</div>
-					<div className="w-60">Article type</div>
-				</div>
-				{rows.map((row) => (
-					<div key={row.key} className="flex flex-col gap-2 border-b px-4 py-3 last:border-0 md:flex-row md:items-center md:gap-4">
-						<div className="min-w-0 flex-1">
-							<div className="text-sm font-medium">{row.label}</div>
-							<div className="truncate text-xs text-kumo-subtle">{row.hint}</div>
-						</div>
-						<div className="md:w-60">
-							<Select
-								aria-label={`${row.label} page type`}
-								value={types[row.key]?.pageType ?? ""}
-								onValueChange={(value: string | null) => set(row.key, { pageType: value || undefined })}
-								items={pageItems}
-							/>
-						</div>
-						<div className="md:w-60">
-							<Select
-								aria-label={`${row.label} article type`}
-								value={types[row.key]?.articleType ?? ""}
-								onValueChange={(value: string | null) => set(row.key, { articleType: value || undefined })}
-								items={articleItems}
-							/>
-						</div>
+		<div className="space-y-6">
+			<Section
+				title="Page and article types"
+				description="The WebPage subtype and Article subtype for each kind of page. Override them for single entries on the Overrides tab."
+			>
+				<div className="rounded-lg border">
+					<div className="hidden items-center gap-4 border-b bg-kumo-tint/50 px-4 py-2 text-sm font-medium text-kumo-subtle md:flex">
+						<div className="flex-1">Pages</div>
+						<div className="w-60">Page type</div>
+						<div className="w-60">Article type</div>
 					</div>
-				))}
-			</div>
-			{error && <Banner variant="error" role="alert" description={error} />}
-			<SaveBar pending={pending} onSave={() => void save()} status={status} />
-		</Section>
+					{rows.map((row) => (
+						<div key={row.key} className="flex flex-col gap-2 border-b px-4 py-3 last:border-0 md:flex-row md:items-center md:gap-4">
+							<div className="min-w-0 flex-1">
+								<div className="text-sm font-medium">{row.label}</div>
+								<div className="truncate text-xs text-kumo-subtle">{row.hint}</div>
+							</div>
+							<div className="md:w-60">
+								<Select
+									aria-label={`${row.label} page type`}
+									value={types[row.key]?.pageType ?? ""}
+									onValueChange={(value: string | null) => set(row.key, { pageType: value || undefined })}
+									items={pageItems}
+								/>
+							</div>
+							<div className="md:w-60">
+								<Select
+									aria-label={`${row.label} article type`}
+									value={types[row.key]?.articleType ?? ""}
+									onValueChange={(value: string | null) => set(row.key, { articleType: value || undefined })}
+									items={articleItems}
+								/>
+							</div>
+						</div>
+					))}
+				</div>
+				{error && <Banner variant="error" role="alert" description={error} />}
+				<SavedStatus status={status} dirty={dirty} />
+			</Section>
+			<SaveBar dirty={dirty} saving={pending} onSave={() => void save()} onDiscard={() => setTypes(config.types)} />
+		</div>
 	);
 }
 
@@ -458,6 +464,8 @@ function defaultRows(byline: Byline): Row[] {
 function AuthorsTab(props: { config: Config; bylines: Byline[] | undefined; authorsOn: boolean; reload: () => void }) {
 	const [selected, setSelected] = React.useState<string>();
 	const [rows, setRows] = React.useState<Row[]>([]);
+	// What the selected byline has saved, to tell when `rows` has unsaved changes.
+	const [baseline, setBaseline] = React.useState<Row[]>([]);
 	const [pending, setPending] = React.useState(false);
 	const [status, setStatus] = React.useState<string>();
 	const [error, setError] = React.useState<string>();
@@ -467,10 +475,14 @@ function AuthorsTab(props: { config: Config; bylines: Byline[] | undefined; auth
 		if (!selected && props.bylines?.length === 1) setSelected(props.bylines[0].id);
 	}, [props.bylines, selected]);
 	React.useEffect(() => {
-		setRows(byline ? (byline.rows ?? defaultRows(byline)) : []);
+		const initial = byline ? (byline.rows ?? defaultRows(byline)) : [];
+		setRows(initial);
+		setBaseline(initial);
 		setStatus(undefined);
 		setError(undefined);
 	}, [byline]);
+
+	const dirty = !!byline && isDirty(rows, baseline);
 
 	const save = async () => {
 		if (!byline) return;
@@ -478,7 +490,9 @@ function AuthorsTab(props: { config: Config; bylines: Byline[] | undefined; auth
 		setError(undefined);
 		try {
 			const result = await post<{ rows: Row[] }>("authors/save", { bylineId: byline.id, rows });
-			setRows(result.rows.length ? result.rows : defaultRows(byline));
+			const next = result.rows.length ? result.rows : defaultRows(byline);
+			setRows(next);
+			setBaseline(next);
 			setStatus("Saved.");
 			props.reload();
 		} catch (cause) {
@@ -496,39 +510,49 @@ function AuthorsTab(props: { config: Config; bylines: Byline[] | undefined; auth
 		);
 
 	return (
-		<Section
-			title="Authors"
-			description="Schema.org Person properties for each byline, used as the author of articles they're credited on (and as the publisher, if it's a person). Unsaved bylines use their name, website, bio and avatar."
-		>
-			{!props.authorsOn && (
-				<Banner variant="default" role="status" description="Turn on Author profiles (Features → Schema & Social) to save and use these properties." />
-			)}
-			{props.bylines.length === 0 ? (
-				<p className="text-sm text-kumo-subtle">No bylines yet.</p>
-			) : (
-				<Select
-					label="Byline"
-					value={selected ?? ""}
-					onValueChange={(value: string | null) => setSelected(value || undefined)}
-					items={[
-						{ value: "", label: "Choose a byline" },
-						...props.bylines.map((b) => ({ value: b.id, label: `${b.displayName} (${b.locale})${b.rows ? " ✓" : ""}` })),
-					]}
-				/>
-			)}
-			{byline && (
-				<>
-					<PropertyEditor label={byline.displayName} rows={rows} onChange={setRows} properties={props.config.catalog.person} inputs={props.config.catalog.inputs} />
-					{error && <Banner variant="error" role="alert" description={error} />}
-					<div className="flex items-center justify-between gap-2">
-						<Button variant="ghost" onClick={() => setRows(defaultRows(byline))}>
-							Reset to byline details
-						</Button>
-						<SaveBar pending={pending} disabled={!props.authorsOn} onSave={() => void save()} status={status} />
-					</div>
-				</>
-			)}
-		</Section>
+		<div className="space-y-6">
+			<Section
+				title="Authors"
+				description="Schema.org Person properties for each byline, used as the author of articles they're credited on (and as the publisher, if it's a person). Unsaved bylines use their name, website, bio and avatar."
+			>
+				{!props.authorsOn && (
+					<Banner variant="default" role="status" description="Turn on Author profiles (Features → Schema & Social) to save and use these properties." />
+				)}
+				{props.bylines.length === 0 ? (
+					<p className="text-sm text-kumo-subtle">No bylines yet.</p>
+				) : (
+					<Select
+						label="Byline"
+						value={selected ?? ""}
+						onValueChange={(value: string | null) => setSelected(value || undefined)}
+						items={[
+							{ value: "", label: "Choose a byline" },
+							...props.bylines.map((b) => ({ value: b.id, label: `${b.displayName} (${b.locale})${b.rows ? " ✓" : ""}` })),
+						]}
+					/>
+				)}
+				{byline && (
+					<>
+						<PropertyEditor label={byline.displayName} rows={rows} onChange={setRows} properties={props.config.catalog.person} inputs={props.config.catalog.inputs} />
+						{error && <Banner variant="error" role="alert" description={error} />}
+						<div className="flex items-center justify-between gap-2">
+							<Button variant="ghost" onClick={() => setRows(defaultRows(byline))}>
+								Reset to byline details
+							</Button>
+							<SavedStatus status={status} dirty={dirty} />
+						</div>
+					</>
+				)}
+			</Section>
+			<SaveBar
+				dirty={dirty}
+				saving={pending}
+				canSave={props.authorsOn}
+				detail={props.authorsOn ? undefined : "Turn on Author profiles to save"}
+				onSave={() => void save()}
+				onDiscard={() => setRows(baseline)}
+			/>
+		</div>
 	);
 }
 
@@ -786,6 +810,7 @@ function SettingsTab(props: { config: Config; onSaved: (settings: Config["settin
 	const [pending, setPending] = React.useState(false);
 	const [status, setStatus] = React.useState<string>();
 	const [error, setError] = React.useState<string>();
+	const dirty = isDirty(values, props.config.settings);
 	const str = (key: string) => String(values[key] ?? "");
 	const set = (key: string, value: string | number | boolean) => setValues((v) => ({ ...v, [key]: value }));
 	const text = (key: string, label: string, placeholder?: string, description?: string) => (
@@ -862,7 +887,8 @@ function SettingsTab(props: { config: Config; onSaved: (settings: Config["settin
 				{text("schemaOgLocale", "og:locale", "en_US", "Leave empty to derive it from the site locale.")}
 			</Section>
 			{error && <Banner variant="error" role="alert" description={error} />}
-			<SaveBar pending={pending} onSave={() => void save()} status={status} />
+			<SavedStatus status={status} dirty={dirty} />
+			<SaveBar dirty={dirty} saving={pending} onSave={() => void save()} onDiscard={() => setValues(props.config.settings)} />
 		</div>
 	);
 }

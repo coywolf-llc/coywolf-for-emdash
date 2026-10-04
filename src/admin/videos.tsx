@@ -19,6 +19,7 @@ import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
 import { CredentialGuide } from "./guides.js";
+import { SaveBar, isDirty } from "./save-bar.js";
 import { SecretField, SettingsSection, SetupCard } from "./settings-ui.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/videos";
@@ -542,9 +543,10 @@ function SettingsPanel(props: { onSaved: (message: string) => void }) {
 	const [draft, setDraft] = React.useState({ accountId: "", token: "", customerSubdomain: "", accentColor: "", backgroundColor: "" });
 	const [pending, setPending] = React.useState<"save" | "clear">();
 	const [error, setError] = React.useState<string>();
+	const toDraft = (s: VideosSettings) => ({ accountId: s.accountId, token: "", customerSubdomain: s.customerSubdomain, accentColor: s.accentColor, backgroundColor: s.backgroundColor });
 	const apply = (s: VideosSettings) => {
 		setSaved(s);
-		setDraft({ accountId: s.accountId, token: "", customerSubdomain: s.customerSubdomain, accentColor: s.accentColor, backgroundColor: s.backgroundColor });
+		setDraft(toDraft(s));
 	};
 	React.useEffect(() => {
 		loadSettings()
@@ -578,54 +580,60 @@ function SettingsPanel(props: { onSaved: (message: string) => void }) {
 		disabled: Boolean(pending),
 		onChange: (e: React.ChangeEvent<HTMLInputElement>) => set({ [key]: e.target.value }),
 	});
+	const dirty = isDirty(draft, toDraft(saved));
 	return (
-		<form
-			className="space-y-6"
-			onSubmit={(e) => {
-				e.preventDefault();
-				void save();
-			}}
-		>
-			<SettingsSection
-				id="videos-connection"
-				title="Cloudflare Stream connection"
-				description="The account that holds your Stream library and an API token with Account → Stream → Edit. Empty fields fall back to the CF_ACCOUNT_ID and CF_STREAM_TOKEN Worker variables."
+		<>
+			<form
+				id="cw-videos-settings-form"
+				className="space-y-6"
+				onSubmit={(e) => {
+					e.preventDefault();
+					void save();
+				}}
 			>
-				<div className="grid gap-4 sm:grid-cols-2">
-					<Input label="Cloudflare account ID" description={saved.envAccountId ? "CF_ACCOUNT_ID is set; it's used when this is empty." : undefined} {...text("accountId")} />
-					<SecretField
-						label="Stream API token"
-						saved={saved.tokenSet}
-						value={draft.token}
-						onChange={(value) => set({ token: value })}
-						description={saved.envToken ? "CF_STREAM_TOKEN is set; it's used when no token is saved here." : "Stored encrypted."}
-						onClear={() => void save(true)}
-						clearing={pending === "clear"}
-						disabled={Boolean(pending)}
-					/>
-				</div>
-				<CredentialGuide id="stream" />
-			</SettingsSection>
-			<SettingsSection id="videos-player" title="Player" description="How the Coywolf Video block's player looks and where it loads from.">
-				<div className="grid gap-4 sm:grid-cols-2">
-					<Input
-						label="Stream customer subdomain"
-						placeholder="customer-abc123.cloudflarestream.com"
-						description="Stream → any video → Embed. Learned from the library automatically when empty."
-						{...text("customerSubdomain")}
-					/>
-					<div aria-hidden="true" className="hidden sm:block" />
-					<Input label="Accent color" placeholder="#f6821f" description="Play button and progress bar. Empty uses Stream's default." {...text("accentColor")} />
-					<Input label="Background color" placeholder="#000000" description="Behind letterboxed videos. Empty is transparent." {...text("backgroundColor")} />
-				</div>
-			</SettingsSection>
-			{error && <Banner variant="error" role="alert" description={error} />}
-			<div className="flex justify-end">
-				<Button type="submit" variant="primary" disabled={Boolean(pending)}>
-					{pending === "save" ? "Saving…" : "Save settings"}
-				</Button>
-			</div>
-		</form>
+				<SettingsSection
+					id="videos-connection"
+					title="Cloudflare Stream connection"
+					description="The account that holds your Stream library and an API token with Account → Stream → Edit. Empty fields fall back to the CF_ACCOUNT_ID and CF_STREAM_TOKEN Worker variables."
+				>
+					<div className="grid gap-4 sm:grid-cols-2">
+						<Input label="Cloudflare account ID" description={saved.envAccountId ? "CF_ACCOUNT_ID is set; it's used when this is empty." : undefined} {...text("accountId")} />
+						<SecretField
+							label="Stream API token"
+							saved={saved.tokenSet}
+							value={draft.token}
+							onChange={(value) => set({ token: value })}
+							description={saved.envToken ? "CF_STREAM_TOKEN is set; it's used when no token is saved here." : "Stored encrypted."}
+							onClear={() => void save(true)}
+							clearing={pending === "clear"}
+							disabled={Boolean(pending)}
+						/>
+					</div>
+					<CredentialGuide id="stream" />
+				</SettingsSection>
+				<SettingsSection id="videos-player" title="Player" description="How the Coywolf Video block's player looks and where it loads from.">
+					<div className="grid gap-4 sm:grid-cols-2">
+						<Input
+							label="Stream customer subdomain"
+							placeholder="customer-abc123.cloudflarestream.com"
+							description="Stream → any video → Embed. Learned from the library automatically when empty."
+							{...text("customerSubdomain")}
+						/>
+						<div aria-hidden="true" className="hidden sm:block" />
+						<Input label="Accent color" placeholder="#f6821f" description="Play button and progress bar. Empty uses Stream's default." {...text("accentColor")} />
+						<Input label="Background color" placeholder="#000000" description="Behind letterboxed videos. Empty is transparent." {...text("backgroundColor")} />
+					</div>
+				</SettingsSection>
+				{error && <Banner variant="error" role="alert" description={error} />}
+			</form>
+			<SaveBar
+				form="cw-videos-settings-form"
+				dirty={dirty}
+				saving={pending === "save"}
+				canSave={!pending}
+				onDiscard={() => apply(saved)}
+			/>
+		</>
 	);
 }
 
