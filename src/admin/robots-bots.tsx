@@ -524,7 +524,7 @@ function RadarCard(props: { radar: RadarInfo; onRadar: (r: Partial<RadarInfo>) =
 			await props.onReload();
 		} catch (cause) {
 			const m = errorText(cause, "Radar sync failed");
-			setError(/turned off/i.test(m) ? "Turn on “Weekly crawler list from Cloudflare Radar” under Coywolf Pack → Features first." : m);
+			setError(/turned off/i.test(m) ? "Turn on “Weekly crawler list from Cloudflare Radar” on Plugins → Coywolf Pack first." : m);
 		} finally {
 			setSyncing(false);
 		}
@@ -564,14 +564,14 @@ function RadarCard(props: { radar: RadarInfo; onRadar: (r: Partial<RadarInfo>) =
 								? `Last sync ${dateFormat.format(new Date(r.state.at))}: ${r.state.total} bots, ${r.state.added} new.`
 								: `Last sync failed ${dateFormat.format(new Date(r.state.at))}: ${r.state.error}`
 							: "Token set; no sync has run yet."}{" "}
-						{r.tokenSource === "env" && "Using the RADAR_API_TOKEN Worker secret."} Turn on “Weekly crawler list from Cloudflare Radar” under Features to refresh it every week.
+						{r.tokenSource === "env" && "Using the RADAR_API_TOKEN Worker secret."} Turn on “Weekly crawler list from Cloudflare Radar” on Plugins → Coywolf Pack to refresh it every week.
 					</p>
 					{editing && <RadarTokenForm source={r.tokenSource} onChanged={changed} onCancel={() => setEditing(false)} />}
 				</>
 			) : (
 				<SetupCard
 					title="Add a Cloudflare Radar API token to keep this list current"
-					description="Optional. With a token, Refresh from Radar updates the crawler list now, and the weekly sync (under Features) keeps it current. Or set the RADAR_API_TOKEN Worker secret."
+					description="Optional. With a token, Refresh from Radar updates the crawler list now, and the weekly sync (on Plugins → Coywolf Pack) keeps it current. Or set the RADAR_API_TOKEN Worker secret."
 				>
 					<RadarTokenForm source={r.tokenSource} onChanged={changed} />
 				</SetupCard>

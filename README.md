@@ -210,7 +210,7 @@ Paste the output into **Redirects → Import**.
 
 ## Headings & TOC
 
-Ported from Coywolf SEO. Off until you turn it on under **Features**:
+Ported from Coywolf SEO. Off until you turn it on under **Plugins → Coywolf Pack**:
 
 | Feature | Default | What it does |
 | --- | --- | --- |
@@ -246,7 +246,7 @@ If you already pass components, merge them: `components={{ ...portableTextCompon
 
 ## Breadcrumb Nav
 
-An accessible breadcrumb trail (`<nav aria-label="Breadcrumb">` around an `<ol>`, `aria-current="page"` on the current page, separators in CSS that screen readers skip), as a component for theme layouts and as a **Breadcrumbs** block for content. Off until you turn it on under **Features**:
+An accessible breadcrumb trail (`<nav aria-label="Breadcrumb">` around an `<ol>`, `aria-current="page"` on the current page, separators in CSS that screen readers skip), as a component for theme layouts and as a **Breadcrumbs** block for content. Off until you turn it on under **Plugins → Coywolf Pack**:
 
 | Feature | Default | What it does |
 | --- | --- | --- |
@@ -370,7 +370,7 @@ Nothing beyond the plugin itself: the block renderer is registered through the p
 
 ## Schema & Social
 
-The structured data and social tags from Coywolf SEO for WordPress, configured on **Plugins → Schema**. Everything is off until you turn it on under **Features → Schema & Social**:
+The structured data and social tags from Coywolf SEO for WordPress, configured on **Plugins → Schema**. Everything is off until you turn it on under **Plugins → Coywolf Pack → Schema & Social**:
 
 | Feature | What it does |
 | --- | --- |
@@ -524,7 +524,7 @@ Set `ai: false` in `coywolfPlugin()` to leave the module out entirely. The modul
 - Wikidata lookups are cached per Worker isolate. If Wikidata doesn't answer, the item is retried rather than saved unverified.
 ## Discovery
 
-Help search engines and AI agents find your content. Ported from Coywolf SEO for WordPress. Everything is off until you turn it on under **Features**: the **Discovery** switch, then any of its three parts. Settings and status are under **Plugins → Coywolf Pack → Discovery**.
+Help search engines and AI agents find your content. Ported from Coywolf SEO for WordPress. Everything is off until you turn it on under **Plugins → Coywolf Pack**: the **Discovery** switch, then any of its three parts. Settings and status are under **Plugins → Coywolf Pack → Discovery**.
 
 | Feature switch | Default | What it does |
 | --- | --- | --- |
