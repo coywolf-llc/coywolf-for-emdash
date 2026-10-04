@@ -2,10 +2,13 @@
  * Redirects admin page, styled like the EmDash admin's own Redirects page.
  */
 import { Badge, Banner, Button, Checkbox, Dialog, DropdownMenu, Input, InputArea, Loader, Select } from "@cloudflare/kumo";
-import { ArrowRight, ArrowsSplit, DotsThree, PencilSimple, Plus, Trash, UploadSimple } from "@phosphor-icons/react";
+import { ArrowRight, ArrowsSplit, DotsThree, DownloadSimple, FileArrowUp, PencilSimple, Plus, Trash, UploadSimple } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { parseRedirectsImport, redirectsToCsv, redirectsToJson } from "../redirects/transfer.js";
+import type { RedirectRule } from "../redirects/rules.js";
+import { saveFile, siteSlug, today } from "./download.js";
 import { RemovedContentPanel } from "./redirects-removed.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/redirects";
@@ -45,22 +48,13 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 	return parseApiResponse<T>(response, "The request failed");
 }
 
-/** Parse pasted rules: JSON array, or tab/comma-separated rows (source, target, type, is_regex), e.g. a WordPress export. */
-function parseImport(text: string): RuleDraft[] {
-	const trimmed = text.trim();
-	if (!trimmed) return [];
-	if (trimmed.startsWith("[")) return JSON.parse(trimmed) as RuleDraft[];
-	const rows = trimmed.split(/\r?\n/).map((line) => line.split(line.includes("\t") ? "\t" : ",").map((c) => c.trim()));
-	const header = rows[0].map((c) => c.toLowerCase());
-	const hasHeader = header.includes("source");
-	const col = (name: string, fallback: number) => (hasHeader ? header.indexOf(name) : fallback);
-	const [s, t, ty, rx] = [col("source", 0), col("target", 1), col("type", 2), col("is_regex", 3)];
-	return rows.slice(hasHeader ? 1 : 0).map((r) => ({
-		source: r[s],
-		target: r[t] ?? "",
-		type: r[ty] ? Number(r[ty]) : 301,
-		isRegex: rx >= 0 && (r[rx] === "1" || r[rx]?.toLowerCase() === "true"),
-	}));
+/** Download every rule (not just the filtered ones) in a format Import reads back. */
+async function exportRules(format: "csv" | "json"): Promise<number> {
+	const { items } = await parseApiResponse<{ items: RedirectRule[] }>(await apiFetch(`${API}/list`), "Could not load redirects");
+	const name = `redirects-${siteSlug() || "site"}-${today()}`;
+	if (format === "csv") saveFile(redirectsToCsv(items), `${name}.csv`, "text/csv");
+	else saveFile(redirectsToJson(items), `${name}.json`, "application/json");
+	return items.length;
 }
 
 function RuleDialog(props: { rule: RuleDraft | null; onClose: () => void; onSaved: () => void }) {
@@ -158,12 +152,13 @@ function ImportDialog(props: { open: boolean; onClose: () => void; onImported: (
 	const [text, setText] = React.useState("");
 	const [pending, setPending] = React.useState(false);
 	const [error, setError] = React.useState<string>();
+	const fileRef = React.useRef<HTMLInputElement>(null);
 	const run = async () => {
 		setPending(true);
 		setError(undefined);
 		try {
-			const rules = parseImport(text);
-			if (!rules.length) throw new Error("Paste at least one rule.");
+			const rules = parseRedirectsImport(text);
+			if (!rules.length) throw new Error("Paste or choose at least one rule.");
 			const result = await post<{ imported: number }>("import", { rules });
 			setText("");
 			props.onImported(result.imported);
@@ -178,9 +173,9 @@ function ImportDialog(props: { open: boolean; onClose: () => void; onImported: (
 			<Dialog className="p-6" size="lg">
 				<Dialog.Title className="text-lg font-semibold">Import redirects</Dialog.Title>
 				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">
-					Paste a JSON array, or rows of <code>source, target, type, is_regex</code> separated by tabs or commas (a header
-					row is optional). A Coywolf SEO export from WordPress works as is. Existing rules with the same source are
-					updated.
+					Paste or choose a file: an Export from this page (CSV or JSON), a JSON array, or rows of{" "}
+					<code>source, target, type, is_regex</code> separated by tabs or commas (a header row is optional). A Coywolf SEO
+					export from WordPress works as is. Existing rules with the same source are updated.
 				</Dialog.Description>
 				<div className="mt-4">
 					<InputArea
@@ -192,7 +187,23 @@ function ImportDialog(props: { open: boolean; onClose: () => void; onImported: (
 					/>
 				</div>
 				{error && <Banner variant="error" role="alert" className="mt-3 whitespace-pre-line" description={error} />}
-				<div className="mt-6 flex justify-end gap-2">
+				<div className="mt-6 flex flex-wrap justify-end gap-2">
+					<Button className="me-auto" variant="secondary" icon={<FileArrowUp />} disabled={pending} onClick={() => fileRef.current?.click()}>
+						Choose file…
+					</Button>
+					<input
+						ref={fileRef}
+						type="file"
+						accept=".csv,.tsv,.txt,.json,text/csv,text/plain,application/json"
+						className="sr-only"
+						tabIndex={-1}
+						aria-hidden="true"
+						onChange={(e) => {
+							const file = e.target.files?.[0];
+							e.target.value = "";
+							if (file) void file.text().then(setText, () => setError("Could not read that file."));
+						}}
+					/>
 					<Button variant="secondary" disabled={pending} onClick={props.onClose}>
 						Cancel
 					</Button>
@@ -239,6 +250,15 @@ export function RedirectsPage() {
 		}
 	};
 
+	const runExport = async (format: "csv" | "json") => {
+		try {
+			const count = await exportRules(format);
+			setNotice(`Exported ${count} ${count === 1 ? "redirect" : "redirects"}. Import the file on any site to bring them back.`);
+		} catch (cause) {
+			setError(errorText(cause, "Export failed"));
+		}
+	};
+
 	const test = async () => {
 		try {
 			const result = await post<{ matched: boolean; rule?: Rule; location?: string }>("test", { url: testUrl });
@@ -268,6 +288,23 @@ export function RedirectsPage() {
 						<Button variant="secondary" icon={<UploadSimple />} onClick={() => setImporting(true)}>
 							Import
 						</Button>
+						<DropdownMenu>
+							<DropdownMenu.Trigger
+								render={
+									<Button variant="secondary" icon={<DownloadSimple />} disabled={!rules?.length}>
+										Export
+									</Button>
+								}
+							/>
+							<DropdownMenu.Content className="p-1">
+								<DropdownMenu.Item className="py-1 data-highlighted:bg-kumo-fill" onClick={() => void runExport("csv")}>
+									CSV (spreadsheets)
+								</DropdownMenu.Item>
+								<DropdownMenu.Item className="py-1 data-highlighted:bg-kumo-fill" onClick={() => void runExport("json")}>
+									JSON
+								</DropdownMenu.Item>
+							</DropdownMenu.Content>
+						</DropdownMenu>
 						<Button variant="primary" icon={<Plus />} onClick={() => setEditing({})}>
 							New redirect
 						</Button>

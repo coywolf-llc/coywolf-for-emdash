@@ -2,10 +2,11 @@
  * Backups module: D1 dumps + R2 media mirror, with rewind (D1 Time Travel),
  * undo, restore to a new database, and missing-media restore.
  */
-import { PluginRouteError, definePluginRoute, pluginResponse } from "emdash";
+import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
 import { type CronScheduler, type SettingsReader, parseInput, secret, workerEnv } from "../shared.js";
+import { createDownloadLink } from "./download.js";
 import { dumpDatabase } from "./dump.js";
 import {
 	type RestoreConfig,
@@ -223,23 +224,21 @@ export function backupsModule(options: BackupsOptions) {
 			},
 		}),
 
-		"backups/download": definePluginRoute({
+		/**
+		 * A ten-minute link that streams one backup file (see ./download.ts).
+		 * The file is a gzipped SQL dump that restores into any D1 database.
+		 */
+		"backups/download-link": definePluginRoute({
 			permission: "plugins:manage",
-			methods: ["GET"],
-			request: { body: "none" },
-			input: z.object({ stamp: z.string().regex(STAMP), file: z.string().regex(FILE) }),
-			response: "raw",
+			methods: ["POST"],
+			request: { body: "json" },
 			handler: async (ctx) => {
+				const input = parseInput(z.object({ stamp: z.string().regex(STAMP), file: z.string().regex(FILE) }), ctx.input);
 				const { backups } = await bindings();
-				const object = await backups.get(`d1/${ctx.input.stamp}/${ctx.input.file}`);
-				if (!object) return pluginResponse({ status: 404, body: { kind: "text", value: "Backup not found" } });
-				return pluginResponse({
-					headers: {
-						"content-type": object.httpMetadata?.contentType ?? "application/octet-stream",
-						"content-disposition": `attachment; filename="${name}-${ctx.input.stamp}-${ctx.input.file}"`,
-					},
-					body: { kind: "bytes", value: new Uint8Array(await object.arrayBuffer()) },
-				});
+				const link = await createDownloadLink(backups, input.stamp, input.file);
+				if (!link) throw PluginRouteError.notFound("Backup file not found");
+				ctx.log.info("Backup download link created", { stamp: input.stamp, file: input.file });
+				return link;
 			},
 		}),
 	};

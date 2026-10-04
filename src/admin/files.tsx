@@ -4,12 +4,14 @@
  * and delete.
  */
 import { Badge, Banner, Button, Dialog, DropdownMenu, Input, Loader, Meter, Select, Tabs } from "@cloudflare/kumo";
-import { ArrowsClockwise, CloudArrowUp, DotsThree, FileArrowDown, LinkSimple, ShieldCheck, Trash, X } from "@phosphor-icons/react";
+import { ArrowsClockwise, CloudArrowUp, DotsThree, DownloadSimple, FileArrowDown, LinkSimple, ShieldCheck, Trash, X } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
 import { FILE_CSS, SAMPLE_FILE, renderFileCardHtml } from "../files/card.js";
+import { filesToCsv } from "../files/export.js";
 import { formatSize, iconFor } from "../files/format.js";
+import { saveFile, siteSlug, today } from "./download.js";
 import { CredentialGuide } from "./guides.js";
 import { PreviewSection } from "./preview.js";
 import { SecretField, SettingsSection, SetupCard } from "./settings-ui.js";
@@ -518,6 +520,14 @@ export function FilesPage() {
 		}
 	};
 
+	/** All files (not just the filtered ones), newest first. */
+	const exportCsv = () => {
+		if (!data) return;
+		const files = [...data.items].sort((a, b) => (b.uploadedAt ?? "").localeCompare(a.uploadedAt ?? ""));
+		saveFile(filesToCsv(files, window.location.origin), `files-${siteSlug() || "site"}-${today()}.csv`, "text/csv");
+		setNotice(`Exported ${files.length.toLocaleString()} ${files.length === 1 ? "file" : "files"}.`);
+	};
+
 	const copy = async (file: FileItem) => {
 		if (!file.url) return;
 		try {
@@ -541,6 +551,11 @@ export function FilesPage() {
 				<div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1">
 					<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Files</h1>
 					<div className="flex shrink-0 flex-wrap justify-end gap-2">
+						{tab === "files" && (
+							<Button variant="secondary" icon={<DownloadSimple />} disabled={!data?.items.length} title="Download the list of files, with download counts and where each is used, as a CSV file" onClick={exportCsv}>
+								Export CSV
+							</Button>
+						)}
 						{tab === "files" && (
 							<Button variant="secondary" icon={<ArrowsClockwise />} disabled={!!busy} onClick={() => void reindex()}>
 								{busy === "reindex" ? "Rebuilding…" : "Rebuild usage"}
