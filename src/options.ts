@@ -2,6 +2,7 @@ import type { BackupsOptions } from "./backups/module.js";
 import type { HeadingsOptions } from "./headings/pack.js";
 import type { CodeBlocksOptions } from "./codeBlocks/pack.js";
 import type { RedirectsOptions } from "./redirects/module.js";
+import type { SchemaOptions } from "./schema/module.js";
 
 /**
  * Modules to include in the build. Backups needs its bindings, so it's
@@ -13,4 +14,5 @@ export interface CoywolfOptions {
 	redirects?: RedirectsOptions | false;
 	headings?: HeadingsOptions | false;
 	codeBlocks?: CodeBlocksOptions | false;
+	schema?: SchemaOptions | false;
 }

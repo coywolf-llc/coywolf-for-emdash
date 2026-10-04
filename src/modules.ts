@@ -8,6 +8,7 @@ import { codeBlocksPack } from "./codeBlocks/pack.js";
 import type { PackMiddleware, PackModule } from "./core/module.js";
 import { headingsPack } from "./headings/pack.js";
 import { redirectsMiddleware, redirectsPack } from "./redirects/pack.js";
+import { schemaPack } from "./schema/pack.js";
 import type { CoywolfOptions } from "./options.js";
 
 type Factory = (options: CoywolfOptions) => PackModule | null;
@@ -17,6 +18,7 @@ export const MODULES: Factory[] = [
 	(o) => (o.redirects === false ? null : redirectsPack(o.redirects ?? {})),
 	(o) => (o.headings === false ? null : headingsPack(o.headings ?? {})),
 	(o) => (o.codeBlocks === false ? null : codeBlocksPack(o.codeBlocks ?? {})),
+	(o) => (o.schema === false ? null : schemaPack(o.schema ?? {})),
 ];
 
 export const MIDDLEWARE: PackMiddleware[] = [redirectsMiddleware];
