@@ -42,10 +42,19 @@ export interface CoywolfOptions {
 	wpImport?: Record<string, never> | false;
 	/**
 	 * Entry URL patterns for collections the theme routes differently from
-	 * EmDash's url_pattern, e.g. `{ posts: "/{term:category|uncategorized}/{slug}/" }`.
+	 * EmDash's url_pattern, e.g. `{ posts: "/{term:category|uncategorized}/{slug}/" }`
+	 * or, with parent categories in the path, `{ posts: "/{termpath:category|uncategorized}/{slug}/" }`.
 	 * Used by every module that builds entry URLs (see README, "Content URLs").
 	 */
 	urls?: Record<string, string>;
 	/** Trailing-slash policy for entry URLs. Default: EmDash's (Astro's `trailingSlash`). */
 	trailingSlash?: TrailingSlash;
+	/**
+	 * Parent terms for `{termpath:<taxonomy>}` URLs, taxonomy → term slug →
+	 * parent slug, e.g. `{ category: { seo: "news" } }`. Used only for terms
+	 * that have no parent in EmDash.
+	 */
+	termParents?: Record<string, Record<string, string>>;
+	/** Parent pages for `{pagepath}` URLs, slug → parent slug, e.g. `{ "coywolf-seo": "apps" }`. EmDash entries have no parent of their own. */
+	pageParents?: Record<string, string>;
 }

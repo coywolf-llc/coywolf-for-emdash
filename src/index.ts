@@ -29,7 +29,7 @@ export type { RobotsOptions } from "./robots/module.js";
 export type { CoywolfOptions } from "./options.js";
 export type { ContentUrlOptions, TrailingSlash } from "./core/content-url.js";
 
-const VERSION = "0.12.1";
+const VERSION = "0.13.0";
 const PACKAGE = "@coywolf/emdash";
 
 const FEATURES_PAGE = { path: "/features", label: "Coywolf Pack", icon: "toggle-right" };
@@ -37,7 +37,7 @@ const FEATURES_PAGE = { path: "/features", label: "Coywolf Pack", icon: "toggle-
 function buildModules(options: CoywolfOptions): PackModule[] {
 	// Module-level, like the search rate limit: createPlugin() runs when the Worker isolate
 	// starts (virtual:emdash/plugins), so middleware and Astro components see it too.
-	configureContentUrls({ urls: options.urls, trailingSlash: options.trailingSlash });
+	configureContentUrls({ urls: options.urls, trailingSlash: options.trailingSlash, termParents: options.termParents, pageParents: options.pageParents });
 	return MODULES.map((factory) => factory(options)).filter((m): m is PackModule => m !== null);
 }
 
