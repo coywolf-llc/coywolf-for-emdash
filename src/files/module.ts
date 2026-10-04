@@ -28,6 +28,9 @@ export const LARGE_UPLOADS_FEATURE = "files.largeUploads";
 export const COUNTS_FEATURE = "files.counts";
 
 const MAX_UPLOAD = 5 * 1024 ** 4; // R2's object limit (just under 5 TiB).
+const DEFAULT_MAX_UPLOAD_GB = 5;
+const STALE_UPLOAD_MS = 24 * 60 * 60 * 1000;
+export const CLEANUP_TASK = "files-abort-stale-uploads";
 
 export const filesSettingsSchema = {
 	filesBase: {
@@ -58,6 +61,14 @@ export const filesSettingsSchema = {
 		label: "File Downloads: accent color",
 		description: "Hex color for the download button and focus ring, e.g. #007392. Leave empty for the default.",
 		default: "",
+	},
+	filesMaxUploadGb: {
+		type: "number" as const,
+		label: "File Downloads: largest upload (GB)",
+		description: "Large uploads bigger than this are refused. R2 storage and operations are billed to your account.",
+		min: 1,
+		max: 5000,
+		default: 5,
 	},
 	filesR2AccountId: {
 		type: "string" as const,
@@ -187,6 +198,36 @@ export async function unindexEntry(ctx: PluginContext, collection: string, entry
 	const usage = col<UsageDoc>(ctx, COLLECTIONS.usage);
 	const rows = await queryAll(usage, { entryKey: `${collection}:${entryId}` }, 5);
 	if (rows.length) await usage.deleteMany(rows.map((r) => r.id));
+}
+
+// ── Cleanup ──────────────────────────────────────────────────────
+
+/** Abort multipart uploads that started more than a day ago and never finished, and drop their records. */
+export async function abortStaleUploads(ctx: PluginContext): Promise<number> {
+	const uploads = col<UploadDoc>(ctx, COLLECTIONS.uploads);
+	const cutoff = Date.now() - STALE_UPLOAD_MS;
+	const stale = (await queryAll(uploads, { status: "uploading" }, 10)).filter((row) => Date.parse(row.data.uploadedAt) < cutoff);
+	if (!stale.length) return 0;
+	let r2: Awaited<ReturnType<typeof client>> | null = null;
+	try {
+		r2 = await client(ctx);
+	} catch (error) {
+		ctx.log.warn("Stale uploads: R2 credentials missing; dropping records only (an R2 lifecycle rule cleans up the parts)", {
+			error: String(error instanceof Error ? error.message : error),
+		});
+	}
+	let removed = 0;
+	for (const { id, data } of stale) {
+		try {
+			if (r2 && data.uploadId) await r2.abortMultipart(data.key, data.uploadId);
+			await uploads.delete(id);
+			removed++;
+		} catch (error) {
+			ctx.log.warn("Could not abort a stale upload", { id, error: String(error instanceof Error ? error.message : error) });
+		}
+	}
+	ctx.log.info("Stale uploads aborted", { removed });
+	return removed;
 }
 
 // ── Routes ───────────────────────────────────────────────────────
@@ -398,7 +439,7 @@ export function filesModule(options: FilesOptions) {
 		// ── Large uploads ──
 
 		"files/upload-start": definePluginRoute({
-			permission: "media:upload",
+			permission: "plugins:manage",
 			methods: ["POST"],
 			request: { body: "json" },
 			handler: async (ctx) => {
@@ -411,6 +452,9 @@ export function filesModule(options: FilesOptions) {
 					}),
 					ctx.input,
 				);
+				const maxGb = (await ctx.settings.get<number>("filesMaxUploadGb")) ?? DEFAULT_MAX_UPLOAD_GB;
+				if (input.size > maxGb * 1024 ** 3)
+					throw PluginRouteError.badRequest(`That file is ${formatSize(input.size)}; the limit is ${maxGb} GB (File Downloads settings).`);
 				const r2 = await client(ctx);
 				const id = newUploadId();
 				const key = `files/${id}/${safeFilename(input.name)}`;
@@ -434,7 +478,7 @@ export function filesModule(options: FilesOptions) {
 		}),
 
 		"files/upload-sign": definePluginRoute({
-			permission: "media:upload",
+			permission: "plugins:manage",
 			methods: ["POST"],
 			request: { body: "json" },
 			handler: async (ctx) => {
@@ -448,7 +492,7 @@ export function filesModule(options: FilesOptions) {
 		}),
 
 		"files/upload-complete": definePluginRoute({
-			permission: "media:upload",
+			permission: "plugins:manage",
 			methods: ["POST"],
 			request: { body: "json", maxBytes: 1024 * 1024 },
 			handler: async (ctx) => {
@@ -476,7 +520,7 @@ export function filesModule(options: FilesOptions) {
 		}),
 
 		"files/upload-abort": definePluginRoute({
-			permission: "media:upload",
+			permission: "plugins:manage",
 			methods: ["POST"],
 			request: { body: "json" },
 			handler: async (ctx) => {

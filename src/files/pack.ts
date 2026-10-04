@@ -2,7 +2,7 @@ import type { PluginContext } from "emdash";
 
 import { isOn, registerFeatures, siteFeatures } from "../core/features.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
-import { COUNTS_FEATURE, FILES_FEATURE, LARGE_UPLOADS_FEATURE, type FilesOptions, filesModule, filesSettingsSchema, filesStorage, indexEntry, unindexEntry } from "./module.js";
+import { CLEANUP_TASK, COUNTS_FEATURE, FILES_FEATURE, LARGE_UPLOADS_FEATURE, type FilesOptions, filesModule, filesSettingsSchema, filesStorage, abortStaleUploads, indexEntry, unindexEntry } from "./module.js";
 import { serveDownload } from "./serve.js";
 import { BLOCK_TYPE } from "./walker.js";
 
@@ -45,6 +45,16 @@ export function filesPack(options: FilesOptions): PackModule {
 				await unindexEntry(ctx, event.collection, event.id);
 			},
 		},
+		tasks: [
+			{
+				name: CLEANUP_TASK,
+				schedule: "@daily",
+				feature: LARGE_UPLOADS_FEATURE,
+				handler: async (ctx: PluginContext) => {
+					await abortStaleUploads(ctx);
+				},
+			},
+		],
 		adminPages: [{ path: "/files", label: "Files", icon: "file-arrow-down" }],
 		settingsSchema: filesSettingsSchema,
 		storage: filesStorage,

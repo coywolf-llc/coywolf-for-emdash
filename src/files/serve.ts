@@ -5,6 +5,7 @@
  * requests and byte ranges. Downloads are counted after the response.
  */
 import { contentDisposition, downloadPath, parseDownloadPath } from "./format.js";
+import { type ByteRange, ifRangeMatches, parseRange, resolveRange } from "./range.js";
 import { type FileRecord, countDownload, readSiteSettings, resolveFile } from "./site.js";
 
 export interface FilesSiteOptions {
@@ -27,10 +28,8 @@ const NOT_FOUND = () =>
 	new Response("File not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
 
 /** Whether a request should count as a download (not HEAD, not a later range chunk, not a 304). */
-function countsAsDownload(request: Request): boolean {
-	if (request.method !== "GET") return false;
-	const range = request.headers.get("Range");
-	return !range || /^bytes=0-/.test(range.trim());
+function countsAsDownload(request: Request, range: ByteRange | null): boolean {
+	return request.method === "GET" && (!range || ("offset" in range && range.offset === 0));
 }
 
 export async function serveDownload(
@@ -56,7 +55,7 @@ export async function serveDownload(
 	if (!parsed.filename) return Response.redirect(new URL(canonical, url).href, 301);
 
 	if (settings.publicBaseUrl) {
-		if (options.count && countsAsDownload(request)) countDownload(db, file.id, waitUntil);
+		if (options.count && countsAsDownload(request, parseRange(request.headers.get("Range")))) countDownload(db, file.id, waitUntil);
 		const target = `${settings.publicBaseUrl}/${file.key.split("/").map(encodeURIComponent).join("/")}`;
 		return new Response(null, { status: 302, headers: { Location: target, "Cache-Control": "no-store" } });
 	}
@@ -89,18 +88,30 @@ async function streamObject(request: Request, bucket: R2Bucket, file: FileRecord
 		return new Response(null, { status: 200, headers });
 	}
 
-	const hasRange = request.headers.has("Range");
+	// One range at most; several ranges or a malformed header get the whole file.
+	let range = parseRange(request.headers.get("Range"));
+	if (range && request.headers.has("If-Range")) {
+		const head = await bucket.head(file.key);
+		if (!head) return NOT_FOUND();
+		if (!ifRangeMatches(request.headers.get("If-Range"), head.httpEtag, head.uploaded)) range = null;
+	}
+
 	let object: R2Object | R2ObjectBody | null;
 	try {
 		object = await bucket.get(file.key, {
 			onlyIf: request.headers,
-			...(hasRange ? { range: request.headers } : {}),
+			...(range ? { range: "suffix" in range ? { suffix: range.suffix } : { offset: range.offset, ...(range.end !== undefined ? { length: range.end - range.offset + 1 } : {}) } } : {}),
 		});
 	} catch (error) {
-		if (!hasRange) throw error;
-		// Unsatisfiable or malformed range.
-		const head = await bucket.head(file.key);
-		return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${head?.size ?? 0}` } });
+		if (!range) throw error;
+		if ("suffix" in range) {
+			// A suffix longer than the file means the whole file (sent as a 206 of every byte).
+			object = await bucket.get(file.key, { onlyIf: request.headers });
+		} else {
+			// R2 rejects a range that starts past the end.
+			const head = await bucket.head(file.key);
+			return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${head?.size ?? 0}` } });
+		}
 	}
 	if (!object) return NOT_FOUND();
 	headers.set("ETag", object.httpEtag);
@@ -112,16 +123,17 @@ async function streamObject(request: Request, bucket: R2Bucket, file: FileRecord
 		return new Response(null, { status: matched ? 304 : 412, headers });
 	}
 
-	if (countsAsDownload(request)) count();
+	if (countsAsDownload(request, range)) count();
 
 	const body = object as R2ObjectBody;
-	const range = body.range as { offset?: number; length?: number; suffix?: number } | undefined;
-	if (hasRange && range) {
-		const size = body.size;
-		const offset = range.suffix !== undefined ? size - range.suffix : (range.offset ?? 0);
-		const length = range.suffix !== undefined ? range.suffix : (range.length ?? size - offset);
-		headers.set("Content-Range", `bytes ${offset}-${offset + length - 1}/${size}`);
-		headers.set("Content-Length", String(length));
+	if (range) {
+		const bytes = resolveRange(range, body.size);
+		if (!bytes) {
+			await body.body.cancel();
+			return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${body.size}` } });
+		}
+		headers.set("Content-Range", `bytes ${bytes.offset}-${bytes.offset + bytes.length - 1}/${body.size}`);
+		headers.set("Content-Length", String(bytes.length));
 		return new Response(body.body, { status: 206, headers });
 	}
 	headers.set("Content-Length", String(body.size));

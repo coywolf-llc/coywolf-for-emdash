@@ -6,6 +6,7 @@
  * isolate; download counts are batched and written after the response.
  */
 import { PLUGIN_ID } from "../core/features.js";
+import { createDownloadCounter } from "./counts.js";
 import { normalizeBase, safeColor } from "./format.js";
 
 export const COLLECTIONS = {
@@ -137,44 +138,9 @@ export async function resolveFile(db: D1Database, id: string): Promise<FileRecor
 
 // ── Download counts ──────────────────────────────────────────────
 
-const pending = new Map<string, number>();
-let flushing: Promise<void> | null = null;
-const FLUSH_DELAY_MS = 1_000;
+const counter = createDownloadCounter(PLUGIN_ID, COLLECTIONS.counts);
 
-/**
- * Count a download. Counts made within a second in the same isolate are
- * written together in one D1 batch, after the response.
- */
+/** Count a download; counts within a second in this isolate are written together after the response. */
 export function countDownload(db: D1Database, id: string, waitUntil: (p: Promise<unknown>) => void): void {
-	pending.set(id, (pending.get(id) ?? 0) + 1);
-	// Every counting request keeps the shared flush alive until it has written.
-	flushing ??= new Promise<void>((resolve) => setTimeout(resolve, FLUSH_DELAY_MS))
-		.then(async () => {
-			while (pending.size) await flushCounts(db);
-		})
-		.catch((error) => console.error("coywolf-pack files: could not record downloads", error))
-		.finally(() => {
-			flushing = null;
-		});
-	waitUntil(flushing);
-}
-
-async function flushCounts(db: D1Database): Promise<void> {
-	const batch = [...pending.entries()];
-	pending.clear();
-	if (!batch.length) return;
-	const now = new Date().toISOString();
-	await db.batch(
-		batch.map(([id, n]) =>
-			db
-				.prepare(
-					`INSERT INTO _plugin_storage (plugin_id, collection, id, data, revision, created_at, updated_at)
-					 VALUES (?1, ?2, ?3, json_object('downloads', ?4, 'lastDownload', ?5), ?6, ?5, ?5)
-					 ON CONFLICT (plugin_id, collection, id) DO UPDATE SET
-					   data = json_set(data, '$.downloads', COALESCE(json_extract(data, '$.downloads'), 0) + ?4, '$.lastDownload', ?5),
-					   revision = ?6, updated_at = ?5`,
-				)
-				.bind(PLUGIN_ID, COLLECTIONS.counts, id, n, now, crypto.randomUUID()),
-		),
-	);
+	counter.count(db, id, waitUntil);
 }
