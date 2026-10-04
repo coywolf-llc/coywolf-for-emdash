@@ -8,6 +8,7 @@ One plugin with [Coywolf](https://coywolf.com)'s features for [EmDash](https://e
 | **Redirects** | Redirect manager for what EmDash's built-in Redirects can't handle: external destinations and file paths |
 | **Headings & TOC** | Linkable headings (`#jump-…` anchors), a Table of Contents block, and a Breadcrumbs block and theme component |
 | **Code Blocks** | Server-side syntax highlighting, themes, language label, copy button and line numbers for code blocks |
+| **File Downloads** | A download card block, stable download URLs with counts, a Files page, and direct-to-R2 uploads of any size |
 
 More modules will follow as Coywolf's WordPress plugins move to EmDash.
 
@@ -211,6 +212,52 @@ The trail comes from, in order: `items`, `page.breadcrumbs`, the trail the theme
 - Styles use `cw-` classes and the theme's colors, in light and dark mode.
 - With the features off, markup is unchanged, but the components' small global stylesheet (`cw-` classes only) is still bundled on pages that import them.
 - The Breadcrumbs block picks up the theme's trail only when the theme renders `<EmDashHead page={page} />` with the page's real `url`; it's matched by path and query string, so locales and variants don't mix.
+## File Downloads
+
+The Coywolf Files plugin for WordPress, on EmDash. Add a **File download** block to any entry and visitors get a download card: a colored file-type badge, the file name, a "PDF · 2.4 MB · Uploaded Mar 4, 2026" line, a Download button, and a Copy link button.
+
+- **Block**: pick a file from the Media Library or from large uploads, then give it a title and description for that placement. Toggles show or hide the icon, description, meta line, Download, and Copy link. The card is server-rendered, scoped (`cw-file`), follows light/dark (or a fixed scheme), and ships one small script for Copy link (clipboard, checkmark, screen-reader announcement).
+- **Download URLs**: `/download/<id>/<file name>`, served by the pack middleware. Files stream from R2 with `Content-Disposition: attachment`, the right `Content-Type`, `Content-Length`, `ETag`, conditional requests, and single byte ranges with `If-Range` (resumable downloads; a request for several ranges gets the whole file). Or set a public bucket / CDN URL and downloads redirect there.
+- **Files page** (**Plugins → Files**): every file used in a File download block plus every large upload, with type, size, upload date, downloads, and the entries that use it. Search, In use / Unused filters, copy link, and delete. Deleting a large upload removes the object from R2; the page lists the entries that still use it (their blocks then render nothing). Media Library files are deleted in the Media Library.
+- **Large uploads**: files of any type and size (EmDash's own uploads stop at 50 MB and images, video, audio, and PDF) go straight from the browser to R2 in 8 MB+ parts, four at a time, with progress, retries, and Cancel. The Worker only signs URLs (AWS Signature V4 with Web Crypto, no AWS SDK).
+
+### Feature switches
+
+| Feature | Default | What it does |
+| --- | --- | --- |
+| `files` | off | The block, download URLs, and the Files page |
+| `files.counts` | off | Count downloads (batched D1 writes after the response) |
+| `files.largeUploads` | off | Direct-to-R2 uploads (needs the settings below and a CORS rule) |
+
+### Setup
+
+1. Turn on **File Downloads** under **Plugins → Features**. The middleware from the Redirects setup (`coywolfPack()`) serves the download URLs; nothing else to add.
+2. Settings (the Coywolf Pack plugin settings): download URL base (default `download`), optional public bucket / CDN URL, card color scheme, accent color, and largest upload (default 5 GB).
+3. Bindings: `DB` and `MEDIA`. To keep large uploads in their own bucket, bind it as `FILES` (or pass `files: { uploads: "MYBINDING" }`, and note the middleware looks for `FILES`).
+
+### Large uploads
+
+1. Create an R2 API token (**R2 → Manage API tokens**) with **Object Read & Write** on the bucket. Enter the account ID, access key ID, secret access key (stored encrypted), and bucket name in the settings. The bucket must be the one bound as `MEDIA` (or `FILES`), since downloads stream through that binding.
+2. Add a CORS policy to the bucket (**R2 → bucket → Settings → CORS Policy**):
+
+   ```json
+   [{ "AllowedOrigins": ["https://example.com"], "AllowedMethods": ["PUT"], "AllowedHeaders": ["*"], "ExposeHeaders": ["ETag"], "MaxAgeSeconds": 3600 }]
+   ```
+
+3. Add a lifecycle rule to the bucket (**R2 → bucket → Settings → Object lifecycle rules**): **Abort incomplete multipart uploads after 1 day**. The pack also aborts uploads left unfinished for 24 hours in a daily task, but the rule catches anything the task can't reach (for example after the credentials change).
+4. On the Files page, **Check CORS** reads the policy through the S3 API and says what's missing. Then **Upload large file**.
+
+Only administrators (`plugins:manage`) can upload, and uploads above the **largest upload** setting (default 5 GB) are refused. R2 storage and operations are billed to your Cloudflare account.
+
+Files are stored as `files/<id>/<name>` with their metadata in plugin storage. The pack calls only `<account>.r2.cloudflarestorage.com`.
+
+### Notes
+
+- Which entries use which file comes from an index updated on every save and delete. **Rebuild usage** rescans all content (needed once if blocks existed while the module was off). Entries moved to the trash stop counting as uses.
+- Download counts are kept per isolate for a second and written together, so a burst of downloads costs one D1 batch. Counts made just before an isolate is evicted can be lost. A HEAD request, a 304, or a later range chunk isn't counted.
+- Any ready Media Library item can be downloaded through `/download/<its id>/…`, whether or not a block uses it. That's the same exposure as EmDash's own `/_emdash/api/media/file/<key>` URLs: media files are public to anyone with the link.
+- Lookups are cached per Worker isolate for 60 seconds, including "not found". A file requested just before its upload finished can keep answering 404 on that isolate for up to a minute.
+- With a public bucket / CDN URL, downloads redirect to it, so the file name comes from the object key and the CDN decides the headers.
 
 ## Code Blocks
 

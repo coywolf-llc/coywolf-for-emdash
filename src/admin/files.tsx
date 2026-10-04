@@ -1,0 +1,611 @@
+/**
+ * Files page: download files used by File download blocks and large uploads,
+ * with downloads, where each is used, a direct-to-R2 uploader, a CORS check,
+ * and delete.
+ */
+import { Badge, Banner, Button, Dialog, DropdownMenu, Input, Loader, Meter, Select } from "@cloudflare/kumo";
+import { ArrowsClockwise, CloudArrowUp, DotsThree, FileArrowDown, LinkSimple, ShieldCheck, Trash, X } from "@phosphor-icons/react";
+import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
+import * as React from "react";
+
+import { formatSize, iconFor } from "../files/format.js";
+
+const API = "/_emdash/api/plugins/coywolf-pack/files";
+const CONCURRENCY = 4;
+const SIGN_BATCH = 8;
+const URL_MAX_AGE_MS = 45 * 60_000;
+
+interface Usage {
+	collection: string;
+	id: string;
+	title: string;
+}
+
+interface FileItem {
+	id: string;
+	source: "upload" | "media" | "missing";
+	status: "ready" | "uploading";
+	name: string;
+	type: string;
+	ext: string;
+	size: number;
+	uploadedAt: string | null;
+	url: string | null;
+	downloads: number;
+	lastDownload: string | null;
+	usedIn: Usage[];
+}
+
+interface ListResponse {
+	items: FileItem[];
+	base: string;
+	countsEnabled: boolean;
+	largeUploadsEnabled: boolean;
+}
+
+interface CorsResult {
+	ok: boolean;
+	origin: string;
+	problems: string[];
+	policy: unknown;
+}
+
+type Filter = "all" | "used" | "unused";
+
+const errorText = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
+const dateFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" });
+const formatDate = (iso: string | null) => (iso ? dateFormat.format(new Date(iso)) : "");
+
+async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+	const response = await apiFetch(`${API}/${path}`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+		signal,
+	});
+	return parseApiResponse<T>(response, "The request failed");
+}
+
+function TypeBadge({ ext }: { ext: string }) {
+	const icon = iconFor(ext);
+	return (
+		<svg width="28" height="34" viewBox="0 0 40 48" fill="none" aria-hidden="true" focusable="false" className="shrink-0">
+			<path
+				d="M10 3 h14 l10 10 v28 a4 4 0 0 1 -4 4 H10 a4 4 0 0 1 -4 -4 V7 a4 4 0 0 1 4 -4 z"
+				className="fill-kumo-base stroke-kumo-line"
+				strokeWidth="1.5"
+			/>
+			<path d="M24 3 L24 13 L34 13" className="fill-kumo-tint stroke-kumo-line" strokeWidth="1.5" strokeLinejoin="round" />
+			<rect x="2" y="26" width="27" height="15" rx="3.5" fill={icon.color} />
+			<text x="15.5" y="36.5" textAnchor="middle" fontSize="8.5" fontWeight="700" fill="#fff">
+				{icon.label}
+			</text>
+		</svg>
+	);
+}
+
+// ── Direct-to-R2 multipart upload ────────────────────────────────
+
+interface UploadProgress {
+	name: string;
+	loaded: number;
+	total: number;
+}
+
+function putPart(url: string, body: Blob, onProgress: (loaded: number) => void, signal: AbortSignal): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const xhr = new XMLHttpRequest();
+		xhr.open("PUT", url);
+		xhr.upload.onprogress = (e) => onProgress(e.loaded);
+		xhr.onload = () => {
+			if (xhr.status < 200 || xhr.status >= 300) return reject(new Error(`R2 rejected a part (HTTP ${xhr.status}).`));
+			const etag = xhr.getResponseHeader("ETag");
+			if (!etag) return reject(new Error('R2 accepted the part, but the browser can\'t read its ETag. Add "ETag" to ExposeHeaders in the bucket\'s CORS policy.'));
+			resolve(etag);
+		};
+		xhr.onerror = () => reject(new Error("The upload was blocked. Check the bucket's CORS policy (use Check CORS)."));
+		xhr.onabort = () => reject(new DOMException("Upload canceled", "AbortError"));
+		signal.addEventListener("abort", () => xhr.abort(), { once: true });
+		xhr.send(body);
+	});
+}
+
+async function uploadLarge(file: File, onProgress: (p: UploadProgress) => void, signal: AbortSignal): Promise<{ id: string; url: string }> {
+	const start = await post<{ id: string; partSize: number; partCount: number }>("upload-start", { name: file.name, size: file.size, type: file.type }, signal);
+	const { id, partSize, partCount } = start;
+	try {
+		const loaded = new Array<number>(partCount + 1).fill(0);
+		const report = () => onProgress({ name: file.name, loaded: loaded.reduce((a, b) => a + b, 0), total: file.size });
+		const urls = new Map<number, { url: string; at: number }>();
+		const etags: Array<{ partNumber: number; etag: string }> = [];
+
+		async function urlFor(partNumber: number): Promise<string> {
+			const cached = urls.get(partNumber);
+			if (cached && Date.now() - cached.at < URL_MAX_AGE_MS) return cached.url;
+			const wanted: number[] = [];
+			for (let n = partNumber; n <= partCount && wanted.length < SIGN_BATCH; n++) if (!urls.has(n)) wanted.push(n);
+			if (!wanted.includes(partNumber)) wanted.unshift(partNumber);
+			const { parts } = await post<{ parts: Array<{ partNumber: number; url: string }> }>("upload-sign", { id, partNumbers: wanted }, signal);
+			for (const p of parts) urls.set(p.partNumber, { url: p.url, at: Date.now() });
+			return urls.get(partNumber)!.url;
+		}
+
+		let next = 1;
+		async function worker() {
+			while (next <= partCount) {
+				const partNumber = next++;
+				const blob = file.slice((partNumber - 1) * partSize, Math.min(file.size, partNumber * partSize));
+				for (let attempt = 1; ; attempt++) {
+					try {
+						const etag = await putPart(
+							await urlFor(partNumber),
+							blob,
+							(n) => {
+								loaded[partNumber] = n;
+								report();
+							},
+							signal,
+						);
+						loaded[partNumber] = blob.size;
+						report();
+						etags.push({ partNumber, etag });
+						break;
+					} catch (error) {
+						if (signal.aborted || attempt >= 3 || (error instanceof Error && error.message.includes("ETag"))) throw error;
+						loaded[partNumber] = 0;
+						urls.delete(partNumber);
+						await new Promise((r) => setTimeout(r, 1000 * attempt));
+					}
+				}
+			}
+		}
+		await Promise.all(Array.from({ length: Math.min(CONCURRENCY, partCount) }, worker));
+		return await post<{ id: string; url: string }>("upload-complete", { id, parts: etags }, signal);
+	} catch (error) {
+		await post("upload-abort", { id }).catch(() => undefined);
+		throw error;
+	}
+}
+
+// ── Dialogs ──────────────────────────────────────────────────────
+
+function UsageList({ usedIn }: { usedIn: Usage[] }) {
+	return (
+		<ul className="mt-2 max-h-48 list-disc space-y-1 overflow-y-auto ps-5 text-sm">
+			{usedIn.map((u) => (
+				<li key={`${u.collection}:${u.id}`}>
+					<a className="text-kumo-link underline" href={`/_emdash/admin/content/${encodeURIComponent(u.collection)}/${encodeURIComponent(u.id)}`}>
+						{u.title}
+					</a>{" "}
+					<span className="text-kumo-subtle">({u.collection})</span>
+				</li>
+			))}
+		</ul>
+	);
+}
+
+function DeleteDialog(props: { file: FileItem | null; onClose: () => void; onDeleted: (file: FileItem) => void }) {
+	const [pending, setPending] = React.useState(false);
+	const [error, setError] = React.useState<string>();
+	React.useEffect(() => setError(undefined), [props.file]);
+	const file = props.file;
+	const run = async () => {
+		if (!file) return;
+		setPending(true);
+		setError(undefined);
+		try {
+			await post("delete", { id: file.id });
+			props.onDeleted(file);
+		} catch (cause) {
+			setError(errorText(cause, "Delete failed"));
+		} finally {
+			setPending(false);
+		}
+	};
+	return (
+		<Dialog.Root open={file !== null} onOpenChange={(open) => !open && !pending && props.onClose()}>
+			<Dialog className="p-6" size="lg">
+				<Dialog.Title className="text-lg font-semibold">{file?.status === "uploading" ? "Discard incomplete upload?" : `Delete ${file?.name}?`}</Dialog.Title>
+				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">
+					The file is removed from the R2 bucket and can't be recovered. Its download link stops working.
+				</Dialog.Description>
+				{file && file.usedIn.length > 0 && (
+					<Banner
+						className="mt-4"
+						variant="alert"
+						title={`Used in ${file.usedIn.length} ${file.usedIn.length === 1 ? "entry" : "entries"}`}
+						description={
+							<>
+								Their File download blocks will render nothing until you remove or replace them:
+								<UsageList usedIn={file.usedIn} />
+							</>
+						}
+					/>
+				)}
+				{error && <Banner className="mt-3" variant="error" role="alert" description={error} />}
+				<div className="mt-6 flex justify-end gap-2">
+					<Button variant="secondary" disabled={pending} onClick={props.onClose}>
+						Cancel
+					</Button>
+					<Button variant="destructive" disabled={pending} onClick={() => void run()}>
+						{pending ? "Deleting…" : "Delete file"}
+					</Button>
+				</div>
+			</Dialog>
+		</Dialog.Root>
+	);
+}
+
+function CorsDialog(props: { result: CorsResult | null; onClose: () => void }) {
+	const r = props.result;
+	return (
+		<Dialog.Root open={r !== null} onOpenChange={(open) => !open && props.onClose()}>
+			<Dialog className="p-6" size="lg">
+				<Dialog.Title className="text-lg font-semibold">{r?.ok ? "CORS is set up" : "The bucket's CORS policy needs changes"}</Dialog.Title>
+				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">
+					Browsers upload straight to R2, so the bucket must allow <code>PUT</code> from {r?.origin} and expose the <code>ETag</code> header.
+				</Dialog.Description>
+				{r && !r.ok && (
+					<>
+						<ul className="mt-4 list-disc space-y-1 ps-5 text-sm">
+							{r.problems.map((p) => (
+								<li key={p}>{p}</li>
+							))}
+						</ul>
+						<p className="mt-4 text-sm">
+							In the Cloudflare dashboard, open <strong>R2 → your bucket → Settings → CORS Policy</strong> and paste:
+						</p>
+						<pre className="mt-2 max-h-56 overflow-auto rounded-md border border-kumo-line bg-kumo-tint p-3 text-xs">{JSON.stringify(r.policy, null, 2)}</pre>
+					</>
+				)}
+				<div className="mt-6 flex justify-end">
+					<Button variant="primary" onClick={props.onClose}>
+						Done
+					</Button>
+				</div>
+			</Dialog>
+		</Dialog.Root>
+	);
+}
+
+// ── Page ─────────────────────────────────────────────────────────
+
+export function FilesPage() {
+	const [data, setData] = React.useState<ListResponse>();
+	const [error, setError] = React.useState<string>();
+	const [notice, setNotice] = React.useState<string>();
+	const [query, setQuery] = React.useState("");
+	const [filter, setFilter] = React.useState<Filter>("all");
+	const [deleting, setDeleting] = React.useState<FileItem | null>(null);
+	const [cors, setCors] = React.useState<CorsResult | null>(null);
+	const [busy, setBusy] = React.useState<string>();
+	const [progress, setProgress] = React.useState<UploadProgress | null>(null);
+	const abortRef = React.useRef<AbortController | null>(null);
+	const inputRef = React.useRef<HTMLInputElement>(null);
+
+	const load = React.useCallback(async () => {
+		setError(undefined);
+		try {
+			setData(await parseApiResponse<ListResponse>(await apiFetch(`${API}/list`), "Could not load files"));
+		} catch (cause) {
+			setError(errorText(cause, "Could not load files"));
+		}
+	}, []);
+	React.useEffect(() => {
+		void load();
+	}, [load]);
+
+	// Stop an upload in progress if the page is left.
+	React.useEffect(() => () => abortRef.current?.abort(), []);
+
+	const upload = async (file: File) => {
+		const controller = new AbortController();
+		abortRef.current = controller;
+		setError(undefined);
+		setNotice(undefined);
+		setProgress({ name: file.name, loaded: 0, total: file.size });
+		try {
+			await uploadLarge(file, setProgress, controller.signal);
+			setNotice(`Uploaded ${file.name}. Add it to an entry with the File download block.`);
+			await load();
+		} catch (cause) {
+			if (controller.signal.aborted) setNotice(`Canceled the upload of ${file.name}.`);
+			else setError(errorText(cause, "Upload failed"));
+		} finally {
+			abortRef.current = null;
+			setProgress(null);
+		}
+	};
+
+	const checkCors = async () => {
+		setBusy("cors");
+		setError(undefined);
+		try {
+			setCors(await post<CorsResult>("cors-check", {}));
+		} catch (cause) {
+			setError(errorText(cause, "Could not check CORS"));
+		} finally {
+			setBusy(undefined);
+		}
+	};
+
+	const reindex = async () => {
+		setBusy("reindex");
+		setError(undefined);
+		setNotice("Rebuilding the usage index…");
+		try {
+			let next: unknown;
+			let scanned = 0;
+			for (let i = 0; i < 1000; i++) {
+				const result = await post<{ done: boolean; scanned: number; next?: unknown }>("reindex", next ? { next } : {});
+				scanned += result.scanned;
+				if (result.done) break;
+				next = result.next;
+			}
+			setNotice(`Usage index rebuilt from ${scanned.toLocaleString()} ${scanned === 1 ? "entry" : "entries"}.`);
+			await load();
+		} catch (cause) {
+			setNotice(undefined);
+			setError(errorText(cause, "Could not rebuild the usage index"));
+		} finally {
+			setBusy(undefined);
+		}
+	};
+
+	const copy = async (file: FileItem) => {
+		if (!file.url) return;
+		try {
+			await navigator.clipboard.writeText(new URL(file.url, window.location.origin).href);
+			setNotice(`Copied the download link for ${file.name}.`);
+		} catch {
+			setError("Could not copy the link.");
+		}
+	};
+
+	const q = query.trim().toLowerCase();
+	const visible = (data?.items ?? [])
+		.filter((f) => (filter === "used" ? f.usedIn.length > 0 : filter === "unused" ? f.usedIn.length === 0 : true))
+		.filter((f) => !q || f.name.toLowerCase().includes(q) || f.ext.includes(q) || f.usedIn.some((u) => u.title.toLowerCase().includes(q)))
+		.sort((a, b) => (b.uploadedAt ?? "").localeCompare(a.uploadedAt ?? ""));
+	const pct = progress && progress.total ? Math.min(100, Math.round((progress.loaded / progress.total) * 100)) : 0;
+
+	return (
+		<div className="space-y-6">
+			<header className="grid min-w-0 gap-4 border-b border-kumo-line pb-4">
+				<div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1">
+					<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Files</h1>
+					<div className="flex shrink-0 flex-wrap justify-end gap-2">
+						<Button variant="secondary" icon={<ArrowsClockwise />} disabled={!!busy} onClick={() => void reindex()}>
+							{busy === "reindex" ? "Rebuilding…" : "Rebuild usage"}
+						</Button>
+						{data?.largeUploadsEnabled && (
+							<>
+								<Button variant="secondary" icon={<ShieldCheck />} disabled={!!busy} onClick={() => void checkCors()}>
+									{busy === "cors" ? "Checking…" : "Check CORS"}
+								</Button>
+								<Button variant="primary" icon={<CloudArrowUp />} disabled={!!progress} onClick={() => inputRef.current?.click()}>
+									Upload large file
+								</Button>
+								<input
+									ref={inputRef}
+									type="file"
+									className="sr-only"
+									tabIndex={-1}
+									aria-hidden="true"
+									onChange={(e) => {
+										const file = e.target.files?.[0];
+										e.target.value = "";
+										if (file) void upload(file);
+									}}
+								/>
+							</>
+						)}
+					</div>
+					<p className="col-span-2 text-sm leading-5 text-pretty text-kumo-subtle">
+						Files offered for download with the File download block: Media Library files used in blocks, and large uploads.
+						{data ? (
+							<>
+								{" "}
+								Download links look like <code>/{data.base}/&lt;id&gt;/&lt;file name&gt;</code>.
+							</>
+						) : null}
+						{data && !data.largeUploadsEnabled ? " Turn on Large uploads (Features) to upload files over 50 MB or of any type." : ""}
+					</p>
+				</div>
+				<div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+					<div className="sm:w-72">
+						<Input
+							label="Search"
+							placeholder="File names, types, entries"
+							value={query}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
+						/>
+					</div>
+					<div className="sm:w-44">
+						<Select
+							label="Show"
+							value={filter}
+							onValueChange={(value: string | null) => setFilter((value as Filter) ?? "all")}
+							items={[
+								{ value: "all", label: "All files" },
+								{ value: "used", label: "In use" },
+								{ value: "unused", label: "Unused" },
+							]}
+						/>
+					</div>
+				</div>
+			</header>
+
+			<div aria-live="polite" className="space-y-3">
+				{progress && (
+					<div className="flex items-end gap-3 rounded-lg border border-kumo-line p-4">
+						<div className="min-w-0 flex-1">
+							<Meter label={`Uploading ${progress.name}`} value={pct} customValue={`${formatSize(progress.loaded)} of ${formatSize(progress.total)} (${pct}%)`} />
+						</div>
+						<Button variant="secondary" icon={<X />} onClick={() => abortRef.current?.abort()}>
+							Cancel
+						</Button>
+					</div>
+				)}
+				{notice && <Banner variant="default" role="status" title={notice} />}
+			</div>
+			{error && <Banner variant="error" role="alert" title="Something went wrong" description={error} />}
+
+			{!data && !error ? (
+				<div className="py-12 text-center text-kumo-subtle">
+					<Loader />
+				</div>
+			) : data && data.items.length === 0 ? (
+				<div className="py-10 text-center text-kumo-subtle">
+					<FileArrowDown size={40} className="mx-auto mb-3 opacity-30" aria-hidden="true" />
+					<p className="text-base font-medium">No download files yet</p>
+					<p className="mt-1 text-sm">Add a File download block to an entry, or upload a large file.</p>
+				</div>
+			) : data ? (
+				<div className="rounded-lg border" role="table" aria-label="Download files">
+					<div role="row" className="flex items-center gap-4 border-b bg-kumo-tint/50 px-4 py-2 text-sm font-medium text-kumo-subtle">
+						<div role="columnheader" className="min-w-0 flex-1">
+							File
+						</div>
+						<div role="columnheader" className="hidden w-20 text-end sm:block">
+							Size
+						</div>
+						<div role="columnheader" className="hidden w-28 lg:block">
+							Uploaded
+						</div>
+						{data.countsEnabled && (
+							<div role="columnheader" className="hidden w-24 text-end md:block">
+								Downloads
+							</div>
+						)}
+						<div role="columnheader" className="w-20 text-end">
+							Used in
+						</div>
+						<div role="columnheader" className="w-10">
+							<span className="sr-only">Actions</span>
+						</div>
+					</div>
+					{visible.map((file) => (
+						<div role="row" key={file.id} className={`flex items-center gap-4 border-b px-4 py-2 text-sm last:border-0 ${file.status === "uploading" ? "opacity-60" : ""}`}>
+							<div role="cell" className="flex min-w-0 flex-1 items-center gap-3">
+								<TypeBadge ext={file.ext} />
+								<div className="min-w-0">
+									<div className="truncate font-medium" title={file.name}>
+										{file.name}
+									</div>
+									<div className="mt-0.5 flex items-center gap-1 text-xs text-kumo-subtle">
+										{file.source === "upload" && file.status === "ready" && <Badge variant="outline">Large upload</Badge>}
+										{file.source === "media" && <Badge variant="outline">Media Library</Badge>}
+										{file.status === "uploading" && <Badge variant="secondary">Incomplete upload</Badge>}
+										{file.source === "missing" && <Badge variant="destructive">Missing</Badge>}
+										<span className="truncate">{file.type}</span>
+									</div>
+								</div>
+							</div>
+							<div role="cell" className="hidden w-20 text-end tabular-nums sm:block">
+								{file.size ? formatSize(file.size) : "—"}
+							</div>
+							<div role="cell" className="hidden w-28 text-xs text-kumo-subtle lg:block">
+								{formatDate(file.uploadedAt) || "—"}
+							</div>
+							{data.countsEnabled && (
+								<div role="cell" className="hidden w-24 text-end tabular-nums md:block" title={file.lastDownload ? `Last download ${formatDate(file.lastDownload)}` : undefined}>
+									{file.downloads.toLocaleString()}
+								</div>
+							)}
+							<div role="cell" className="w-20 text-end">
+								{file.usedIn.length ? (
+									<DropdownMenu>
+										<DropdownMenu.Trigger
+											render={
+												<Button type="button" variant="ghost" size="sm" aria-label={`${file.name} is used in ${file.usedIn.length} entries`}>
+													{file.usedIn.length}
+												</Button>
+											}
+										/>
+										<DropdownMenu.Content className="max-h-72 overflow-y-auto p-1">
+											{file.usedIn.map((u) => (
+												<DropdownMenu.Item
+													key={`${u.collection}:${u.id}`}
+													className="py-1 data-highlighted:bg-kumo-fill"
+													onClick={() => {
+														window.location.href = `/_emdash/admin/content/${encodeURIComponent(u.collection)}/${encodeURIComponent(u.id)}`;
+													}}
+												>
+													{u.title} <span className="ms-1 text-kumo-subtle">({u.collection})</span>
+												</DropdownMenu.Item>
+											))}
+										</DropdownMenu.Content>
+									</DropdownMenu>
+								) : (
+									<span className="text-kumo-subtle">Unused</span>
+								)}
+							</div>
+							<div role="cell" className="flex w-10 justify-end">
+								<DropdownMenu>
+									<DropdownMenu.Trigger
+										render={<Button type="button" variant="ghost" shape="square" icon={<DotsThree aria-hidden="true" />} aria-label={`Actions for ${file.name}`} />}
+									/>
+									<DropdownMenu.Content className="p-1">
+										{file.url && (
+											<>
+												<DropdownMenu.Item
+													className="py-1 data-highlighted:bg-kumo-fill"
+													icon={<LinkSimple className="me-1.5 size-3.5" aria-hidden="true" />}
+													onClick={() => void copy(file)}
+												>
+													Copy download link
+												</DropdownMenu.Item>
+												<DropdownMenu.Item
+													className="py-1 data-highlighted:bg-kumo-fill"
+													icon={<FileArrowDown className="me-1.5 size-3.5" aria-hidden="true" />}
+													onClick={() => window.open(file.url!, "_blank", "noopener")}
+												>
+													Download
+												</DropdownMenu.Item>
+											</>
+										)}
+										{file.source === "upload" && (
+											<>
+												{file.url && <DropdownMenu.Separator className="my-0.5" />}
+												<DropdownMenu.Item
+													className="py-1 data-highlighted:bg-kumo-fill"
+													icon={<Trash className="me-1.5 size-3.5" aria-hidden="true" />}
+													onClick={() => setDeleting(file)}
+												>
+													{file.status === "uploading" ? "Discard" : "Delete"}
+												</DropdownMenu.Item>
+											</>
+										)}
+										{file.source === "media" && (
+											<DropdownMenu.Item
+												className="py-1 data-highlighted:bg-kumo-fill"
+												onClick={() => {
+													window.location.href = "/_emdash/admin/media";
+												}}
+											>
+												Manage in Media Library
+											</DropdownMenu.Item>
+										)}
+									</DropdownMenu.Content>
+								</DropdownMenu>
+							</div>
+						</div>
+					))}
+					{visible.length === 0 && <p className="px-4 py-6 text-center text-sm text-kumo-subtle">No files match.</p>}
+				</div>
+			) : null}
+
+			<DeleteDialog
+				file={deleting}
+				onClose={() => setDeleting(null)}
+				onDeleted={(file) => {
+					setDeleting(null);
+					setNotice(`Deleted ${file.name}.`);
+					void load();
+				}}
+			/>
+			<CorsDialog result={cors} onClose={() => setCors(null)} />
+		</div>
+	);
+}

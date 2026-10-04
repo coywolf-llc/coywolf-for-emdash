@@ -1,6 +1,7 @@
 import type { BackupsOptions } from "./backups/module.js";
 import type { HeadingsOptions } from "./headings/pack.js";
 import type { CodeBlocksOptions } from "./codeBlocks/pack.js";
+import type { FilesOptions } from "./files/module.js";
 import type { RedirectsOptions } from "./redirects/module.js";
 import type { SchemaOptions } from "./schema/module.js";
 
@@ -15,4 +16,5 @@ export interface CoywolfOptions {
 	headings?: HeadingsOptions | false;
 	codeBlocks?: CodeBlocksOptions | false;
 	schema?: SchemaOptions | false;
+	files?: FilesOptions | false;
 }
