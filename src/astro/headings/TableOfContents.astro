@@ -3,121 +3,42 @@
  * The `coywolf-toc` Portable Text block. Lists the headings stamped into the
  * block when the entry was saved (`_headings`), so it always matches the
  * anchors on the page. Collapsing uses <details> (no JS); smooth scrolling is
- * CSS and is skipped for visitors who prefer reduced motion.
+ * CSS and is skipped for visitors who prefer reduced motion. Markup and CSS
+ * come from headings/render.ts, which the admin preview uses too.
  */
 import { siteFeatureOn } from "../../core/features.js";
-import { parseLevels, siteHeadingsSettings } from "../../headings/settings.js";
+import { type TocDisplay, type TocListStyle, parseLevels, siteHeadingsSettings } from "../../headings/settings.js";
+import { TOC_CSS, renderTocHtml } from "../../headings/render.js";
 import { buildTocTree, countToc, storedHeadings } from "../../headings/toc.js";
-import TocList from "./TocList.astro";
 
 const { node } = Astro.props as { node: Record<string, unknown> };
 
-let show = false;
-let title = "";
-let showTitle = true;
-let listStyle = "none";
-let display = "open";
-let smooth = false;
-let tree: ReturnType<typeof buildTocTree> = [];
+let html = "";
 const titleId = `cw-toc-${String(node._key ?? "").replace(/[^A-Za-z0-9_-]/g, "") || "title"}`;
 
 if (await siteFeatureOn("headings.toc")) {
 	const defaults = (await siteHeadingsSettings()).toc;
 	const levels = parseLevels(node.levels);
-	tree = buildTocTree(storedHeadings(node._headings), levels.length ? levels : defaults.levels);
-	title = (typeof node.title === "string" && node.title.trim()) || defaults.title;
-	showTitle = node.showTitle === "show" ? true : node.showTitle === "hide" ? false : defaults.showTitle;
-	listStyle = ["none", "bulleted", "numbered"].includes(node.listStyle as string) ? (node.listStyle as string) : defaults.listStyle;
-	display = ["open", "collapsible", "collapsed"].includes(node.display as string) ? (node.display as string) : defaults.display;
-	smooth = defaults.smoothScroll;
-	show = countToc(tree) >= defaults.minHeadings;
+	const tree = buildTocTree(storedHeadings(node._headings), levels.length ? levels : defaults.levels);
+	if (countToc(tree) >= defaults.minHeadings) {
+		const listStyle = ["none", "bulleted", "numbered"].includes(node.listStyle as string) ? (node.listStyle as TocListStyle) : defaults.listStyle;
+		const display = ["open", "collapsible", "collapsed"].includes(node.display as string) ? (node.display as TocDisplay) : defaults.display;
+		html = renderTocHtml(tree, {
+			title: (typeof node.title === "string" && node.title.trim()) || defaults.title,
+			showTitle: node.showTitle === "show" ? true : node.showTitle === "hide" ? false : defaults.showTitle,
+			listStyle,
+			display,
+			smooth: defaults.smoothScroll,
+			titleId,
+		});
+	}
 }
-const ordered = listStyle === "numbered";
+
+// The CSS goes out once per page, before the first table.
+const locals = (Astro.locals ?? {}) as Record<string, unknown>;
+const css = html && !locals.__cwTocCss ? TOC_CSS : "";
+if (css) locals.__cwTocCss = true;
 ---
 
-{show && (
-	<nav
-		class={`cw-toc cw-toc--${listStyle}`}
-		aria-labelledby={display !== "open" || showTitle ? titleId : undefined}
-		aria-label={display === "open" && !showTitle ? title : undefined}
-		data-smooth={smooth ? "" : undefined}
-	>
-		{display === "open" ? (
-			<Fragment>
-				{showTitle && <h2 id={titleId} class="cw-toc__title">{title}</h2>}
-				<TocList nodes={tree} ordered={ordered} root />
-			</Fragment>
-		) : (
-			<details class="cw-toc__details" open={display === "collapsible"}>
-				<summary class="cw-toc__summary"><span id={titleId} class="cw-toc__title">{title}</span></summary>
-				<TocList nodes={tree} ordered={ordered} root />
-			</details>
-		)}
-	</nav>
-)}
-
-<style is:global>
-	.cw-toc {
-		--cw-toc-line: color-mix(in srgb, currentColor 18%, transparent);
-		--cw-toc-bg: color-mix(in srgb, currentColor 4%, transparent);
-		margin-block: 1.5em;
-		padding: 1em 1.25em;
-		border: 1px solid var(--cw-toc-line);
-		border-radius: 0.5em;
-		background: var(--cw-toc-bg);
-	}
-	@media (prefers-color-scheme: dark) {
-		.cw-toc {
-			--cw-toc-bg: color-mix(in srgb, currentColor 7%, transparent);
-		}
-	}
-	.cw-toc .cw-toc__title {
-		margin: 0 0 0.5em;
-		font-size: 1.1em;
-	}
-	.cw-toc ul,
-	.cw-toc ol {
-		margin: 0;
-	}
-	.cw-toc li {
-		margin: 0.25em 0;
-	}
-	.cw-toc--none ul,
-	.cw-toc--numbered ol {
-		list-style: none;
-		padding-inline-start: 0;
-	}
-	.cw-toc--none li > ul,
-	.cw-toc--bulleted ul {
-		padding-inline-start: 1.25em;
-	}
-	.cw-toc--numbered ol {
-		counter-reset: cw-toc;
-	}
-	.cw-toc--numbered li > ol {
-		padding-inline-start: 1.5em;
-	}
-	.cw-toc--numbered li {
-		counter-increment: cw-toc;
-	}
-	.cw-toc--numbered li > a::before {
-		content: counters(cw-toc, ".") ". ";
-	}
-	.cw-toc__summary {
-		cursor: pointer;
-	}
-	.cw-toc__summary .cw-toc__title {
-		display: inline;
-		margin: 0;
-		font-size: inherit;
-		font-weight: 600;
-	}
-	.cw-toc__details[open] > .cw-toc__summary {
-		margin-bottom: 0.5em;
-	}
-	@media (prefers-reduced-motion: no-preference) {
-		html:has(.cw-toc[data-smooth]) {
-			scroll-behavior: smooth;
-		}
-	}
-</style>
+{css && <style is:inline set:html={css} />}
+{html && <Fragment set:html={html} />}

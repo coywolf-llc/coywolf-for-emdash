@@ -8,7 +8,9 @@ import { ArrowsClockwise, CloudArrowUp, DotsThree, FileArrowDown, LinkSimple, Sh
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { FILE_CSS, SAMPLE_FILE, renderFileCardHtml } from "../files/card.js";
 import { formatSize, iconFor } from "../files/format.js";
+import { PreviewSection } from "./preview.js";
 import { SecretField, SettingsSection, SetupCard } from "./settings-ui.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/files";
@@ -373,6 +375,13 @@ function SettingsPanel(props: { largeUploadsEnabled: boolean; onSaved: (message:
 					/>
 					<Input label="Accent color (optional)" placeholder="#007392" description="Hex color for the download button and focus ring. Empty uses the default." {...field("filesAccent")} />
 				</div>
+				<PreviewSection
+					id="files-card-preview"
+					title="Download card preview"
+					css={FILE_CSS}
+					html={renderFileCardHtml(SAMPLE_FILE, { scheme: draft.filesScheme, accent: draft.filesAccent })}
+					note="A sample file with every part of the block shown. Auto follows your computer's light or dark setting here, and each visitor's on the site."
+				/>
 			</SettingsSection>
 
 			<SettingsSection

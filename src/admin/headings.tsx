@@ -7,6 +7,10 @@ import { Banner, Button, Checkbox, Input, Loader, Select } from "@cloudflare/kum
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { SAMPLE_TOC_HEADINGS, TOC_CSS, renderTocHtml } from "../headings/render.js";
+import { buildTocTree, countToc } from "../headings/toc.js";
+import { PreviewSection } from "./preview.js";
+
 const API = "/_emdash/api/plugins/coywolf-pack/headings";
 
 interface Settings {
@@ -26,6 +30,30 @@ interface Settings {
 }
 
 const errorText = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
+
+/** The TOC block with these defaults, on a sample article's headings. */
+function TocPreview({ toc }: { toc: Settings["toc"] }) {
+	const tree = buildTocTree(SAMPLE_TOC_HEADINGS, toc.levels);
+	const count = countToc(tree);
+	const hidden = count < toc.minHeadings;
+	const html = hidden
+		? ""
+		: renderTocHtml(tree, { title: toc.title.trim() || "Table of contents", showTitle: toc.showTitle, listStyle: toc.listStyle, display: toc.display, smooth: false, titleId: "cw-toc-preview" });
+	return (
+		<PreviewSection
+			id="cw-toc-preview-title"
+			title="Table of Contents preview"
+			css={TOC_CSS}
+			html={html}
+			empty={
+				count === 0
+					? "Pick at least one heading level to list."
+					: `Hidden: the sample lists ${count} heading${count === 1 ? "" : "s"}, fewer than the minimum of ${toc.minHeadings}.`
+			}
+			note="A sample article's headings with these defaults. On the site the table uses your theme's fonts and link colors."
+		/>
+	);
+}
 
 function Section(props: { title: string; description: string; children: React.ReactNode }) {
 	const id = `cw-headings-${props.title.toLowerCase().replace(/[^a-z]+/g, "-")}`;
@@ -210,6 +238,7 @@ export function HeadingsPage() {
 							checked={settings.toc.smoothScroll}
 							onCheckedChange={(checked: boolean) => setToc({ smoothScroll: checked })}
 						/>
+						<TocPreview toc={settings.toc} />
 					</Section>
 
 					<div className="flex justify-end">
