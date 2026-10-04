@@ -1,0 +1,118 @@
+/**
+ * Weekly crawler-directory refresh from the Cloudflare Radar API.
+ *
+ *   GET https://api.cloudflare.com/client/v4/radar/bots?limit=1000&offset=N
+ *   Authorization: Bearer <token>   (token permission: Account → Radar → Read)
+ *
+ * One request covers the whole directory (~710 bots in October 2026; the
+ * API caps `limit` at 1000, so we page by offset just in case). The list
+ * gives slug, name, operator, category, description, kind and
+ * userAgentPatterns — not robots.txt tokens, which is why new bots arrive
+ * unverified (see ./bots.ts).
+ */
+import type { PluginContext } from "emdash";
+
+import { secret, workerEnv } from "../shared.js";
+import { type BotOverlay, type RadarBot, mergeRadar } from "./bots.js";
+import { baselineBots } from "./directory.js";
+
+export const RADAR_HOST = "api.cloudflare.com";
+const RADAR_URL = `https://${RADAR_HOST}/client/v4/radar/bots`;
+const PAGE = 1000;
+const MAX_PAGES = 3;
+
+export const RADAR_TOKEN_SETTING = "robotsRadarToken";
+export const RADAR_TOKEN_SECRET = "RADAR_API_TOKEN";
+export const OVERLAY_COLLECTION = "robots_bots";
+export const SYNC_STATE_KEY = "state:robots.radarSync";
+
+export interface SyncState {
+	at: string;
+	ok: boolean;
+	total?: number;
+	added?: number;
+	updated?: number;
+	delisted?: number;
+	error?: string;
+}
+
+export async function radarToken(ctx: Pick<PluginContext, "settings">): Promise<string | undefined> {
+	const fromSettings = await ctx.settings.get<string>(RADAR_TOKEN_SETTING);
+	if (fromSettings?.trim()) return fromSettings.trim();
+	try {
+		return secret(await workerEnv(), RADAR_TOKEN_SECRET)?.trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Every overlay document (plugin storage pages are capped at 100). */
+export async function readOverlays(ctx: PluginContext): Promise<BotOverlay[]> {
+	const collection = ctx.storage[OVERLAY_COLLECTION];
+	if (!collection) return [];
+	const out: BotOverlay[] = [];
+	let cursor: string | undefined;
+	for (let i = 0; i < 50; i++) {
+		const page = await collection.query({ limit: 100, ...(cursor ? { cursor } : {}) });
+		for (const item of page.items) out.push(item.data as BotOverlay);
+		if (!page.hasMore || !page.cursor) break;
+		cursor = page.cursor;
+	}
+	return out;
+}
+
+async function fetchRadar(ctx: PluginContext, token: string): Promise<RadarBot[]> {
+	const doFetch = ctx.http ? ctx.http.fetch.bind(ctx.http) : fetch;
+	const bots: RadarBot[] = [];
+	for (let page = 0; page < MAX_PAGES; page++) {
+		const url = `${RADAR_URL}?limit=${PAGE}&offset=${page * PAGE}&format=JSON`;
+		const response = await doFetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+		const body = (await response.json().catch(() => null)) as {
+			success?: boolean;
+			result?: { bots?: RadarBot[] };
+			errors?: Array<{ code?: number; message?: string }>;
+		} | null;
+		if (!response.ok || !body?.success) {
+			const detail = body?.errors?.map((e) => e.message).filter(Boolean).join("; ");
+			if (response.status === 401 || response.status === 403) {
+				throw new Error(`Cloudflare rejected the Radar API token (${response.status}). It needs the Account → Radar → Read permission.`);
+			}
+			throw new Error(`Radar API error ${response.status}${detail ? `: ${detail}` : ""}`);
+		}
+		const list = body.result?.bots ?? [];
+		bots.push(...list);
+		if (list.length < PAGE) break;
+	}
+	return bots;
+}
+
+/** Fetch Radar, merge into the stored overlay, and record the outcome. Throws on failure (after recording it). */
+export async function syncRadar(ctx: PluginContext): Promise<SyncState> {
+	const at = new Date().toISOString();
+	const token = await radarToken(ctx);
+	if (!token) {
+		const state: SyncState = { at, ok: false, error: "No Radar API token. Add one under Coywolf Pack settings, or set the RADAR_API_TOKEN Worker secret." };
+		await ctx.kv.set(SYNC_STATE_KEY, state);
+		return state;
+	}
+	try {
+		const radar = await fetchRadar(ctx, token);
+		if (radar.length < 100) throw new Error(`Radar returned only ${radar.length} bots; keeping the current directory.`);
+		const result = mergeRadar(baselineBots(), await readOverlays(ctx), radar, at.slice(0, 10));
+		const collection = ctx.storage[OVERLAY_COLLECTION];
+		if (result.writes.length && collection) {
+			for (let i = 0; i < result.writes.length; i += 100) {
+				await collection.putMany(result.writes.slice(i, i + 100).map((data) => ({ id: data.slug, data })));
+			}
+		}
+		const state: SyncState = { at, ok: true, total: result.total, added: result.added, updated: result.updated, delisted: result.delisted };
+		await ctx.kv.set(SYNC_STATE_KEY, state);
+		ctx.log.info("Robots: Radar bot directory synced", { total: result.total, added: result.added, updated: result.updated, delisted: result.delisted });
+		return state;
+	} catch (error) {
+		const state: SyncState = { at, ok: false, error: error instanceof Error ? error.message : String(error) };
+		await ctx.kv.set(SYNC_STATE_KEY, state);
+		ctx.log.error("Robots: Radar sync failed", { error: state.error });
+		throw error;
+	}
+}
