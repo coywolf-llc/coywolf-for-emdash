@@ -17,12 +17,14 @@ test("escapes text in highlighted and plain output", () => {
 	assert.ok(!hl.includes("<b>"));
 });
 
-test("escapes the filename and an unknown language label", () => {
+test("shows the language, not the file name, and escapes an unknown language label", () => {
 	const html = r.renderBlock({ code: "x", language: `"><img src=x>`, filename: `<i>a.ts</i>` }, { label: true, copy: false, lineNumbers: false });
 	assert.ok(!html.includes("<img"));
-	assert.ok(!html.includes("<i>"));
-	assert.ok(html.includes("&lt;i&gt;a.ts&lt;/i&gt;"));
+	assert.ok(!html.includes("a.ts"));
 	assert.match(html, /class="language-img-src-x"/);
+	const ts = r.renderBlock({ code: "let a = 1;", language: "typescript", filename: "greet.ts" }, { label: true, copy: true, lineNumbers: false });
+	assert.match(ts, /<div class="cw-code-head"><span class="cw-code-label">TypeScript<\/span><\/div>/);
+	assert.ok(!ts.includes("greet.ts"));
 });
 
 test("only hljs classes survive hast → HTML", () => {

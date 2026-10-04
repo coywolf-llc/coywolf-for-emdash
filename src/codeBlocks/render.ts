@@ -243,7 +243,6 @@ export function renderBlock(node: CodeNode, options: BlockOptions): string {
 		Number(options.copy),
 		Number(options.lineNumbers),
 		typeof node.language === "string" ? node.language : "",
-		typeof node.filename === "string" ? node.filename : "",
 		code.length,
 		hash(code),
 	].join("\u0000");
@@ -265,9 +264,8 @@ function renderUncached(node: CodeNode, options: BlockOptions): string {
 	const body = options.lineNumbers ? lines.map((l) => `<span class="cw-line">${l}</span>`).join("\n") : lines.join("\n");
 	const langClass = lang.id ? `language-${lang.id}` : "";
 	const label = options.label && lang.label ? `<span class="cw-code-label">${escapeHtml(lang.label)}</span>` : "";
-	const file = typeof node.filename === "string" ? node.filename.trim() : "";
-	const filename = file ? `<span class="cw-code-file">${escapeHtml(file)}</span>` : "";
-	const head = label || filename ? `<div class="cw-code-head">${filename}${label}</div>` : "";
+	// The header shows the language (no file name), left-aligned, with the copy button on the right.
+	const head = label ? `<div class="cw-code-head">${label}</div>` : "";
 	const classes = ["cw-code", head ? "" : "cw-code--bare", options.copy ? "cw-code--copy" : "", options.lineNumbers ? "cw-code--lines" : ""]
 		.filter(Boolean)
 		.join(" ");
@@ -284,8 +282,7 @@ export const CHROME_CSS = [
 	".cw-code{position:relative;margin:1.5rem 0;border-radius:.5rem;overflow:hidden;font-size:.875rem;line-height:1.6;box-shadow:inset 0 0 0 1px color-mix(in srgb,currentColor 12%,transparent)}",
 	".cw-code-head{display:flex;align-items:center;gap:.75rem;min-height:2.75rem;padding:.25rem 1rem;font:.75rem/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.02em;border-bottom:1px solid color-mix(in srgb,currentColor 15%,transparent)}",
 	".cw-code--copy .cw-code-head{padding-right:3.25rem}",
-	".cw-code-file{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
-	".cw-code-label{margin-left:auto;opacity:.8}",
+	".cw-code-label{font-weight:600}",
 	".cw-code pre{margin:0;padding:1rem;overflow-x:auto;background:transparent;color:inherit;border:0;border-radius:0;tab-size:4}",
 	".cw-code--bare.cw-code--copy pre{padding-right:3.25rem}",
 	".cw-code pre:focus-visible{outline:2px solid currentColor;outline-offset:-2px}",

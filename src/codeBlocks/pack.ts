@@ -46,7 +46,6 @@ registerFeatures(FEATURES);
 
 const SAMPLE = {
 	language: "typescript",
-	filename: "greet.ts",
 	code: `/** Say hello to someone. */
 export function greet(name: string, times = 1): string {
   const words = ["Hello", name].join(", ");
