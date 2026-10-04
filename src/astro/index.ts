@@ -11,6 +11,8 @@ import BreadcrumbsBlock from "./headings/BreadcrumbsBlock.astro";
 import HeadingBlock from "./headings/HeadingBlock.astro";
 import TableOfContents from "./headings/TableOfContents.astro";
 import CoywolfVideo from "./videos/CoywolfVideo.astro";
+import CoywolfReview from "./reviews/CoywolfReview.astro";
+import Review from "./reviews/Review.astro";
 
 export const blockComponents = {
 	"coywolf-toc": TableOfContents,
@@ -18,6 +20,7 @@ export const blockComponents = {
 	code: CodeBlock,
 	"coywolf-file": FileCard,
 	"coywolf-video": CoywolfVideo,
+	"coywolf-review": CoywolfReview,
 };
 
 /** Videos module: the Stream player, for theme code. */
@@ -37,3 +40,6 @@ export { searchWithFallback } from "../search/query.js";
 export type { PackSearchOptions, PackSearchResponse, PackSearchResult } from "../search/query.js";
 export { entryUrl, entryUrls, matchEntryPath } from "../core/content-url.js";
 export type { EntryRef, MatchedEntry } from "../core/content-url.js";
+/** Reviews module: the review box for theme code, and legacy WordPress review marker attrs → review fields. */
+export { Review };
+export { reviewFromAttrs } from "../reviews/lib.js";

@@ -10,6 +10,7 @@ import type { SchemaOptions } from "./schema/module.js";
 import type { SearchOptions } from "./search/module.js";
 import type { VideosOptions } from "./videos/module.js";
 import type { RobotsOptions } from "./robots/module.js";
+import type { ReviewsOptions } from "./reviews/pack.js";
 import type { TrailingSlash } from "./core/content-url.js";
 
 /**
@@ -30,6 +31,7 @@ export interface CoywolfOptions {
 	links?: LinksOptions | false;
 	videos?: VideosOptions | false;
 	robots?: RobotsOptions | false;
+	reviews?: ReviewsOptions | false;
 	/**
 	 * Entry URL patterns for collections the theme routes differently from
 	 * EmDash's url_pattern, e.g. `{ posts: "/{term:category|uncategorized}/{slug}/" }`.

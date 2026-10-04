@@ -1,0 +1,27 @@
+---
+/**
+ * Portable Text `coywolf-review` block (Reviews module). Renders nothing when
+ * the Reviews feature is off. Schema comes from the page:metadata hook /
+ * Schema & Social's graph, not from here.
+ */
+import { siteFeatureOn } from "../../core/features.js";
+import Review from "./Review.astro";
+
+interface Props {
+	node: Record<string, unknown>;
+	[key: string]: unknown;
+}
+
+const { node } = Astro.props;
+
+// Claim the per-page CSS synchronously, before any await, so the first block
+// in document order carries it even when siblings render in parallel.
+const locals = (Astro.locals ?? {}) as Record<string, unknown>;
+const first = !locals.__cwReviewAssets;
+locals.__cwReviewAssets = true;
+
+const on = Boolean(node) && (await siteFeatureOn("reviews"));
+if (!on && first) locals.__cwReviewAssets = false;
+---
+
+{on && <Review review={node} styles={first} />}
