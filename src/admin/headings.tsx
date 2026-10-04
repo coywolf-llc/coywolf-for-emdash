@@ -168,7 +168,7 @@ export function HeadingsPage() {
 							maxLength={100}
 							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setToc({ title: e.target.value })}
 						/>
-						<fieldset>
+						<fieldset style={{ minWidth: 0 }}>
 							<legend className="mb-2 text-sm font-medium">Heading levels</legend>
 							<div className="flex flex-wrap gap-4">
 								{[2, 3, 4, 5, 6].map((level) => (
