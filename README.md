@@ -30,7 +30,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.4.5
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.4.6
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -511,6 +511,16 @@ No bindings or secrets, but EmDash needs to know the site URL (**Settings → Ge
 - Workers limit subrequests per invocation (50 on Free, 1,000 on Paid), and database calls count. A checked link takes 1–2 requests plus 1 per redirect, and 1 database write; keep **subrequests per check run** under your plan's limit, leaving room for other scheduled jobs. Scans run in steps of about 200 database statements (60 seconds) every 5 minutes, or faster while the Link Manager page is open; admin actions stop at about 150 statements or 25 seconds and continue on the next call.
 - Links are stored in plugin storage (`links_urls`, `links_refs`) in the site's D1 database, so backups include them. The list pages through indexed queries; search matches the start of a URL (when it starts with `http` or `/`) or of a domain. Status counts are cached for up to a minute (10 minutes in the dashboard widget).
 - Regular-expression ignore rules are limited to 200 characters, and patterns that can take exponential time (repeated groups containing a quantifier or alternation, backreferences) are refused.
+### Checking internal links
+
+A Worker can't fetch its own custom domain over HTTP (Cloudflare answers 522), so internal links are checked through a service binding to the site's own Worker. Add it to `wrangler.jsonc` (use your Worker's `name`):
+
+```jsonc
+"services": [{ "binding": "SELF", "service": "mysite" }]
+```
+
+Without the binding, internal links are listed but not checked (they're never reported as broken).
+
 ## Videos
 
 The Coywolf Video Manager for EmDash, on Cloudflare Stream.
