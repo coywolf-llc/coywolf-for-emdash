@@ -11,6 +11,7 @@ One plugin with [Coywolf](https://coywolf.com)'s features for [EmDash](https://e
 | **File Downloads** | A download card block, stable download URLs with counts, a Files page, and direct-to-R2 uploads of any size |
 | **Search** | Settings page for EmDash's full-text search, a search box with as-you-type suggestions and an OR fallback, and rate limiting |
 | **Discovery** | IndexNow pings, a Google News sitemap, and llms.txt with Markdown versions of entries |
+| **Link Manager** | Every link in your content with its HTTP status, where it's used, and bulk replace, unlink, and ignore |
 
 More modules will follow as Coywolf's WordPress plugins move to EmDash.
 
@@ -458,6 +459,28 @@ Nothing to configure beyond the feature switches. The module's site URLs are ser
 - Markdown URLs resolve through EmDash's routing (`resolveEmDashPath`, or `/{collection}/{slug}` for collections without a URL pattern), then are checked against the entry's public URL. Entries behind a locale prefix or a custom route don't get a Markdown version.
 - An entry's old URL is known only if it was published while IndexNow was on, so unpublishing or deleting an entry published earlier submits nothing.
 - The news sitemap has no category include/exclude filter (Coywolf SEO's WordPress option); pick collections instead. Coywolf SEO's AI entity sections (a Labs feature) aren't ported.
+
+## Link Manager
+
+An inventory of every link in your content, ported from Coywolf SEO's Link Manager:
+
+- **Inventory**: link marks in Portable Text (including nested blocks, columns and tables), linked images, buttons, embeds, iframes, and URL fields. Each link shows its anchor text, internal or external, and the entries that use it, with links to edit them. Entries are re-indexed when they're saved, deleted or restored; **Scan content** (and a background job on first use) indexes everything else.
+- **Checking** (sub-feature): every 5 minutes a background job checks links that are due: HEAD first, then GET when HEAD is refused, 10-second timeout, up to 5 redirects recorded. Statuses are **OK**, **Redirect** (with where it ends up), **Broken** (4xx/5xx), **Blocked** (403, 429, LinkedIn's 999, or a Cloudflare/AWS/DataDome bot challenge: the link is probably fine but can't be verified from a server), and **Error** (DNS, TLS, timeout, too many redirects). Broken links and errors are rechecked daily, the rest weekly. **Check now** and **Recheck** run checks on demand.
+- **Bulk actions**: **Replace** a URL across every entry that uses it (link text and other formatting are kept), **Unlink** (the text stays; linked images and buttons lose their link; embeds are left alone), **Ignore** a URL or domain, and **Recheck**. Ignore rules can also be domains, exact URLs, wildcards (`https://example.com/visit/*`) or regular expressions. Ignored links aren't checked or counted.
+- **Dashboard widget** with the number of broken links.
+
+Feature switches: **Link Manager** (`links`) and **Scheduled link checking** (`links.check`), both off by default.
+
+### Setup
+
+No bindings or secrets. Plugin settings: requests per check run (default 40), whether to check links to your own site (default on), and a User-Agent override. The checker presents a current desktop Chrome by default, which avoids most false "Blocked" results.
+
+### Notes
+
+- Edits go through EmDash's content API. A published entry is republished so the fix goes live. An entry with unpublished changes is fixed in its draft only, so its live version keeps the old link until the draft is published (the result message says how many). An editor with the entry open may overwrite the change on their next save.
+- The inventory follows each entry's latest saved version (its pending draft, if it has one). Links inside raw HTML blocks aren't tracked.
+- Workers limit subrequests per invocation (50 on Free, 1,000 on Paid). A link takes 1–2 requests plus 1 per redirect, so keep **requests per check run** under your plan's limit, leaving room for other scheduled jobs.
+- Links are stored in plugin storage (`links_urls`, `links_refs`) in the site's D1 database, so backups include them. The admin list loads every link row, which suits sites with up to tens of thousands of links.
 
 ## Development
 

@@ -4,6 +4,7 @@ import type { HeadingsOptions } from "./headings/pack.js";
 import type { CodeBlocksOptions } from "./codeBlocks/pack.js";
 import type { FilesOptions } from "./files/module.js";
 import type { DiscoveryOptions } from "./discovery/module.js";
+import type { LinksOptions } from "./links/module.js";
 import type { RedirectsOptions } from "./redirects/module.js";
 import type { SchemaOptions } from "./schema/module.js";
 import type { SearchOptions } from "./search/module.js";
@@ -23,4 +24,5 @@ export interface CoywolfOptions {
 	search?: SearchOptions | false;
 	ai?: AiOptions | false;
 	discovery?: DiscoveryOptions | false;
+	links?: LinksOptions | false;
 }
