@@ -2,6 +2,7 @@
  * Features page: turn each Coywolf Pack module and sub-feature on or off.
  */
 import { Banner, Loader, Switch } from "@cloudflare/kumo";
+import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
@@ -22,7 +23,17 @@ interface ModuleState {
 
 const errorText = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
 
+/** The EmDash admin's query client, so the sidebar can be refreshed (null if unavailable). */
+function useAdminQueryClient() {
+	try {
+		return useQueryClient();
+	} catch {
+		return null;
+	}
+}
+
 export function FeaturesPage() {
+	const queryClient = useAdminQueryClient();
 	const [modules, setModules] = React.useState<ModuleState[] | null>(null);
 	const [error, setError] = React.useState<string | null>(null);
 	const [saving, setSaving] = React.useState<string | null>(null);
@@ -53,6 +64,11 @@ export function FeaturesPage() {
 			setModules((current) =>
 				current?.map((m) => ({ ...m, features: m.features.map((f) => ({ ...f, enabled: features[f.id] ?? f.enabled })) })) ?? null,
 			);
+			// A module's pages show in the sidebar only while it's on: refresh the admin manifest.
+			if (!id.includes(".")) {
+				if (queryClient) void queryClient.invalidateQueries({ queryKey: ["manifest"] });
+				else window.location.reload();
+			}
 		} catch (cause) {
 			setError(errorText(cause, "Couldn't save"));
 		} finally {
@@ -66,7 +82,7 @@ export function FeaturesPage() {
 				<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Features</h1>
 				<p className="text-sm leading-5 text-pretty text-kumo-subtle">
 					Turn Coywolf Pack features on or off. A feature that's off stops running everywhere: on the site, in the editor, and in
-					scheduled jobs. Its settings and data are kept.
+					scheduled jobs, and its pages leave the sidebar. Its settings and data are kept.
 				</p>
 			</header>
 

@@ -47,7 +47,24 @@ interface SettingsCtx {
 }
 
 export async function ctxFeatures(ctx: SettingsCtx): Promise<FeatureMap> {
-	return resolveFeatures(await ctx.settings.get<FeatureMap>(FEATURES_SETTING));
+	return remember(resolveFeatures(await ctx.settings.get<FeatureMap>(FEATURES_SETTING)));
+}
+
+/** The switches most recently read in this isolate (null before the first read). */
+let lastKnown: FeatureMap | null = null;
+function remember(features: FeatureMap): FeatureMap {
+	lastKnown = features;
+	return features;
+}
+
+/**
+ * Synchronous view of the switches, for EmDash's admin manifest (sidebar
+ * pages and dashboard widgets), which reads the plugin's page list on every
+ * admin request. The pack middleware reads the switches before EmDash's
+ * routes run, so this is current; before any read it returns null.
+ */
+export function knownFeatures(): FeatureMap | null {
+	return lastKnown;
 }
 
 /**
@@ -85,7 +102,7 @@ export async function siteFeatures(database = "DB"): Promise<FeatureMap> {
 		console.error("coywolf-pack: could not read feature switches", error);
 		return resolveFeatures({});
 	}
-	const features = resolveFeatures(stored);
+	const features = remember(resolveFeatures(stored));
 	cached = { features, at: Date.now() };
 	return features;
 }
