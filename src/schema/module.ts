@@ -8,6 +8,7 @@
  * "<collection>:<entry id>") and schemaAuthors (Person property rows per
  * byline id).
  */
+import { getManyBatched } from "../core/storage.js";
 import { siteName } from "../core/site.js";
 import type { PageMetadataContribution, PluginContext, PublicPageContext } from "emdash";
 import { PluginRouteError, definePluginRoute } from "emdash";
@@ -270,7 +271,7 @@ async function authorNodes(ctx: PluginContext, page: PublicPageContext, config: 
 	const bylines = credits?.bylines.map((c) => c.byline) ?? [];
 	if (!bylines.length) return [];
 	const rowsById: Map<string, { rows: PropertyRow[] }> = isOn(features, SCHEMA_FEATURES.authors)
-		? await authorsStore(ctx).getMany(bylines.map((b) => b.id))
+		? await getManyBatched(authorsStore(ctx), bylines.map((b) => b.id))
 		: new Map();
 	const nodes = await Promise.all(
 		bylines.map(async (b) => {
@@ -636,7 +637,7 @@ export function schemaModule(options: SchemaOptions) {
 					if (!result.hasMore || !result.cursor) break;
 					cursor = result.cursor;
 				}
-				const saved: Map<string, { rows: PropertyRow[] }> = items.length ? await authorsStore(ctx).getMany(items.map((i) => i.id)) : new Map();
+				const saved: Map<string, { rows: PropertyRow[] }> = items.length ? await getManyBatched(authorsStore(ctx), items.map((i) => i.id)) : new Map();
 				for (const item of items) item.rows = saved.get(item.id)?.rows ?? null;
 				return { items, authorsOn: isOn(await ctxFeatures(ctx), SCHEMA_FEATURES.authors) };
 			},
