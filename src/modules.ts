@@ -8,6 +8,7 @@ import { backupsPack } from "./backups/pack.js";
 import { codeBlocksPack } from "./codeBlocks/pack.js";
 import type { PackMiddleware, PackModule } from "./core/module.js";
 import { headingsPack } from "./headings/pack.js";
+import { breadcrumbsPack } from "./breadcrumbs/pack.js";
 import { filesMiddleware, filesPack } from "./files/pack.js";
 import { discoveryMiddleware, discoveryPack } from "./discovery/pack.js";
 import { linksPack } from "./links/pack.js";
@@ -25,6 +26,7 @@ export const MODULES: Factory[] = [
 	(o) => (o.backups ? backupsPack(o.backups) : null),
 	(o) => (o.redirects === false ? null : redirectsPack(o.redirects ?? {})),
 	(o) => (o.headings === false ? null : headingsPack(o.headings ?? {})),
+	(o) => (o.breadcrumbs === false ? null : breadcrumbsPack(o.breadcrumbs ?? {})),
 	(o) => (o.codeBlocks === false ? null : codeBlocksPack(o.codeBlocks ?? {})),
 	(o) => (o.schema === false ? null : schemaPack(o.schema ?? {})),
 	(o) => (o.files === false ? null : filesPack(o.files ?? {})),

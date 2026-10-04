@@ -1,8 +1,9 @@
 /**
- * Headings & TOC module: heading anchors, a Table of Contents block and a
- * Breadcrumbs block, ported from Coywolf SEO. Anchors, TOC heading lists and
- * breadcrumb titles are stamped into the content on save (see ./stamp.ts);
- * the Astro components in src/astro/headings render them.
+ * Headings & TOC module: heading anchors and a Table of Contents block,
+ * ported from Coywolf SEO. Anchors and TOC heading lists are stamped into the
+ * content on save (see ./stamp.ts); the Astro components in
+ * src/astro/headings render them. Breadcrumbs moved to their own module
+ * (Breadcrumb Nav, src/breadcrumbs) in 0.6.0.
  */
 import type { PluginContext } from "emdash";
 import { definePluginRoute } from "emdash";
@@ -11,9 +12,8 @@ import { z } from "zod";
 import { ctxFeatures, isOn, registerFeatures } from "../core/features.js";
 import type { PackModule } from "../core/module.js";
 import { parseInput } from "../shared.js";
-import { capturePage } from "./breadcrumbs.js";
-import { SETTINGS_KEY, invalidateHeadingsSettings, normalizeSettings } from "./settings.js";
-import { BREADCRUMBS_BLOCK, TOC_BLOCK, needsPrevious, stampContent } from "./stamp.js";
+import { SETTINGS_KEY, invalidateHeadingsSettings, normalizeSettings, withLegacyBreadcrumbs } from "./settings.js";
+import { TOC_BLOCK, needsPrevious, stampContent } from "./stamp.js";
 
 /** No build-time options yet: defaults live on the Headings & TOC settings page. */
 export type HeadingsOptions = Record<string, never>;
@@ -22,7 +22,7 @@ export const FEATURES = [
 	{
 		id: "headings",
 		label: "Headings & TOC",
-		description: "Linkable headings, a Table of Contents block, and a Breadcrumbs block.",
+		description: "Linkable headings and a Table of Contents block.",
 		default: false,
 	},
 	{
@@ -35,12 +35,6 @@ export const FEATURES = [
 		id: "headings.toc",
 		label: "Table of Contents block",
 		description: "A Table of Contents block built from the entry's headings, with numbered or bulleted lists and an optional collapsible panel.",
-		default: false,
-	},
-	{
-		id: "headings.breadcrumbs",
-		label: "Breadcrumbs",
-		description: "An accessible breadcrumb trail, as a block and as a component for themes.",
 		default: false,
 	},
 ];
@@ -92,40 +86,6 @@ const BLOCKS = [
 			},
 		],
 	},
-	{
-		type: BREADCRUMBS_BLOCK,
-		label: "Breadcrumbs",
-		icon: "link",
-		category: "Sections",
-		description: "A breadcrumb trail for this page",
-		fields: [
-			{
-				type: "select",
-				action_id: "separator",
-				label: "Separator",
-				options: [
-					{ label: "Site default", value: "" },
-					{ label: "/", value: "slash" },
-					{ label: "›", value: "chevron" },
-					{ label: "»", value: "guillemet" },
-					{ label: "•", value: "bullet" },
-					{ label: "→", value: "arrow" },
-					{ label: ">", value: "gt" },
-				],
-			},
-			{ type: "text_input", action_id: "homeLabel", label: "Home label", placeholder: "Site default (Home)" },
-			{
-				type: "select",
-				action_id: "showCurrent",
-				label: "Current page",
-				options: [
-					{ label: "Site default", value: "" },
-					{ label: "Show", value: "show" },
-					{ label: "Hide", value: "hide" },
-				],
-			},
-		],
-	},
 ];
 
 const settingsInput = z.object({ settings: z.record(z.string(), z.unknown()) });
@@ -134,8 +94,7 @@ async function beforeSave(event: { content: Record<string, unknown>; collection:
 	const features = await ctxFeatures(ctx);
 	const toc = isOn(features, "headings.toc");
 	const anchors = isOn(features, "headings.anchors") || toc;
-	const breadcrumbs = isOn(features, "headings.breadcrumbs");
-	if (!anchors && !breadcrumbs) return undefined;
+	if (!anchors) return undefined;
 
 	const settings = normalizeSettings(await ctx.settings.get(SETTINGS_KEY));
 	let previous: Record<string, unknown> | null = null;
@@ -146,7 +105,7 @@ async function beforeSave(event: { content: Record<string, unknown>; collection:
 			ctx.log.warn("headings: could not read the previous version; anchors follow the heading text", { error: String(error) });
 		}
 	}
-	return stampContent(event.content, { anchors, toc, breadcrumbs, prefix: settings.prefix, previous }) ?? undefined;
+	return stampContent(event.content, { anchors, toc, prefix: settings.prefix, previous }) ?? undefined;
 }
 
 export function headingsPack(_options: HeadingsOptions): PackModule {
@@ -159,13 +118,7 @@ export function headingsPack(_options: HeadingsOptions): PackModule {
 		adminPages: [{ path: "/headings", label: "Headings & TOC", icon: "list" }],
 		hooks: {
 			"content:beforeSave": beforeSave,
-			// Remember the theme's breadcrumb trail for the Breadcrumbs block in the body.
-			"page:metadata": (event: { page: Parameters<typeof capturePage>[0] }) => {
-				capturePage(event.page);
-				return [];
-			},
 		},
-		hookFeature: { "page:metadata": "headings.breadcrumbs" },
 		routes: {
 			"headings/settings": {
 				permission: "plugins:manage" as const,
@@ -177,7 +130,7 @@ export function headingsPack(_options: HeadingsOptions): PackModule {
 				request: { body: "json" },
 				handler: async (ctx) => {
 					const settings = normalizeSettings(parseInput(settingsInput, ctx.input).settings);
-					await ctx.settings.set(SETTINGS_KEY, settings);
+					await ctx.settings.set(SETTINGS_KEY, withLegacyBreadcrumbs(await ctx.settings.get(SETTINGS_KEY), settings));
 					invalidateHeadingsSettings();
 					ctx.log.info("Heading settings saved");
 					return { settings };

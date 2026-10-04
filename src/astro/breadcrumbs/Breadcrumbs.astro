@@ -7,14 +7,15 @@
  *
  * The trail is, in order: `items`, `page.breadcrumbs` (the theme's
  * PublicPageContext), the trail EmDashHead published for this path, or one
- * derived from the URL path. Unset options use the Headings & TOC settings.
+ * derived from the URL path. Unset options use the Breadcrumb Nav settings.
+ * Renders nothing while the `breadcrumbs` feature is off.
  *
  *   import { Breadcrumbs } from "@coywolf/emdash/astro";
  *   <Breadcrumbs page={page} />
  */
 import { siteFeatureOn } from "../../core/features.js";
-import { type Crumb, capturedPage, cssString, resolveTrail } from "../../headings/breadcrumbs.js";
-import { SEPARATORS, type SeparatorPreset, siteHeadingsSettings } from "../../headings/settings.js";
+import { SEPARATORS, type SeparatorPreset, siteBreadcrumbsSettings } from "../../breadcrumbs/settings.js";
+import { type Crumb, capturedPage, cssString, resolveTrail } from "../../breadcrumbs/trail.js";
 
 interface Props {
 	items?: Crumb[];
@@ -35,8 +36,8 @@ let trail: Crumb[] = [];
 let sepClass = "";
 let sepStyle: string | undefined;
 
-if (await siteFeatureOn("headings.breadcrumbs")) {
-	const settings = (await siteHeadingsSettings()).breadcrumbs;
+if (await siteFeatureOn("breadcrumbs")) {
+	const settings = await siteBreadcrumbsSettings();
 	const captured = props.items || props.page ? null : capturedPage(`${Astro.url.pathname}${Astro.url.search}`);
 	trail = resolveTrail({
 		path: Astro.url.pathname,

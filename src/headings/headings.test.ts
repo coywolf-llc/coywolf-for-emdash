@@ -2,11 +2,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { capturePage, capturedPage, humanize, resolveTrail } from "./breadcrumbs.js";
 import { blockText, slugify, uniqueSlug, validAnchor } from "./slug.js";
 import { stampContent } from "./stamp.js";
 import { buildTocTree, countToc } from "./toc.js";
-import { normalizeSettings } from "./settings.js";
+import { normalizeSettings, withLegacyBreadcrumbs } from "./settings.js";
 
 const h = (key: string, style: string, text: string, extra: Record<string, unknown> = {}) => ({
 	_type: "block",
@@ -17,7 +16,7 @@ const h = (key: string, style: string, text: string, extra: Record<string, unkno
 	...extra,
 });
 const p = (key: string, text: string) => h(key, "normal", text);
-const opts = { anchors: true, toc: true, breadcrumbs: true, prefix: "jump-" };
+const opts = { anchors: true, toc: true, prefix: "jump-" };
 
 test("slugify mirrors sanitize_title", () => {
 	assert.equal(slugify("Hello, World!"), "hello-world");
@@ -53,7 +52,7 @@ test("blockText reads nested marks trees", () => {
 	assert.equal(blockText(node), "Bold tail");
 });
 
-test("stamping adds unique anchors, TOC headings and breadcrumb title", () => {
+test("stamping adds unique anchors and TOC headings (breadcrumb blocks are left to Breadcrumb Nav)", () => {
 	const content = {
 		title: "My Post",
 		body: [
@@ -78,7 +77,7 @@ test("stamping adds unique anchors, TOC headings and breadcrumb title", () => {
 		{ level: 2, id: "jump-intro", text: "Intro" },
 		{ level: 3, id: "jump-intro-2", text: "Intro" },
 	]);
-	assert.equal(body[1]._title, "My Post");
+	assert.equal(body[1]._title, undefined);
 	assert.equal(out.other, "not portable text");
 	// Input untouched.
 	assert.equal((content.body[2] as Record<string, unknown>).anchor, undefined);
@@ -144,37 +143,17 @@ test("TOC tree nests by level and tolerates skipped levels", () => {
 	);
 });
 
-test("breadcrumb trails", () => {
-	const base = { homeLabel: "Home", showHome: true, showCurrent: true };
-	assert.deepEqual(resolveTrail({ ...base, path: "/guides/getting-started/", title: "Getting Started with EmDash" }), [
-		{ name: "Home", url: "/" },
-		{ name: "Guides", url: "/guides/" },
-		{ name: "Getting Started with EmDash", url: "/guides/getting-started/" },
-	]);
-	assert.deepEqual(resolveTrail({ ...base, path: "/" }), []);
-	assert.deepEqual(resolveTrail({ ...base, path: "/about", showCurrent: false }), []);
-	assert.deepEqual(
-		resolveTrail({ ...base, path: "/blog/post", items: [{ name: "Blog", url: "/blog" }, { name: "Post", url: "/blog/post" }] }).map((c) => c.name),
-		["Home", "Blog", "Post"],
-	);
-	assert.deepEqual(resolveTrail({ ...base, path: "/x", items: [] }), []);
-	assert.deepEqual(
-		resolveTrail({ ...base, path: "/a/b", showHome: false, showCurrent: false, items: [{ name: "H", url: "https://ex.com/" }, { name: "A", url: "/a" }, { name: "B", url: "/a/b" }] }).map((c) => c.name),
-		[],
-	);
-	assert.equal(humanize("getting-started_now"), "Getting started now");
-	assert.equal(humanize("caf%C3%A9"), "Café");
-});
-
-test("captured theme trails are keyed by URL path and query", () => {
-	capturePage({ url: "https://ex.com/fr/guide/?v=2", breadcrumbs: [{ name: "Accueil", url: "/fr/" }], pageTitle: "Guide" });
-	assert.equal(capturedPage("/fr/guide?v=2")?.title, "Guide");
-	assert.equal(capturedPage("/fr/guide"), null);
-	assert.equal(capturedPage("/guide/?v=2"), null);
-});
-
 test("TOC title can be hidden; levels can be H2 only", () => {
 	assert.equal(normalizeSettings({}).toc.showTitle, true);
 	assert.equal(normalizeSettings({ toc: { showTitle: false } }).toc.showTitle, false);
 	assert.deepEqual(normalizeSettings({ toc: { levels: [2] } }).toc.levels, [2]);
+	assert.equal("breadcrumbs" in normalizeSettings({ breadcrumbs: { homeLabel: "Start" } }), false);
+});
+
+test("saving Headings settings keeps the legacy breadcrumb sub-object for Breadcrumb Nav", () => {
+	const legacy = { separator: "chevron", homeLabel: "Start" };
+	const next = normalizeSettings({ prefix: "sec-" });
+	assert.deepEqual(withLegacyBreadcrumbs({ prefix: "jump-", breadcrumbs: legacy }, next), { ...next, breadcrumbs: legacy });
+	assert.deepEqual(withLegacyBreadcrumbs({ prefix: "jump-" }, next), next);
+	assert.deepEqual(withLegacyBreadcrumbs(null, next), next);
 });

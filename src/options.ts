@@ -1,6 +1,7 @@
 import type { AiOptions } from "./ai/store.js";
 import type { BackupsOptions } from "./backups/module.js";
 import type { HeadingsOptions } from "./headings/pack.js";
+import type { BreadcrumbsOptions } from "./breadcrumbs/pack.js";
 import type { CodeBlocksOptions } from "./codeBlocks/pack.js";
 import type { FilesOptions } from "./files/module.js";
 import type { DiscoveryOptions } from "./discovery/module.js";
@@ -22,6 +23,7 @@ export interface CoywolfOptions {
 	backups?: BackupsOptions | false;
 	redirects?: RedirectsOptions | false;
 	headings?: HeadingsOptions | false;
+	breadcrumbs?: BreadcrumbsOptions | false;
 	codeBlocks?: CodeBlocksOptions | false;
 	schema?: SchemaOptions | false;
 	files?: FilesOptions | false;

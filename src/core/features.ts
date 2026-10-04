@@ -25,12 +25,36 @@ export function featureCatalog(): FeatureDef[] {
 	return [...catalog.values()];
 }
 
-/** Stored choices over catalog defaults. A sub-feature ("a.b") is on only when its parent ("a") is on too. */
+const parentOf = (id: string) => (id.includes(".") ? id.slice(0, id.indexOf(".")) : null);
+
+/**
+ * The stored choice of a feature's legacy ids (FeatureDef.replaces): the
+ * first one present in the map wins. A legacy sub-feature ("a.b") counted
+ * only while its parent was on, so its parent's state (stored, else the
+ * parent's default) is applied too. Undefined when none is stored.
+ */
+export function legacyChoice(stored: FeatureMap | null | undefined, def: FeatureDef): boolean | undefined {
+	if (!stored || !def.replaces) return undefined;
+	for (const legacy of def.replaces) {
+		if (typeof stored[legacy] !== "boolean") continue;
+		const parent = parentOf(legacy);
+		// A parent that's no longer in the catalog (and wasn't stored) doesn't hold the choice back.
+		const parentOn = !parent || (stored[parent] ?? (catalog.has(parent) ? (catalog.get(parent)?.default ?? false) : true));
+		return stored[legacy] && parentOn;
+	}
+	return undefined;
+}
+
+/**
+ * Stored choices over catalog defaults. A feature with no stored choice
+ * takes its legacy ids' choice (FeatureDef.replaces), then its default. A
+ * sub-feature ("a.b") is on only when its parent ("a") is on too.
+ */
 export function resolveFeatures(stored: FeatureMap | null | undefined): FeatureMap {
 	const out: FeatureMap = {};
-	for (const def of catalog.values()) out[def.id] = stored?.[def.id] ?? def.default ?? false;
+	for (const def of catalog.values()) out[def.id] = stored?.[def.id] ?? legacyChoice(stored, def) ?? def.default ?? false;
 	for (const id of Object.keys(out)) {
-		const parent = id.includes(".") ? id.slice(0, id.indexOf(".")) : null;
+		const parent = parentOf(id);
 		if (parent && parent in out && !out[parent]) out[id] = false;
 	}
 	return out;
