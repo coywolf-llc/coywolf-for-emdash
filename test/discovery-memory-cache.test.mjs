@@ -1,13 +1,13 @@
+import "./ts-resolve.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-// @ts-ignore -- Node's type stripping needs the .ts extension.
-import { MemoryCache, sizeOf } from "./memory-cache.ts";
+const { MemoryCache, sizeOf } = await import("../src/discovery/memory-cache.ts");
 
-function cache(overrides: Record<string, number> = {}) {
+function cache(overrides = {}) {
 	let now = 0;
 	const c = new MemoryCache({ ttlMs: 1000, maxBytes: 1000, maxEntryBytes: 400, maxMisses: 2, now: () => now, ...overrides });
-	return { c, advance: (ms: number) => (now += ms) };
+	return { c, advance: (ms) => (now += ms) };
 }
 
 test("hits expire after the TTL", () => {

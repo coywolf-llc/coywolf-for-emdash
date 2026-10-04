@@ -1,24 +1,23 @@
+import "./ts-resolve.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-// @ts-ignore -- Node's type stripping needs the .ts extension.
-import { IndexNowBatcher, KEY_PATTERN, buildPayload, generateKey, keyFromPath } from "./indexnow.ts";
-// @ts-ignore -- Node's type stripping needs the .ts extension.
-import { buildLlmsTxt } from "./llms.ts";
+const { IndexNowBatcher, KEY_PATTERN, buildPayload, generateKey, keyFromPath } = await import("../src/discovery/indexnow.ts");
+const { buildLlmsTxt } = await import("../src/discovery/llms.ts");
 
 /** A batcher whose deferred tasks we run by hand. */
 function harness(windowMs = 3000) {
-	const tasks: (() => Promise<void>)[] = [];
-	const sleeps: number[] = [];
-	const sent: string[][] = [];
+	const tasks = [];
+	const sleeps = [];
+	const sent = [];
 	const batcher = new IndexNowBatcher({
 		windowMs,
-		defer: (task: () => Promise<void>) => tasks.push(task),
-		sleep: async (ms: number) => {
+		defer: (task) => tasks.push(task),
+		sleep: async (ms) => {
 			sleeps.push(ms);
 		},
 	});
-	const send = async (urls: string[]) => {
+	const send = async (urls) => {
 		sent.push(urls);
 	};
 	return { batcher, tasks, sleeps, sent, send };
@@ -49,12 +48,12 @@ test("a new batch starts after a flush", async () => {
 
 test("the most recent sender is used; empty adds schedule nothing", async () => {
 	const h = harness();
-	const other: string[][] = [];
+	const other = [];
 	h.batcher.add([], h.send);
 	h.batcher.add("", h.send);
 	assert.equal(h.tasks.length, 0);
 	h.batcher.add("https://e.com/a", h.send);
-	h.batcher.add("https://e.com/b", async (urls: string[]) => {
+	h.batcher.add("https://e.com/b", async (urls) => {
 		other.push(urls);
 	});
 	await h.tasks[0]();
@@ -83,7 +82,7 @@ test("keys", () => {
 });
 
 test("llms.txt layout: H1, summary, sections, Optional overflow, cap", () => {
-	const entries = (n: number, prefix: string) => Array.from({ length: n }, (_, i) => ({ title: `${prefix} ${i}`, url: `https://e.com/${prefix}/${i}/index.html.md` }));
+	const entries = (n, prefix) => Array.from({ length: n }, (_, i) => ({ title: `${prefix} ${i}`, url: `https://e.com/${prefix}/${i}/index.html.md` }));
 	const body = buildLlmsTxt({
 		name: "Example [Site]",
 		siteUrl: "https://e.com",

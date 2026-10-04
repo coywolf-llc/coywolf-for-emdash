@@ -1,11 +1,11 @@
+import "./ts-resolve.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-// @ts-ignore -- Node's type stripping needs the .ts extension.
-import { NEWS_WINDOW_MS, buildNewsSitemap, escapeXml, newsLanguage, parseDate, selectNewsArticles } from "./news.ts";
+const { NEWS_WINDOW_MS, buildNewsSitemap, escapeXml, newsLanguage, parseDate, selectNewsArticles } = await import("../src/discovery/news.ts");
 
 const now = Date.parse("2026-10-03T12:00:00Z");
-const hoursAgo = (h: number) => new Date(now - h * 3600_000).toISOString();
+const hoursAgo = (h) => new Date(now - h * 3600_000).toISOString();
 
 test("48-hour window: newest first, excludes old and future entries", () => {
 	const picked = selectNewsArticles(
@@ -20,7 +20,7 @@ test("48-hour window: newest first, excludes old and future entries", () => {
 		now,
 	);
 	assert.deepEqual(
-		picked.map((a: { title: string }) => a.title),
+		picked.map((a) => a.title),
 		["A", "B"],
 	);
 });

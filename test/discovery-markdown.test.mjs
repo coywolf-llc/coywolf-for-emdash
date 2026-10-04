@@ -1,14 +1,11 @@
-/**
- * Run: node --experimental-strip-types --test src/discovery/*.test.ts
- */
+import "./ts-resolve.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-// @ts-ignore -- Node's type stripping needs the .ts extension.
-import { escapeLineStart, escapeText, estimateTokens, frontmatter, markdownUrl, pagePathFromMarkdownPath, portableTextToMarkdown } from "./markdown.ts";
+const { escapeLineStart, escapeText, estimateTokens, frontmatter, markdownUrl, pagePathFromMarkdownPath, portableTextToMarkdown } = await import("../src/discovery/markdown.ts");
 
-const span = (text: string, marks: string[] = []) => ({ _type: "span", _key: Math.random().toString(36).slice(2), text, marks });
-const block = (children: unknown[], extra: Record<string, unknown> = {}) => ({ _type: "block", _key: "b", style: "normal", markDefs: [], children, ...extra });
+const span = (text, marks = []) => ({ _type: "span", _key: Math.random().toString(36).slice(2), text, marks });
+const block = (children, extra = {}) => ({ _type: "block", _key: "b", style: "normal", markDefs: [], children, ...extra });
 
 test("paragraphs and headings", () => {
 	const md = portableTextToMarkdown([
@@ -29,7 +26,7 @@ test("links use markDefs and are absolutized; unsafe schemes are dropped", () =>
 				],
 			}),
 		],
-		{ absolute: (u: string) => new URL(u, "https://example.com/").href },
+		{ absolute: (u) => new URL(u, "https://example.com/").href },
 	);
 	assert.equal(md, "Read [this](https://example.com/about/) or that");
 });
@@ -55,7 +52,7 @@ test("blockquote, break, code, image", () => {
 			{ _type: "code", _key: "c", language: "ts", code: "const a = 1;\n```\n" },
 			{ _type: "image", _key: "i", asset: { _ref: "m1", url: "/_emdash/api/media/file/a.jpg" }, alt: "A [cat]", caption: "Caption *here*" },
 		],
-		{ absolute: (u: string) => new URL(u, "https://example.com/").href },
+		{ absolute: (u) => new URL(u, "https://example.com/").href },
 	);
 	assert.equal(
 		md,
@@ -64,7 +61,7 @@ test("blockquote, break, code, image", () => {
 });
 
 test("tables become GFM tables, pipes escaped, colspan padded", () => {
-	const cell = (text: string, extra: Record<string, unknown> = {}) => ({ _type: "tableCell", _key: text, content: [span(text)], ...extra });
+	const cell = (text, extra = {}) => ({ _type: "tableCell", _key: text, content: [span(text)], ...extra });
 	const md = portableTextToMarkdown([
 		{
 			_type: "table",
