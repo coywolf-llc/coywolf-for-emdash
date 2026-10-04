@@ -320,3 +320,21 @@ test("publisher person who also authors is one Person node with merged propertie
 	assert.equal(pub.jobTitle, undefined, "input publisher node isn't mutated");
 	assertRefsResolve(doc);
 });
+
+test("publisher uses the chosen organization type and policy URLs", () => {
+	const node = g.publisherNode({
+		details: {
+			publisherType: "organization",
+			organizationType: "NewsMediaOrganization",
+			orgRows: [
+				{ prop: "correctionsPolicy", value: "/policies-and-standards/" },
+				{ prop: "parentOrganization", value: { name: "Coywolf LLC", url: "https://coywolf.llc", "@id": "https://coywolf.llc#Organization" } },
+			],
+		},
+		origin: ORIGIN,
+		siteName: "Example",
+	});
+	assert.equal(node["@type"], "NewsMediaOrganization");
+	assert.equal(node.correctionsPolicy, `${ORIGIN}/policies-and-standards/`);
+	assert.deepEqual(node.parentOrganization, { "@type": "Organization", name: "Coywolf LLC", url: "https://coywolf.llc", "@id": "https://coywolf.llc#Organization" });
+});

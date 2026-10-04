@@ -49,6 +49,23 @@ export const ORGANIZATION_PROPERTIES = [
 	"numberOfEmployees", "duns", "taxID", "vatID", "leiCode", "naics", "isicV4", "iso6523Code", "tickerSymbol",
 	"sameAs", "slogan", "keywords", "knowsAbout", "knowsLanguage", "award", "brand", "parentOrganization",
 	"subOrganization", "memberOf", "member", "sponsor", "funder", "contactPoint", "identifier", "ethicsPolicy",
+	// Publishing policies (news publishers; Google and the Trust Project read these).
+	"publishingPrinciples", "masthead", "missionCoveragePrioritiesPolicy", "diversityPolicy", "diversityStaffingReport", "correctionsPolicy", "verificationFactCheckingPolicy", "unnamedSourcesPolicy", "actionableFeedbackPolicy", "ownershipFundingInfo", "noBylinesPolicy",
+];
+
+/** Organization types for the publisher (Organization and common subtypes). */
+export const ORGANIZATION_TYPES: Array<[string, string]> = [
+	["Organization", "Organization"],
+	["NewsMediaOrganization", "News media organization"],
+	["Corporation", "Corporation"],
+	["OnlineBusiness", "Online business"],
+	["LocalBusiness", "Local business"],
+	["EducationalOrganization", "Educational organization"],
+	["NGO", "Nonprofit (NGO)"],
+	["GovernmentOrganization", "Government organization"],
+	["MedicalOrganization", "Medical organization"],
+	["SportsOrganization", "Sports organization"],
+	["PerformingGroup", "Performing group"],
 ];
 
 export const PERSON_PROPERTIES = [
@@ -88,6 +105,17 @@ export const PROPERTY_INPUTS: Record<string, PropertyInput> = {
 	birthDate: { input: "date" },
 	numberOfEmployees: { input: "number" },
 	ethicsPolicy: { input: "url" },
+	publishingPrinciples: { input: "url" },
+	masthead: { input: "url" },
+	missionCoveragePrioritiesPolicy: { input: "url" },
+	diversityPolicy: { input: "url" },
+	diversityStaffingReport: { input: "url" },
+	correctionsPolicy: { input: "url" },
+	verificationFactCheckingPolicy: { input: "url" },
+	unnamedSourcesPolicy: { input: "url" },
+	actionableFeedbackPolicy: { input: "url" },
+	ownershipFundingInfo: { input: "url" },
+	noBylinesPolicy: { input: "url" },
 	address: {
 		fields: {
 			streetAddress: { label: "Street address", input: "text" },

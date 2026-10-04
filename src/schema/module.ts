@@ -15,7 +15,7 @@ import { z } from "zod";
 import { absoluteUrl, entryUrl } from "../core/content-url.js";
 import { type FeatureMap, cachedCtxFeatures, ctxFeatures, isOn, requireFeature } from "../core/features.js";
 import { parseInput, workerEnv } from "../shared.js";
-import { ARTICLE_TYPES, ORGANIZATION_PROPERTIES, PAGE_TYPES, PERSON_PROPERTIES, PROPERTY_INPUTS } from "./catalog.js";
+import { ARTICLE_TYPES, ORGANIZATION_PROPERTIES, ORGANIZATION_TYPES, PAGE_TYPES, PERSON_PROPERTIES, PROPERTY_INPUTS } from "./catalog.js";
 import {
 	type BylineFacts,
 	CUSTOM_KEY,
@@ -507,6 +507,7 @@ export function schemaModule(options: SchemaOptions) {
 						pageTypes: PAGE_TYPES,
 						articleTypes: ARTICLE_TYPES,
 						organization: ORGANIZATION_PROPERTIES,
+						organizationTypes: ORGANIZATION_TYPES,
 						person: PERSON_PROPERTIES,
 						inputs: PROPERTY_INPUTS,
 					},
@@ -555,6 +556,7 @@ export function schemaModule(options: SchemaOptions) {
 				const input = parseInput(
 					z.object({
 						publisherType: z.enum(["organization", "person"]),
+						organizationType: z.string().nullish(),
 						personBylineId: z.string().max(100).nullish(),
 						orgRows: z.array(rowInput).max(200),
 					}),
@@ -562,6 +564,7 @@ export function schemaModule(options: SchemaOptions) {
 				);
 				const site: SiteDetails = {
 					publisherType: input.publisherType,
+					organizationType: ORGANIZATION_TYPES.some(([t]) => t === input.organizationType) ? input.organizationType : "Organization",
 					personBylineId: input.personBylineId || null,
 					orgRows: sanitizeRows(input.orgRows, ORG_SET),
 				};

@@ -23,6 +23,8 @@ export interface SiteDetails {
 	personBylineId?: string | null;
 	/** Organization property rows, in order. */
 	orgRows: PropertyRow[];
+	/** Organization type (Organization or a subtype such as NewsMediaOrganization). */
+	organizationType?: string | null;
 }
 
 /** Page and Article types for a collection (or "_home" / "_custom" for non-content pages). */
@@ -144,7 +146,7 @@ const OBJECT_PROPS: Record<string, string> = {
 	colleague: "Person",
 };
 
-const URL_PROPS = new Set(["@id", "url", "sameAs", "logo", "image", "ethicsPolicy"]);
+const URL_PROPS = new Set(["@id", "url", "sameAs", "logo", "image", "ethicsPolicy", "publishingPrinciples", "masthead", "missionCoveragePrioritiesPolicy", "diversityPolicy", "diversityStaffingReport", "correctionsPolicy", "verificationFactCheckingPolicy", "unnamedSourcesPolicy", "actionableFeedbackPolicy", "ownershipFundingInfo", "noBylinesPolicy"]);
 const NUMBER_PROPS = new Set(["numberOfEmployees"]);
 
 /**
@@ -313,7 +315,7 @@ export function publisherNode(opts: {
 		return { "@type": "Organization", "@id": id, name: opts.siteName, url: `${origin}/` };
 	}
 	const shaped = shapeRows(details?.orgRows, "Organization", origin);
-	const node: Node = { "@type": "Organization", ...shaped, "@id": id };
+	const node: Node = { "@type": details?.organizationType || "Organization", ...shaped, "@id": id };
 	if (!node.name) node.name = opts.siteName;
 	if (!node.url) node.url = `${origin}/`;
 	if (!node.logo && opts.siteLogo?.url) node.logo = imageObject(opts.siteLogo, origin);

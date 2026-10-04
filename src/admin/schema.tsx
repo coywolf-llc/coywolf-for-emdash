@@ -25,6 +25,7 @@ interface TypeChoice {
 }
 interface SiteDetails {
 	publisherType: "organization" | "person";
+	organizationType?: string | null;
 	personBylineId?: string | null;
 	orgRows: Row[];
 }
@@ -44,6 +45,7 @@ interface Config {
 		pageTypes: Array<[string, string]>;
 		articleTypes: Array<[string, string]>;
 		organization: string[];
+		organizationTypes: Array<[string, string]>;
 		person: string[];
 		inputs: Record<string, PropertyInput>;
 	};
@@ -325,6 +327,13 @@ function SiteTab(props: { config: Config; bylines: Byline[] | undefined; onSaved
 				]}
 			/>
 			{site.publisherType === "organization" ? (
+				<>
+				<Select
+					label="Organization type"
+					value={site.organizationType || "Organization"}
+					onValueChange={(value: string | null) => setSite({ ...site, organizationType: value || "Organization" })}
+					items={props.config.catalog.organizationTypes.map(([value, label]) => ({ value, label }))}
+				/>
 				<PropertyEditor
 					label="Organization"
 					rows={site.orgRows}
@@ -332,6 +341,7 @@ function SiteTab(props: { config: Config; bylines: Byline[] | undefined; onSaved
 					properties={props.config.catalog.organization}
 					inputs={props.config.catalog.inputs}
 				/>
+				</>
 			) : (
 				<div className="space-y-2">
 					{props.bylines === undefined ? (
