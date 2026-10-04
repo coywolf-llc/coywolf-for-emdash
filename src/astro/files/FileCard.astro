@@ -1,0 +1,283 @@
+---
+/**
+ * Download card for the coywolf-file Portable Text block: file-type badge,
+ * name, "TYPE · size · Uploaded date", Download and Copy link. Renders
+ * nothing when File Downloads is off or the file no longer exists.
+ */
+import { siteFeatureOn } from "../../core/features.js";
+import { workerEnv } from "../../shared.js";
+import { downloadPath, extensionOf, formatDate, formatSize, iconFor } from "../../files/format.js";
+import { readSiteSettings, resolveFile } from "../../files/site.js";
+
+interface Props {
+	node: {
+		_key?: string;
+		id?: string;
+		title?: string;
+		description?: string;
+		showIcon?: boolean;
+		showDescription?: boolean;
+		showMeta?: boolean;
+		showDownload?: boolean;
+		showCopyLink?: boolean;
+	};
+}
+
+const { node } = Astro.props;
+const on = (value: boolean | undefined) => value !== false;
+
+let card: null | {
+	title: string;
+	description: string;
+	ext: string;
+	icon: { color: string; label: string };
+	meta: string;
+	href: string;
+	absolute: string;
+	scheme: string;
+	accent: string;
+} = null;
+
+if (node?.id && (await siteFeatureOn("files"))) {
+	try {
+		const env = await workerEnv();
+		const db = env.DB as D1Database | undefined;
+		const file = db ? await resolveFile(db, String(node.id)) : null;
+		if (db && file) {
+			const settings = await readSiteSettings(db);
+			const ext = extensionOf(file.name);
+			const uploaded = formatDate(file.uploadedAt);
+			const href = downloadPath(settings.base, file.id, file.name);
+			card = {
+				title: node.title?.trim() || file.name,
+				description: node.description?.trim() ?? "",
+				ext,
+				icon: iconFor(ext),
+				meta: [ext.toUpperCase(), file.size > 0 ? formatSize(file.size) : "", uploaded ? `Uploaded ${uploaded}` : ""].filter(Boolean).join(" · "),
+				href,
+				absolute: new URL(href, Astro.url).href,
+				scheme: settings.scheme,
+				accent: settings.accent,
+			};
+		}
+	} catch (error) {
+		console.error("coywolf-pack files: could not render a download card", error);
+	}
+}
+---
+
+{
+	card && (
+		<div class={`cw-file cw-file--${card.scheme}`} style={card.accent ? `--cw-file-accent:${card.accent}` : undefined}>
+			{on(node.showIcon) && (
+				<div class="cw-file__icon">
+					<svg width="40" height="48" viewBox="0 0 40 48" fill="none" aria-hidden="true" focusable="false">
+						<path d="M10 3 h14 l10 10 v28 a4 4 0 0 1 -4 4 H10 a4 4 0 0 1 -4 -4 V7 a4 4 0 0 1 4 -4 z" fill="var(--cw-file-page)" stroke="var(--cw-file-stroke)" stroke-width="1.5" />
+						<path d="M24 3 L24 13 L34 13" fill="var(--cw-file-fold)" stroke="var(--cw-file-stroke)" stroke-width="1.5" stroke-linejoin="round" />
+						<rect x="2" y="26" width="27" height="15" rx="3.5" fill={card.icon.color} />
+						<text x="15.5" y="36.5" text-anchor="middle" font-size="8.5" font-weight="700" fill="#fff" style="letter-spacing:0.02em">{card.icon.label}</text>
+					</svg>
+				</div>
+			)}
+			<div class="cw-file__body">
+				<div class="cw-file__name">{card.title}</div>
+				{on(node.showDescription) && card.description && <div class="cw-file__desc">{card.description}</div>}
+				{on(node.showMeta) && card.meta && <div class="cw-file__meta">{card.meta}</div>}
+			</div>
+			<div class="cw-file__actions">
+				{on(node.showDownload) && (
+					<a class="cw-file__btn cw-file__download" href={card.href} download aria-label={`Download ${card.title}`} title="Download">
+						<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+							<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+							<polyline points="7 10 12 15 17 10" />
+							<line x1="12" x2="12" y1="15" y2="3" />
+						</svg>
+					</a>
+				)}
+				{on(node.showCopyLink) && (
+					<button type="button" class="cw-file__btn cw-file__copy" data-cw-file-url={card.absolute} aria-label={`Copy download link for ${card.title}`} title="Copy link">
+						<svg class="cw-file__ic-link" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+							<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+							<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+						</svg>
+						<svg class="cw-file__ic-check" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+							<path d="M20 6 9 17l-5-5" />
+						</svg>
+					</button>
+				)}
+			</div>
+			<span class="cw-file__sr" role="status" aria-live="polite"></span>
+		</div>
+	)
+}
+
+<script>
+	// Copy link: clipboard, checkmark swap, and a polite announcement. One delegated listener per page.
+	const timers = new WeakMap<Element, number>();
+	document.addEventListener("click", async (event) => {
+		const target = event.target instanceof Element ? event.target : null;
+		const button = target?.closest<HTMLButtonElement>(".cw-file__copy");
+		if (!button) return;
+		const url = button.dataset.cwFileUrl;
+		const status = button.closest(".cw-file")?.querySelector(".cw-file__sr");
+		if (!url) return;
+		try {
+			await navigator.clipboard.writeText(url);
+			button.classList.add("is-copied");
+			if (status) status.textContent = "Link copied";
+			clearTimeout(timers.get(button));
+			timers.set(
+				button,
+				window.setTimeout(() => {
+					button.classList.remove("is-copied");
+					if (status) status.textContent = "";
+				}, 2000),
+			);
+		} catch {
+			if (status) status.textContent = "Could not copy the link.";
+		}
+	});
+</script>
+
+<style>
+	.cw-file {
+		--cw-file-bg: #fff;
+		--cw-file-border: #e6e6e6;
+		--cw-file-text: #1e2a3b;
+		--cw-file-muted: #5b6472;
+		--cw-file-hover: rgba(0, 0, 0, 0.06);
+		--cw-file-accent: #007392;
+		--cw-file-page: #fff;
+		--cw-file-stroke: #d0d5dd;
+		--cw-file-fold: #eaecf0;
+		position: relative;
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		margin: 0 0 1.25em;
+		padding: 12px 14px;
+		border: 1px solid var(--cw-file-border);
+		border-radius: 12px;
+		background: var(--cw-file-bg);
+		color: var(--cw-file-text);
+	}
+	.cw-file--dark {
+		--cw-file-bg: #1b1b1c;
+		--cw-file-border: #343437;
+		--cw-file-text: #d5d8dc;
+		--cw-file-muted: #9ea3a8;
+		--cw-file-hover: rgba(255, 255, 255, 0.08);
+		--cw-file-accent: #21a1c4;
+		--cw-file-page: #e7eaee;
+		--cw-file-stroke: #aab1ba;
+		--cw-file-fold: #d0d5dd;
+	}
+	@media (prefers-color-scheme: dark) {
+		.cw-file--auto {
+			--cw-file-bg: #1b1b1c;
+			--cw-file-border: #343437;
+			--cw-file-text: #d5d8dc;
+			--cw-file-muted: #9ea3a8;
+			--cw-file-hover: rgba(255, 255, 255, 0.08);
+			--cw-file-accent: #21a1c4;
+			--cw-file-page: #e7eaee;
+			--cw-file-stroke: #aab1ba;
+			--cw-file-fold: #d0d5dd;
+		}
+	}
+	.cw-file__icon {
+		flex-shrink: 0;
+		line-height: 0;
+	}
+	.cw-file__icon svg {
+		display: block;
+		width: 40px;
+		height: 48px;
+	}
+	.cw-file__body {
+		flex: 1 1 auto;
+		min-width: 0;
+	}
+	.cw-file__name {
+		font-weight: 500;
+		line-height: 1.35;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.cw-file__desc,
+	.cw-file__meta {
+		margin-top: 2px;
+		font-size: 0.875em;
+		line-height: 1.4;
+		color: var(--cw-file-muted);
+	}
+	.cw-file__meta {
+		font-variant-numeric: tabular-nums;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.cw-file__actions {
+		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+	.cw-file__btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 36px;
+		height: 36px;
+		margin: 0;
+		padding: 0;
+		border: 0;
+		border-radius: 50%;
+		background: transparent;
+		color: var(--cw-file-muted);
+		cursor: pointer;
+		text-decoration: none;
+		box-shadow: none;
+		appearance: none;
+		transition: background 0.15s ease, color 0.15s ease;
+	}
+	.cw-file__btn:hover {
+		background: var(--cw-file-hover);
+		color: var(--cw-file-text);
+	}
+	.cw-file__btn:focus-visible {
+		outline: 2px solid var(--cw-file-accent);
+		outline-offset: 2px;
+	}
+	.cw-file__download,
+	.cw-file__copy.is-copied {
+		color: var(--cw-file-accent);
+	}
+	.cw-file__btn svg {
+		display: block;
+	}
+	.cw-file__ic-check,
+	.cw-file__copy.is-copied .cw-file__ic-link {
+		display: none;
+	}
+	.cw-file__copy.is-copied .cw-file__ic-check {
+		display: block;
+	}
+	.cw-file__sr {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		margin: -1px;
+		padding: 0;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.cw-file__btn {
+			transition: none;
+		}
+	}
+</style>

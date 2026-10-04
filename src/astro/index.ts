@@ -5,6 +5,7 @@
  * renderer) when it's off.
  */
 import CodeBlock from "./codeBlocks/CodeBlock.astro";
+import FileCard from "./files/FileCard.astro";
 import BreadcrumbsComponent from "./headings/Breadcrumbs.astro";
 import BreadcrumbsBlock from "./headings/BreadcrumbsBlock.astro";
 import HeadingBlock from "./headings/HeadingBlock.astro";
@@ -14,6 +15,7 @@ export const blockComponents = {
 	"coywolf-toc": TableOfContents,
 	"coywolf-breadcrumbs": BreadcrumbsBlock,
 	code: CodeBlock,
+	"coywolf-file": FileCard,
 };
 
 /** Breadcrumb trail for theme layouts (Headings & TOC module). */
