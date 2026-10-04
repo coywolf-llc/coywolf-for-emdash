@@ -4,7 +4,7 @@
  * tester that runs Google's REP matcher (ported) against that preview.
  */
 import { Badge, Banner, Button, Checkbox, Dialog, DropdownMenu, Input, InputArea, Loader, Select, Switch } from "@cloudflare/kumo";
-import { ArrowDown, ArrowsClockwise, ArrowUp, CheckCircle, DotsThree, PencilSimple, Plus, Robot, Trash, WarningCircle, XCircle } from "@phosphor-icons/react";
+import { ArrowDown, ArrowsClockwise, ArrowUp, CheckCircle, DotsThree, PencilSimple, Plus, Robot, Trash, WarningCircle, X, XCircle } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
@@ -30,6 +30,7 @@ interface PageData {
 	saved: boolean;
 	siteUrl: string;
 	emdashRobotsTxt: string | null;
+	emdashNoticeDismissed: boolean;
 	presets: Array<Omit<RobotsRule, "id" | "enabled">>;
 	radar: { tokenConfigured: boolean; tokenSource: "settings" | "env" | null; state: SyncState | null; baselineDate: string };
 }
@@ -440,6 +441,11 @@ export function RobotsPage() {
 	const [dirty, setDirty] = React.useState(false);
 	const [syncing, setSyncing] = React.useState(false);
 	const [editingToken, setEditingToken] = React.useState(false);
+	/** The admin closed the EmDash robots.txt notice (saved server-side; see robots/dismiss-notice). */
+	const [noticeHidden, setNoticeHidden] = React.useState(false);
+	React.useEffect(() => {
+		if (data?.emdashNoticeDismissed) setNoticeHidden(true);
+	}, [data?.emdashNoticeDismissed]);
 	/** Token changes only touch the Radar status, so unsaved rule edits survive. */
 	const tokenChanged = (source: TokenSource, message: string) => {
 		setData((d) => (d ? { ...d, radar: { ...d.radar, tokenSource: source, tokenConfigured: Boolean(source) } } : d));
@@ -579,10 +585,25 @@ export function RobotsPage() {
 					description="EmDash's robots.txt is served until you save rules here."
 				/>
 			)}
-			{data.emdashRobotsTxt && (
+			{data.emdashRobotsTxt && !data.saved && !noticeHidden && (
 				<Banner
 					variant="alert"
 					title="EmDash has its own custom robots.txt"
+					action={
+						<Button
+							type="button"
+							variant="ghost"
+							shape="square"
+							size="sm"
+							aria-label="Close this notice for good"
+							onClick={() => {
+								setNoticeHidden(true);
+								void apiFetch(`${API}/dismiss-notice`, { method: "POST", headers: { "X-EmDash-Request": "1" } }).catch(() => undefined);
+							}}
+						>
+							<X aria-hidden="true" />
+						</Button>
+					}
 					description={
 						<span>
 							Saved rules here replace it while this feature is on.{" "}

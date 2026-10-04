@@ -15,6 +15,9 @@ import { CONFIG_SETTING, invalidateRobotsCache } from "./middleware.js";
 import { RADAR_TOKEN_SETTING, SYNC_STATE_KEY, type SyncState, radarTokenSource, readOverlays, syncRadar } from "./radar.js";
 import { PRESETS, RULE_KINDS, RobotsValidationError, type RobotsConfig, generate, normalizeConfig, validateRule } from "./rules.js";
 
+/** KV flag: the admin closed the notice about EmDash's own robots.txt. */
+const NOTICE_DISMISSED_KEY = "robots:emdashNoticeDismissed";
+
 export interface RobotsOptions {
 	/** D1 binding of the site database. Default "DB". */
 	database?: string;
@@ -78,6 +81,7 @@ export function robotsModule(options: RobotsOptions) {
 					siteUrl,
 					preview: generate(config, { siteUrl }),
 					emdashRobotsTxt: await readEmdashRobots(database),
+					emdashNoticeDismissed: (await ctx.kv.get<boolean>(NOTICE_DISMISSED_KEY)) === true,
 					presets: PRESETS,
 					radar: {
 						tokenSource,
@@ -88,6 +92,17 @@ export function robotsModule(options: RobotsOptions) {
 				};
 			},
 		},
+
+		/** Hide the "EmDash has its own robots.txt" notice for good. */
+		"robots/dismiss-notice": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "none" },
+			handler: async (ctx) => {
+				await ctx.kv.set(NOTICE_DISMISSED_KEY, true);
+				return { dismissed: true };
+			},
+		}),
 
 		/** The crawler directory (bundled baseline + Radar overlay). */
 		"robots/bots": {
