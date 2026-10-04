@@ -106,12 +106,13 @@ export async function limitClient(
 	return { allowed: decision.allowed, retryAfter: decision.retryAfter };
 }
 
-/** Search URLs the limiter covers: EmDash's public search and suggest endpoints, and the pack's search route. Admin endpoints (enable, rebuild, stats) aren't limited. */
+/** Search URLs the limiter covers: EmDash's public search and suggest endpoints, and the pack's search and live results routes. Admin endpoints (enable, rebuild, stats) aren't limited. */
 export function isLimitedPath(pathname: string): boolean {
 	const path = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
 	return (
 		path === "/_emdash/api/search" ||
 		path === "/_emdash/api/search/suggest" ||
-		path === "/_emdash/api/plugins/coywolf-pack/search/query"
+		path === "/_emdash/api/plugins/coywolf-pack/search/query" ||
+		path === "/_emdash/api/plugins/coywolf-pack/search/live"
 	);
 }

@@ -7,7 +7,10 @@ import type { Props as SearchBoxProps } from "./SearchBox.astro";
  * the style is inline and the script is rendered with the component.
  */
 
-export type Props = Omit<SearchBoxProps, "database">;
+export type Props = Omit<SearchBoxProps, "database"> & {
+	/** Live results ("search.live"). Without them it's a plain search form. */
+	live?: boolean;
+};
 
 const {
 	action = "/search",
@@ -26,6 +29,7 @@ const {
 	value,
 	class: className,
 	id = "cw-search",
+	live = true,
 } = Astro.props;
 
 const inputId = `${id}-input`;
@@ -37,7 +41,8 @@ const inputId = `${id}-input`;
 	action={action}
 	method="get"
 	data-cw-search
-	data-endpoint="/_emdash/api/plugins/coywolf-pack/search/query"
+	data-live={live ? "1" : undefined}
+	data-endpoint="/_emdash/api/plugins/coywolf-pack/search/live"
 	data-min-chars={minChars}
 	data-debounce={debounce}
 	data-limit={limit}
@@ -314,17 +319,21 @@ const inputId = `${id}-input`;
 		let options: HTMLElement[] = [];
 		let active = -1;
 
-		input.setAttribute("role", "combobox");
-		input.setAttribute("aria-autocomplete", "list");
-		input.setAttribute("aria-controls", list.id);
-		input.setAttribute("aria-expanded", "false");
+		// Without live results ("search.live" off) only the clear button is wired up.
+		const live = d.live === "1";
+		if (live) {
+			input.setAttribute("role", "combobox");
+			input.setAttribute("aria-autocomplete", "list");
+			input.setAttribute("aria-controls", list.id);
+			input.setAttribute("aria-expanded", "false");
+		}
 
 		const isOpen = () => !list.hidden;
 
 		function close() {
 			list.hidden = true;
 			list.classList.remove("is-open");
-			input.setAttribute("aria-expanded", "false");
+			if (live) input.setAttribute("aria-expanded", "false");
 			input.removeAttribute("aria-activedescendant");
 			active = -1;
 		}
@@ -414,7 +423,7 @@ const inputId = `${id}-input`;
 			if (cached) return render(query, cached.items, cached.fallback);
 			controller?.abort();
 			controller = new AbortController();
-			const params = new URLSearchParams({ q: query, mode: "suggest", limit: d.limit || "8" });
+			const params = new URLSearchParams({ q: query, limit: d.limit || "8" });
 			if (d.collections) params.set("collections", d.collections);
 			if (d.locale) params.set("locale", d.locale);
 			try {
@@ -433,6 +442,7 @@ const inputId = `${id}-input`;
 			const query = input.value.trim();
 			clear.hidden = input.value === "";
 			clearTimeout(timer);
+			if (!live) return;
 			if (query.length < minChars) {
 				controller?.abort();
 				status.textContent = "";
