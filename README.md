@@ -6,6 +6,7 @@ One plugin with [Coywolf](https://coywolf.com)'s features for [EmDash](https://e
 | --- | --- |
 | **Backups** | Full backups (D1 database + R2 media), rewind with undo, restore to a new database, missing-media restore |
 | **Redirects** | Redirect manager for what EmDash's built-in Redirects can't handle: external destinations and file paths |
+| **Headings & TOC** | Linkable headings (`#jump-…` anchors), a Table of Contents block, and a Breadcrumbs block and theme component |
 
 More modules will follow as Coywolf's WordPress plugins move to EmDash.
 
@@ -158,6 +159,55 @@ wp db query "SELECT source, target, type, is_regex FROM wp_coywolf_seo_redirects
 ```
 
 Paste the output into **Redirects → Import**.
+
+## Headings & TOC
+
+Ported from Coywolf SEO. Off until you turn it on under **Features**:
+
+| Feature | Default | What it does |
+| --- | --- | --- |
+| `headings` | off | Main switch |
+| `headings.anchors` | off | Every H2–H6 gets an id like `jump-pricing`, plus an optional "copy link to section" button on hover and focus |
+| `headings.toc` | off | **Table of Contents** block: title, heading levels, plain/bulleted/numbered (1, 1.1, 1.1.1), always open or collapsible (open or collapsed) |
+| `headings.breadcrumbs` | off | **Breadcrumbs** block and a `Breadcrumbs` component for themes |
+
+Site defaults live on **Headings & TOC**: id prefix, copy link, scroll offset for sticky headers (px or rem), TOC defaults (title, levels, style, display, minimum headings, smooth scrolling), and breadcrumb separator, home label, and whether to show home and the current page.
+
+Anchors are written into the content when it's saved (an `anchor` field on each heading block), so they're unique within the entry and stay the same when a heading is reworded. A Table of Contents block stores the entry's heading list the same way, so the table always matches the anchors. After turning the features on, re-save an entry to stamp it; until then headings get ids from their text when the page renders.
+
+### Setup
+
+EmDash lets plugins add block types but not change how headings render, so the theme passes the pack's heading renderer to `PortableText` (one line, wherever content is rendered):
+
+```astro
+---
+import { PortableText } from "emdash/ui";
+import { portableTextComponents } from "@coywolf/emdash/astro";
+---
+<PortableText value={entry.data.content} components={portableTextComponents} />
+```
+
+If you already pass components, merge them: `components={{ ...portableTextComponents, type: myTypes }}`. With the anchors and TOC features off, headings render exactly as before.
+
+For breadcrumbs in a layout instead of a block:
+
+```astro
+---
+import { Breadcrumbs } from "@coywolf/emdash/astro";
+---
+<Breadcrumbs page={page} />
+```
+
+Props: `page` (the `PublicPageContext` you pass to `EmDashHead`), `items` (`{ name, url }[]`), `title`, `separator` (`slash`, `chevron`, `guillemet`, `bullet`, `arrow`, `gt`, or any short string), `homeLabel`, `showHome`, `showCurrent`, `class`, `label`.
+
+The trail comes from, in order: `items`, `page.breadcrumbs`, the trail the theme gave `EmDashHead` for the same page (picked up by the pack's `page:metadata` hook, so the Breadcrumbs block uses it too), or the URL path (home, one crumb per path segment with a readable name, then the page title). Give themes with archives or nested content a real trail through `page.breadcrumbs`: derived ancestor links point at whatever the path segments are, which may not be pages.
+
+### Notes
+
+- Output is server-rendered. Collapsing uses `<details>`, smooth scrolling is CSS (and is skipped for visitors who prefer reduced motion), and the only script is a small inline one for the copy-link button, sent only when that option is on.
+- Markup follows Coywolf SEO's accessibility rules: the TOC is a labeled `<nav>` (its title is never a heading inside `<summary>`), breadcrumbs use `<nav aria-label="Breadcrumb">` with an `<ol>` and `aria-current="page"`, and separators are CSS that screen readers skip.
+- Anchors are kept across edits by matching block keys (then heading text) against the stored entry, which needs the `content:read` capability. When an entry has unpublished draft revisions, anchors of headings added in an earlier draft are matched by text.
+- Styles use `cw-` classes and the theme's colors, in light and dark mode.
 
 ## License
 

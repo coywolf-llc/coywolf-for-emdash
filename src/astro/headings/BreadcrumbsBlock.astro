@@ -1,0 +1,12 @@
+---
+/** The `coywolf-breadcrumbs` Portable Text block: the Breadcrumbs component with the block's options. */
+import Breadcrumbs from "./Breadcrumbs.astro";
+
+const { node } = Astro.props as { node: Record<string, unknown> };
+const separator = typeof node.separator === "string" && node.separator ? node.separator : undefined;
+const homeLabel = typeof node.homeLabel === "string" && node.homeLabel.trim() ? node.homeLabel : undefined;
+const showCurrent = node.showCurrent === "show" ? true : node.showCurrent === "hide" ? false : undefined;
+const title = typeof node._title === "string" ? node._title : undefined;
+---
+
+<Breadcrumbs separator={separator} homeLabel={homeLabel} showCurrent={showCurrent} title={title} />
