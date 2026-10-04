@@ -19,6 +19,7 @@ import { BotsTab } from "./robots-bots.js";
 import { dateTimeFormat, errorText, get, newId, post, tokenIndex, useCopy } from "./robots-shared.js";
 import { saveFile, siteSlug, today } from "./download.js";
 import { RuleWizard } from "./robots-wizard.js";
+import { SaveBar, isDirty } from "./save-bar.js";
 
 interface SyncState {
 	at: string;
@@ -372,12 +373,25 @@ function SettingsTab(props: {
 	const [saving, setSaving] = React.useState(false);
 	const [error, setError] = React.useState<string>();
 	React.useEffect(() => setDraft(props.config), [props.config]);
-	const dirty = JSON.stringify(draft) !== JSON.stringify(props.config);
+	const dirty = isDirty(draft, props.config);
 	const update = (p: Partial<RobotsConfig>) => setDraft((d) => ({ ...d, ...p }));
 	const problem = dirty ? checkConfig(draft, props.data.siteUrl || undefined) : null;
 	const risks = dirty ? analyzeConfigChange(props.config, draft, props.data.siteUrl || undefined) : [];
 	const [ack, setAck] = React.useState(false);
 	React.useEffect(() => setAck(false), [draft]);
+	const canSave = !problem && (risks.length === 0 || ack);
+	const save = async () => {
+		if (!dirty || !canSave) return;
+		setSaving(true);
+		setError(undefined);
+		try {
+			await props.onSave(draft, "Changed settings");
+		} catch (cause) {
+			setError(errorText(cause, "Could not save"));
+		} finally {
+			setSaving(false);
+		}
+	};
 
 	return (
 		<div className="space-y-6">
@@ -451,30 +465,6 @@ function SettingsTab(props: {
 					)}
 				</div>
 				{error && <Banner variant="error" role="alert" description={error} />}
-				<div className="flex gap-2">
-					<Button
-						variant="primary"
-						disabled={!dirty || Boolean(problem) || saving || (risks.length > 0 && !ack)}
-						onClick={async () => {
-							setSaving(true);
-							setError(undefined);
-							try {
-								await props.onSave(draft, "Changed settings");
-							} catch (cause) {
-								setError(errorText(cause, "Could not save"));
-							} finally {
-								setSaving(false);
-							}
-						}}
-					>
-						{saving ? "Saving…" : "Save settings"}
-					</Button>
-					{dirty && (
-						<Button variant="secondary" onClick={() => setDraft(props.config)}>
-							Discard changes
-						</Button>
-					)}
-				</div>
 			</section>
 
 			<section className="space-y-2" aria-labelledby="robots-transfer">
@@ -553,6 +543,15 @@ function SettingsTab(props: {
 					</ul>
 				)}
 			</section>
+
+			<SaveBar
+				dirty={dirty}
+				saving={saving}
+				canSave={canSave}
+				detail={problem ? "Fix the problem above to save" : !canSave ? "Confirm the warnings above to save" : undefined}
+				onSave={() => void save()}
+				onDiscard={() => setDraft(props.config)}
+			/>
 		</div>
 	);
 }

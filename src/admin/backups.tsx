@@ -16,6 +16,7 @@ import {
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { SaveBar } from "./save-bar.js";
 import { SettingsSection } from "./settings-ui.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/backups";
@@ -213,53 +214,52 @@ function ScheduleSettings(props: { data: ListResponse; onSaved: () => Promise<vo
 	};
 
 	return (
-		<form
-			onSubmit={(e) => {
-				e.preventDefault();
-				void save();
-			}}
-		>
-			<SettingsSection
-				id="backups-schedule"
-				title="Schedule and retention"
-				description="How often the site backs itself up, how long backups are kept, and when to warn that backups have stopped."
-				actions={
-					<Button type="submit" variant="primary" disabled={pending || !dirty}>
-						{pending ? "Saving…" : "Save"}
-					</Button>
-				}
+		<>
+			<form
+				id="cw-backups-settings-form"
+				onSubmit={(e) => {
+					e.preventDefault();
+					void save();
+				}}
 			>
-				<Switch
-					label="Back up once a day from the site itself"
-					checked={draft.scheduled}
-					onCheckedChange={(checked: boolean) => setDraft((d) => ({ ...d, scheduled: checked }))}
-				/>
-				<p className="-mt-2 text-sm text-kumo-subtle">Leave this off if an external job (such as a GitHub Action) already backs up the site.</p>
-				<div className="grid gap-4 sm:grid-cols-2">
-					<Input
-						type="number"
-						min={1}
-						max={365}
-						label="Keep backups for (days)"
-						description="Older database backups and replaced media copies are deleted daily. The media mirror itself is kept."
-						value={draft.retentionDays}
-						onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft((d) => ({ ...d, retentionDays: e.target.value }))}
+				<SettingsSection
+					id="backups-schedule"
+					title="Schedule and retention"
+					description="How often the site backs itself up, how long backups are kept, and when to warn that backups have stopped."
+				>
+					<Switch
+						label="Back up once a day from the site itself"
+						checked={draft.scheduled}
+						onCheckedChange={(checked: boolean) => setDraft((d) => ({ ...d, scheduled: checked }))}
 					/>
-					<Input
-						type="number"
-						min={1}
-						max={720}
-						label="Warn when the newest backup is older than (hours)"
-						description="Shown on this page and the dashboard widget."
-						value={draft.staleAfterHours}
-						onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft((d) => ({ ...d, staleAfterHours: e.target.value }))}
-					/>
-				</div>
-				<div aria-live="polite">
-					{status && (status.error ? <Banner variant="error" role="alert" description={status.text} /> : <p className="text-sm text-kumo-subtle">{status.text}</p>)}
-				</div>
-			</SettingsSection>
-		</form>
+					<p className="-mt-2 text-sm text-kumo-subtle">Leave this off if an external job (such as a GitHub Action) already backs up the site.</p>
+					<div className="grid gap-4 sm:grid-cols-2">
+						<Input
+							type="number"
+							min={1}
+							max={365}
+							label="Keep backups for (days)"
+							description="Older database backups and replaced media copies are deleted daily. The media mirror itself is kept."
+							value={draft.retentionDays}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft((d) => ({ ...d, retentionDays: e.target.value }))}
+						/>
+						<Input
+							type="number"
+							min={1}
+							max={720}
+							label="Warn when the newest backup is older than (hours)"
+							description="Shown on this page and the dashboard widget."
+							value={draft.staleAfterHours}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft((d) => ({ ...d, staleAfterHours: e.target.value }))}
+						/>
+					</div>
+					<div aria-live="polite">
+						{status && (status.error ? <Banner variant="error" role="alert" description={status.text} /> : <p className="text-sm text-kumo-subtle">{status.text}</p>)}
+					</div>
+				</SettingsSection>
+			</form>
+			<SaveBar form="cw-backups-settings-form" dirty={dirty} saving={pending} onDiscard={() => setDraft(initial())} />
+		</>
 	);
 }
 

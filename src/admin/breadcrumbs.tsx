@@ -8,6 +8,8 @@ import { Check, Copy } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { SaveBar, isDirty } from "./save-bar.js";
+
 const API = "/_emdash/api/plugins/coywolf-pack/breadcrumbs";
 
 interface Settings {
@@ -293,6 +295,7 @@ const CLASSES: { name: string; description: React.ReactNode }[] = [
 
 export function BreadcrumbsPage() {
 	const [settings, setSettings] = React.useState<Settings | null>(null);
+	const [saved, setSaved] = React.useState<Settings | null>(null);
 	const [error, setError] = React.useState<string | null>(null);
 	const [notice, setNotice] = React.useState<string | null>(null);
 	const [saving, setSaving] = React.useState(false);
@@ -301,7 +304,9 @@ export function BreadcrumbsPage() {
 		void (async () => {
 			try {
 				const response = await apiFetch(`${API}/settings`);
-				setSettings((await parseApiResponse<{ settings: Settings }>(response, "Couldn't load settings")).settings);
+				const loaded = (await parseApiResponse<{ settings: Settings }>(response, "Couldn't load settings")).settings;
+				setSettings(loaded);
+				setSaved(loaded);
 			} catch (cause) {
 				setError(errorText(cause, "Couldn't load settings"));
 			}
@@ -309,6 +314,8 @@ export function BreadcrumbsPage() {
 	}, []);
 
 	const set = (patch: Partial<Settings>) => setSettings((s) => (s ? { ...s, ...patch } : s));
+
+	const dirty = isDirty(settings, saved);
 
 	async function save() {
 		if (!settings) return;
@@ -321,7 +328,9 @@ export function BreadcrumbsPage() {
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ settings }),
 			});
-			setSettings((await parseApiResponse<{ settings: Settings }>(response, "Couldn't save")).settings);
+			const next = (await parseApiResponse<{ settings: Settings }>(response, "Couldn't save")).settings;
+			setSettings(next);
+			setSaved(next);
 			setNotice("Settings saved. Pages pick them up within a minute.");
 		} catch (cause) {
 			setError(errorText(cause, "Couldn't save"));
@@ -351,6 +360,7 @@ export function BreadcrumbsPage() {
 
 			{settings && (
 				<form
+					id="cw-breadcrumbs-form"
 					className="space-y-6"
 					onSubmit={(e) => {
 						e.preventDefault();
@@ -394,11 +404,6 @@ export function BreadcrumbsPage() {
 								/>
 							</div>
 						</fieldset>
-						<div className="flex justify-end">
-							<Button type="submit" variant="primary" disabled={saving}>
-								{saving ? "Saving…" : "Save settings"}
-							</Button>
-						</div>
 					</Section>
 				</form>
 			)}
@@ -530,6 +535,8 @@ export function BreadcrumbsPage() {
 					</Step>
 				</ol>
 			</Section>
+
+			<SaveBar form="cw-breadcrumbs-form" dirty={dirty} saving={saving} onDiscard={() => setSettings(saved)} />
 		</div>
 	);
 }

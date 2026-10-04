@@ -7,6 +7,8 @@ import { ArrowClockwise, ArrowSquareOut, Key, PaperPlaneTilt } from "@phosphor-i
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { SaveBar, isDirty } from "./save-bar.js";
+
 const API = "/_emdash/api/plugins/coywolf-pack/discovery";
 
 interface Settings {
@@ -197,6 +199,7 @@ export function DiscoveryPage() {
 			</div>
 
 			<form
+				id="cw-discovery-form"
 				className="space-y-6"
 				onSubmit={(e) => {
 					e.preventDefault();
@@ -367,12 +370,15 @@ export function DiscoveryPage() {
 					/>
 				</Section>
 
-				<div className="flex justify-end">
-					<Button type="submit" variant="primary" disabled={busy !== null}>
-						{busy === "save" ? "Saving…" : "Save settings"}
-					</Button>
-				</div>
 			</form>
+
+			<SaveBar
+				form="cw-discovery-form"
+				dirty={isDirty(draft, status.settings)}
+				saving={busy === "save"}
+				canSave={busy === null}
+				onDiscard={() => setDraft(status.settings)}
+			/>
 		</div>
 	);
 }

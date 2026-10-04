@@ -10,6 +10,8 @@ import { ArrowsClockwise, MagnifyingGlass } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { SaveBar } from "./save-bar.js";
+
 const PACK_API = "/_emdash/api/plugins/coywolf-pack/search";
 const SEARCH_API = "/_emdash/api/search";
 
@@ -38,6 +40,26 @@ interface CollectionConfig {
 
 type Stats = Record<string, { indexed: number }>;
 
+/** A collection's unsaved weights (as typed) and tokenizer. */
+interface Draft {
+	weights: Record<string, string>;
+	tokenize: string;
+}
+
+const searchableFields = (c: CollectionConfig) => c.fields.filter((f) => f.searchable);
+const draftOf = (c: CollectionConfig): Draft => ({
+	weights: Object.fromEntries(searchableFields(c).map((f) => [f.slug, String(c.weights[f.slug] ?? 1)])),
+	tokenize: c.tokenize,
+});
+const parseWeights = (d: Draft) => Object.fromEntries(Object.entries(d.weights).map(([k, v]) => [k, Number(v)]));
+const invalidDraft = (d: Draft) => Object.values(parseWeights(d)).some((n) => !Number.isFinite(n) || n < 0 || n > 100);
+/** Unsaved changes on an enabled collection (weights compared as numbers, so "1.0" equals 1). */
+function draftDirty(c: CollectionConfig, d: Draft | undefined): boolean {
+	if (!d || !c.enabled) return false;
+	const parsed = parseWeights(d);
+	return d.tokenize !== c.tokenize || searchableFields(c).some((f) => parsed[f.slug] !== (c.weights[f.slug] ?? 1));
+}
+
 const errorText = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
 
 async function post<T>(path: string, body: unknown, fallback: string): Promise<T> {
@@ -51,26 +73,19 @@ async function post<T>(path: string, body: unknown, fallback: string): Promise<T
 
 function CollectionCard(props: {
 	collection: CollectionConfig;
+	draft: Draft;
+	onDraft: (draft: Draft) => void;
 	indexed: number | undefined;
 	busy: boolean;
 	onEnable: (enabled: boolean) => Promise<void>;
-	onSave: (weights: Record<string, number>, tokenize: string) => Promise<void>;
+	/** Saves every collection with unsaved changes (the page's save bar). */
+	onSubmit: () => void;
 	onRebuild: () => Promise<void>;
 }) {
-	const { collection } = props;
-	const searchable = collection.fields.filter((f) => f.searchable);
-	const [weights, setWeights] = React.useState<Record<string, string>>({});
-	const [tokenize, setTokenize] = React.useState(collection.tokenize);
-	React.useEffect(() => {
-		setWeights(Object.fromEntries(searchable.map((f) => [f.slug, String(collection.weights[f.slug] ?? 1)])));
-		setTokenize(collection.tokenize);
-		// biome-ignore lint/correctness/useExhaustiveDependencies: reset when the saved config changes.
-	}, [collection]);
-
-	const parsed = Object.fromEntries(Object.entries(weights).map(([k, v]) => [k, Number(v)]));
-	const invalid = Object.values(parsed).some((n) => !Number.isFinite(n) || n < 0 || n > 100);
-	const dirty =
-		tokenize !== collection.tokenize || searchable.some((f) => parsed[f.slug] !== (collection.weights[f.slug] ?? 1));
+	const { collection, draft } = props;
+	const searchable = searchableFields(collection);
+	const { weights, tokenize } = draft;
+	const invalid = invalidDraft(draft);
 	const headingId = `cw-search-${collection.slug}`;
 
 	return (
@@ -101,9 +116,11 @@ function CollectionCard(props: {
 					className="space-y-4 border-t border-kumo-line p-4"
 					onSubmit={(e) => {
 						e.preventDefault();
-						if (!invalid) void props.onSave(parsed, tokenize);
+						props.onSubmit();
 					}}
 				>
+					{/* Keeps Enter in a weight field submitting; saving happens from the page's save bar. */}
+					<button type="submit" className="sr-only" tabIndex={-1} aria-hidden="true" />
 					<fieldset style={{ minWidth: 0 }}>
 						<legend className="text-sm font-medium">Field weights</legend>
 						<p className="mt-0.5 text-sm text-kumo-subtle">
@@ -120,7 +137,7 @@ function CollectionCard(props: {
 									step={0.5}
 									inputMode="decimal"
 									value={weights[f.slug] ?? "1"}
-									onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWeights((w) => ({ ...w, [f.slug]: e.target.value }))}
+									onChange={(e: React.ChangeEvent<HTMLInputElement>) => props.onDraft({ ...draft, weights: { ...weights, [f.slug]: e.target.value } })}
 								/>
 							))}
 						</div>
@@ -128,16 +145,13 @@ function CollectionCard(props: {
 					<Select
 						label="Tokenizer"
 						value={tokenize}
-						onValueChange={(value: string | null) => setTokenize(value ?? "porter unicode61")}
+						onValueChange={(value: string | null) => props.onDraft({ ...draft, tokenize: value ?? "porter unicode61" })}
 						items={TOKENIZERS}
 					/>
 					{invalid && <p className="text-sm text-kumo-danger">Weights must be numbers from 0 to 100.</p>}
 					<div className="flex flex-wrap justify-end gap-2">
 						<Button type="button" variant="secondary" icon={<ArrowsClockwise />} disabled={props.busy} onClick={() => void props.onRebuild()}>
 							Rebuild index
-						</Button>
-						<Button type="submit" variant="primary" disabled={props.busy || !dirty || invalid}>
-							Save and rebuild
 						</Button>
 					</div>
 				</form>
@@ -205,6 +219,27 @@ export function SearchPage() {
 
 	const enabled = (collections ?? []).filter((c) => c.enabled);
 
+	// Unsaved weights and tokenizers, reset whenever the saved config reloads.
+	const [drafts, setDrafts] = React.useState<Record<string, Draft>>({});
+	React.useEffect(() => {
+		setDrafts(Object.fromEntries((collections ?? []).map((c) => [c.slug, draftOf(c)])));
+	}, [collections]);
+	const dirtyCollections = (collections ?? []).filter((c) => draftDirty(c, drafts[c.slug]));
+	const dirty = dirtyCollections.length > 0;
+	const anyInvalid = dirtyCollections.some((c) => invalidDraft(drafts[c.slug]));
+
+	function saveAll() {
+		if (!dirty || anyInvalid || busy) return;
+		const labels = dirtyCollections.map((c) => c.label).join(", ");
+		void run(
+			dirtyCollections.map((c) => ({
+				label: `Rebuilding ${c.label}`,
+				fn: () => post("enable", { collection: c.slug, enabled: true, weights: parseWeights(drafts[c.slug]), tokenize: drafts[c.slug].tokenize }, "Couldn't save"),
+			})),
+			dirtyCollections.length === 1 ? `Saved. ${labels}'s index was rebuilt.` : `Saved. Rebuilt the indexes for ${labels}.`,
+		);
+	}
+
 	return (
 		<div className="space-y-6">
 			<header className="grid min-w-0 gap-4 border-b border-kumo-line pb-4">
@@ -262,6 +297,8 @@ export function SearchPage() {
 					<CollectionCard
 						key={c.slug}
 						collection={c}
+						draft={drafts[c.slug] ?? draftOf(c)}
+						onDraft={(d) => setDrafts((all) => ({ ...all, [c.slug]: d }))}
 						indexed={stats[c.slug]?.indexed}
 						busy={busy}
 						onEnable={async (on) => {
@@ -276,17 +313,7 @@ export function SearchPage() {
 								on ? `${c.label} is searchable.` : `Search is off for ${c.label}.`,
 							);
 						}}
-						onSave={(weights, tokenize) =>
-							run(
-								[
-									{
-										label: `Rebuilding ${c.label}`,
-										fn: () => post("enable", { collection: c.slug, enabled: true, weights, tokenize }, "Couldn't save"),
-									},
-								],
-								`Saved. ${c.label}'s index was rebuilt.`,
-							)
-						}
+						onSubmit={saveAll}
 						onRebuild={() =>
 							run(
 								[{ label: `Rebuilding ${c.label}`, fn: () => post("rebuild", { collection: c.slug }, `Couldn't rebuild ${c.label}`) }],
@@ -296,6 +323,16 @@ export function SearchPage() {
 					/>
 				))
 			)}
+
+			<SaveBar
+				dirty={dirty}
+				saving={busy}
+				canSave={!anyInvalid}
+				label="Save and rebuild"
+				detail={dirtyCollections.map((c) => c.label).join(", ")}
+				onSave={saveAll}
+				onDiscard={() => setDrafts((all) => ({ ...all, ...Object.fromEntries(dirtyCollections.map((c) => [c.slug, draftOf(c)])) }))}
+			/>
 		</div>
 	);
 }

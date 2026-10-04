@@ -11,6 +11,7 @@ import * as React from "react";
 import { entitiesToCsv } from "../ai/export.js";
 import { saveFile, siteSlug, today } from "./download.js";
 import { CredentialGuide } from "./guides.js";
+import { SaveBar, isDirty } from "./save-bar.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/ai";
 
@@ -266,21 +267,35 @@ function Overview(props: { status: Status; reload: () => Promise<void>; setNotic
 
 function SettingsPanel(props: { status: Status; reload: () => Promise<void>; setNotice: (s: string) => void; setError: (s: string) => void }) {
 	const { status } = props;
-	const [draft, setDraft] = React.useState({
-		aiProvider: status.settings.provider,
-		aiModel: "",
-		aiVisionModel: "",
-		aiApiKey: "",
-		aiMaxCallsPerDay: status.settings.maxCallsPerDay,
-		aiJobsPerTick: status.settings.jobsPerTick,
-		aiCollections: status.settings.collections.join(", "),
-		aiDebounceMinutes: status.settings.debounceMinutes,
-		aiDescriptionsMode: status.settings.descriptionsMode,
-		aiImageMode: status.settings.imageMode,
-		aiImageCaption: status.settings.imageCaption,
-		aiImageOverwrite: status.settings.imageOverwrite,
-		aiImageInstructions: status.settings.imageInstructions,
-	});
+	// The draft as the saved settings fill it (model names blank when they're the provider's defaults).
+	const savedDraft = React.useMemo(() => {
+		const s = status.settings;
+		const savedProvider = status.providers.find((p) => p.id === s.provider) ?? status.providers[0];
+		return {
+			aiProvider: s.provider,
+			aiModel: s.textModel !== savedProvider.textModel ? s.textModel : "",
+			aiVisionModel: s.visionModel !== savedProvider.visionModel ? s.visionModel : "",
+			aiApiKey: "",
+			aiMaxCallsPerDay: s.maxCallsPerDay,
+			aiJobsPerTick: s.jobsPerTick,
+			aiCollections: s.collections.join(", "),
+			aiDebounceMinutes: s.debounceMinutes,
+			aiDescriptionsMode: s.descriptionsMode,
+			aiImageMode: s.imageMode,
+			aiImageCaption: s.imageCaption,
+			aiImageOverwrite: s.imageOverwrite,
+			aiImageInstructions: s.imageInstructions,
+		};
+	}, [status.settings, status.providers]);
+	const [draft, setDraft] = React.useState(savedDraft);
+	// After a save, take the reloaded settings as the new draft (the server normalizes some fields).
+	const justSaved = React.useRef(false);
+	React.useEffect(() => {
+		if (!justSaved.current) return;
+		justSaved.current = false;
+		setDraft(savedDraft);
+	}, [savedDraft]);
+	const dirty = isDirty(draft, savedDraft);
 	const provider = status.providers.find((p) => p.id === draft.aiProvider) ?? status.providers[0];
 	const sameProvider = draft.aiProvider === status.settings.provider;
 	React.useEffect(() => {
@@ -331,6 +346,7 @@ function SettingsPanel(props: { status: Status; reload: () => Promise<void>; set
 			await post("settings", aiApiKey.trim() ? { ...rest, aiApiKey } : rest);
 			set({ aiApiKey: "" });
 			props.setNotice("AI settings saved.");
+			justSaved.current = true;
 			await props.reload();
 		} catch (cause) {
 			props.setError(errorText(cause, "Could not save settings"));
@@ -351,130 +367,128 @@ function SettingsPanel(props: { status: Status; reload: () => Promise<void>; set
 	const num = (v: string, fallback: number) => (Number.isFinite(Number.parseInt(v, 10)) ? Number.parseInt(v, 10) : fallback);
 
 	return (
-		<form
-			className="space-y-6"
-			onSubmit={(e) => {
-				e.preventDefault();
-				void save();
-			}}
-		>
-			<Section
-				title="Provider"
-				description="Save before testing. The test makes one small call that counts toward today's limit."
-				actions={
-					<Button type="button" variant="secondary" disabled={!status.features.ai} onClick={() => void runTest()}>
-						Test connection
-					</Button>
-				}
+		<>
+			<form
+				id="cw-ai-settings-form"
+				className="space-y-6"
+				onSubmit={(e) => {
+					e.preventDefault();
+					void save();
+				}}
 			>
-				<div className="grid gap-4 sm:grid-cols-2">
-					<Select
-						label="Provider"
-						value={draft.aiProvider}
-						onValueChange={(value: string | null) => set({ aiProvider: (value ?? "workers-ai") as ProviderId })}
-						items={status.providers.map((p) => ({ value: p.id, label: p.label }))}
-					/>
-					{needsKey ? (
-						<Input
-							type="password"
-							autoComplete="off"
-							label={status.settings.apiKeySet && sameProvider ? "API key (saved)" : "API key"}
-							placeholder={status.settings.apiKeySet && sameProvider ? "••••••••••••••••••••••••" : undefined}
-							description={status.settings.apiKeySet && sameProvider ? "Type a new key to replace the saved one." : undefined}
-							value={draft.aiApiKey}
-							onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiApiKey: e.target.value })}
+				<Section
+					title="Provider"
+					description="Save before testing. The test makes one small call that counts toward today's limit."
+					actions={
+						<Button type="button" variant="secondary" disabled={!status.features.ai} onClick={() => void runTest()}>
+							Test connection
+						</Button>
+					}
+				>
+					<div className="grid gap-4 sm:grid-cols-2">
+						<Select
+							label="Provider"
+							value={draft.aiProvider}
+							onValueChange={(value: string | null) => set({ aiProvider: (value ?? "workers-ai") as ProviderId })}
+							items={status.providers.map((p) => ({ value: p.id, label: p.label }))}
 						/>
-					) : (
-						<p className="self-end text-sm text-kumo-subtle">
-							{status.settings.bindingAvailable ? "The Workers AI binding is connected." : "Add an \"ai\" binding to wrangler.jsonc (see README) to use Workers AI."}
+						{needsKey ? (
+							<Input
+								type="password"
+								autoComplete="off"
+								label={status.settings.apiKeySet && sameProvider ? "API key (saved)" : "API key"}
+								placeholder={status.settings.apiKeySet && sameProvider ? "••••••••••••••••••••••••" : undefined}
+								description={status.settings.apiKeySet && sameProvider ? "Type a new key to replace the saved one." : undefined}
+								value={draft.aiApiKey}
+								onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiApiKey: e.target.value })}
+							/>
+						) : (
+							<p className="self-end text-sm text-kumo-subtle">
+								{status.settings.bindingAvailable ? "The Workers AI binding is connected." : "Add an \"ai\" binding to wrangler.jsonc (see README) to use Workers AI."}
+							</p>
+						)}
+						<div style={{ gridColumn: "1 / -1" }}>
+							<CredentialGuide id={draft.aiProvider} />
+						</div>
+						{models ? (
+							<>
+								<Select
+									label="Text model"
+									value={currentModel(draft.aiModel, status.settings.textModel, provider.textModel)}
+									onValueChange={(value: string | null) => set({ aiModel: !value || value === provider.textModel ? "" : value })}
+									items={modelItems(currentModel(draft.aiModel, status.settings.textModel, provider.textModel), provider.textModel)}
+								/>
+								<Select
+									label="Image model"
+									value={currentModel(draft.aiVisionModel, status.settings.visionModel, provider.visionModel)}
+									onValueChange={(value: string | null) => set({ aiVisionModel: !value || value === provider.visionModel ? "" : value })}
+									items={modelItems(currentModel(draft.aiVisionModel, status.settings.visionModel, provider.visionModel), provider.visionModel)}
+								/>
+							</>
+						) : (
+							<>
+								<Input label={`Text model (default ${provider.textModel})`} value={draft.aiModel} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiModel: e.target.value })} />
+								<Input label={`Image model (default ${provider.visionModel})`} value={draft.aiVisionModel} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiVisionModel: e.target.value })} />
+							</>
+						)}
+					</div>
+					{!models && canList && modelsError && (
+						<p className="mt-2 text-sm text-kumo-subtle">Couldn't list this provider's models ({modelsError}); type a model id instead.</p>
+					)}
+					{!canList && draft.aiProvider !== "workers-ai" && (
+						<p className="mt-2 text-sm text-kumo-subtle">Save an API key to pick from this provider's models.</p>
+					)}
+					{test && (
+						<p className="mt-3 text-sm text-kumo-subtle" role="status" aria-live="polite">
+							{test}
 						</p>
 					)}
-					<div style={{ gridColumn: "1 / -1" }}>
-						<CredentialGuide id={draft.aiProvider} />
+				</Section>
+
+				<Section title="Limits and scope">
+					<div className="grid gap-4 sm:grid-cols-2">
+						<Input type="number" min={1} label="Max model calls per day" value={String(draft.aiMaxCallsPerDay)} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiMaxCallsPerDay: num(e.target.value, 200) })} />
+						<Input type="number" min={1} max={20} label="Items per scheduled run" value={String(draft.aiJobsPerTick)} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiJobsPerTick: num(e.target.value, 3) })} />
+						<Input label="Collections (comma-separated; blank = all public)" value={draft.aiCollections} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiCollections: e.target.value })} />
+						<Input type="number" min={0} max={120} label="Wait after a save (minutes)" value={String(draft.aiDebounceMinutes)} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiDebounceMinutes: num(e.target.value, 2) })} />
 					</div>
-					{models ? (
-						<>
-							<Select
-								label="Text model"
-								value={currentModel(draft.aiModel, status.settings.textModel, provider.textModel)}
-								onValueChange={(value: string | null) => set({ aiModel: !value || value === provider.textModel ? "" : value })}
-								items={modelItems(currentModel(draft.aiModel, status.settings.textModel, provider.textModel), provider.textModel)}
-							/>
-							<Select
-								label="Image model"
-								value={currentModel(draft.aiVisionModel, status.settings.visionModel, provider.visionModel)}
-								onValueChange={(value: string | null) => set({ aiVisionModel: !value || value === provider.visionModel ? "" : value })}
-								items={modelItems(currentModel(draft.aiVisionModel, status.settings.visionModel, provider.visionModel), provider.visionModel)}
-							/>
-						</>
-					) : (
-						<>
-							<Input label={`Text model (default ${provider.textModel})`} value={draft.aiModel} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiModel: e.target.value })} />
-							<Input label={`Image model (default ${provider.visionModel})`} value={draft.aiVisionModel} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiVisionModel: e.target.value })} />
-						</>
+				</Section>
+
+				<Section title="Meta descriptions and image text">
+					<div className="grid gap-4 sm:grid-cols-2">
+						<Select
+							label="Meta descriptions"
+							value={draft.aiDescriptionsMode}
+							onValueChange={(value: string | null) => set({ aiDescriptionsMode: value === "apply" ? "apply" : "suggest" })}
+							items={[
+								{ value: "suggest", label: "Suggest for review" },
+								{ value: "apply", label: "Fill empty descriptions automatically" },
+							]}
+						/>
+						<Select
+							label="Image text"
+							value={draft.aiImageMode}
+							onValueChange={(value: string | null) => set({ aiImageMode: value === "suggest" ? "suggest" : "apply" })}
+							items={[
+								{ value: "apply", label: "Fill empty alt text automatically" },
+								{ value: "suggest", label: "Suggest for review" },
+							]}
+						/>
+					</div>
+					<div className="mt-4 space-y-2">
+						<Checkbox label="Also write captions" checked={draft.aiImageCaption} onCheckedChange={(c: boolean) => set({ aiImageCaption: c })} />
+						<Checkbox label="Overwrite alt text and captions people already wrote" checked={draft.aiImageOverwrite} onCheckedChange={(c: boolean) => set({ aiImageOverwrite: c })} />
+					</div>
+					<div className="mt-4">
+						<InputArea label="Extra instructions for image text (optional)" rows={3} value={draft.aiImageInstructions} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => set({ aiImageInstructions: e.target.value })} />
+					</div>
+					{!status.settings.imagesBindingAvailable && (
+						<p className="mt-3 text-sm text-kumo-subtle">Images over 3.5 MB are skipped unless the site has an Images binding to downscale them.</p>
 					)}
-				</div>
-				{!models && canList && modelsError && (
-					<p className="mt-2 text-sm text-kumo-subtle">Couldn't list this provider's models ({modelsError}); type a model id instead.</p>
-				)}
-				{!canList && draft.aiProvider !== "workers-ai" && (
-					<p className="mt-2 text-sm text-kumo-subtle">Save an API key to pick from this provider's models.</p>
-				)}
-				{test && (
-					<p className="mt-3 text-sm text-kumo-subtle" role="status" aria-live="polite">
-						{test}
-					</p>
-				)}
-			</Section>
-
-			<Section title="Limits and scope">
-				<div className="grid gap-4 sm:grid-cols-2">
-					<Input type="number" min={1} label="Max model calls per day" value={String(draft.aiMaxCallsPerDay)} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiMaxCallsPerDay: num(e.target.value, 200) })} />
-					<Input type="number" min={1} max={20} label="Items per scheduled run" value={String(draft.aiJobsPerTick)} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiJobsPerTick: num(e.target.value, 3) })} />
-					<Input label="Collections (comma-separated; blank = all public)" value={draft.aiCollections} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiCollections: e.target.value })} />
-					<Input type="number" min={0} max={120} label="Wait after a save (minutes)" value={String(draft.aiDebounceMinutes)} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiDebounceMinutes: num(e.target.value, 2) })} />
-				</div>
-			</Section>
-
-			<Section title="Meta descriptions and image text">
-				<div className="grid gap-4 sm:grid-cols-2">
-					<Select
-						label="Meta descriptions"
-						value={draft.aiDescriptionsMode}
-						onValueChange={(value: string | null) => set({ aiDescriptionsMode: value === "apply" ? "apply" : "suggest" })}
-						items={[
-							{ value: "suggest", label: "Suggest for review" },
-							{ value: "apply", label: "Fill empty descriptions automatically" },
-						]}
-					/>
-					<Select
-						label="Image text"
-						value={draft.aiImageMode}
-						onValueChange={(value: string | null) => set({ aiImageMode: value === "suggest" ? "suggest" : "apply" })}
-						items={[
-							{ value: "apply", label: "Fill empty alt text automatically" },
-							{ value: "suggest", label: "Suggest for review" },
-						]}
-					/>
-				</div>
-				<div className="mt-4 space-y-2">
-					<Checkbox label="Also write captions" checked={draft.aiImageCaption} onCheckedChange={(c: boolean) => set({ aiImageCaption: c })} />
-					<Checkbox label="Overwrite alt text and captions people already wrote" checked={draft.aiImageOverwrite} onCheckedChange={(c: boolean) => set({ aiImageOverwrite: c })} />
-				</div>
-				<div className="mt-4">
-					<InputArea label="Extra instructions for image text (optional)" rows={3} value={draft.aiImageInstructions} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => set({ aiImageInstructions: e.target.value })} />
-				</div>
-				{!status.settings.imagesBindingAvailable && (
-					<p className="mt-3 text-sm text-kumo-subtle">Images over 3.5 MB are skipped unless the site has an Images binding to downscale them.</p>
-				)}
-			</Section>
-
-			<div className="flex justify-end">
-				<Button type="submit" variant="primary" disabled={pending}>
-					{pending ? "Saving…" : "Save settings"}
-				</Button>
-			</div>
-		</form>
+				</Section>
+			</form>
+			<SaveBar form="cw-ai-settings-form" dirty={dirty} saving={pending} onDiscard={() => setDraft(savedDraft)} />
+		</>
 	);
 }
 

@@ -3,13 +3,14 @@
  * of Contents block. Blocks can override most of them. (Breadcrumbs have
  * their own page, Breadcrumb Nav.)
  */
-import { Banner, Button, Checkbox, Input, Loader, Select } from "@cloudflare/kumo";
+import { Banner, Checkbox, Input, Loader, Select } from "@cloudflare/kumo";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
 import { SAMPLE_TOC_HEADINGS, TOC_CSS, renderTocHtml } from "../headings/render.js";
 import { buildTocTree, countToc } from "../headings/toc.js";
 import { PreviewSection } from "./preview.js";
+import { SaveBar, isDirty } from "./save-bar.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/headings";
 
@@ -72,6 +73,7 @@ function Section(props: { title: string; description: string; children: React.Re
 
 export function HeadingsPage() {
 	const [settings, setSettings] = React.useState<Settings | null>(null);
+	const [saved, setSaved] = React.useState<Settings | null>(null);
 	const [error, setError] = React.useState<string | null>(null);
 	const [notice, setNotice] = React.useState<string | null>(null);
 	const [saving, setSaving] = React.useState(false);
@@ -80,7 +82,9 @@ export function HeadingsPage() {
 		void (async () => {
 			try {
 				const response = await apiFetch(`${API}/settings`);
-				setSettings((await parseApiResponse<{ settings: Settings }>(response, "Couldn't load settings")).settings);
+				const loaded = (await parseApiResponse<{ settings: Settings }>(response, "Couldn't load settings")).settings;
+				setSettings(loaded);
+				setSaved(loaded);
 			} catch (cause) {
 				setError(errorText(cause, "Couldn't load settings"));
 			}
@@ -89,6 +93,8 @@ export function HeadingsPage() {
 
 	const set = (patch: Partial<Settings>) => setSettings((s) => (s ? { ...s, ...patch } : s));
 	const setToc = (patch: Partial<Settings["toc"]>) => setSettings((s) => (s ? { ...s, toc: { ...s.toc, ...patch } } : s));
+
+	const dirty = isDirty(settings, saved);
 
 	async function save() {
 		if (!settings) return;
@@ -101,7 +107,9 @@ export function HeadingsPage() {
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ settings }),
 			});
-			setSettings((await parseApiResponse<{ settings: Settings }>(response, "Couldn't save")).settings);
+			const next = (await parseApiResponse<{ settings: Settings }>(response, "Couldn't save")).settings;
+			setSettings(next);
+			setSaved(next);
 			setNotice("Settings saved. Pages pick them up within a minute.");
 		} catch (cause) {
 			setError(errorText(cause, "Couldn't save"));
@@ -131,6 +139,7 @@ export function HeadingsPage() {
 
 			{settings && (
 				<form
+					id="cw-headings-form"
 					className="space-y-6"
 					onSubmit={(e) => {
 						e.preventDefault();
@@ -241,13 +250,10 @@ export function HeadingsPage() {
 						<TocPreview toc={settings.toc} />
 					</Section>
 
-					<div className="flex justify-end">
-						<Button type="submit" variant="primary" disabled={saving}>
-							{saving ? "Saving…" : "Save settings"}
-						</Button>
-					</div>
 				</form>
 			)}
+
+			<SaveBar form="cw-headings-form" dirty={dirty} saving={saving} onDiscard={() => setSettings(saved)} />
 		</div>
 	);
 }

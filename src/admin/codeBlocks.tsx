@@ -8,6 +8,8 @@ import { FloppyDisk } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { SaveBar } from "./save-bar.js";
+
 const API = "/_emdash/api/plugins/coywolf-pack";
 
 interface ThemeOption {
@@ -91,14 +93,6 @@ export function CodeBlocksPage() {
 	}, [theme, switches]);
 
 	const dirty = saved !== null && theme !== saved.theme;
-
-	// Unsaved-changes guard.
-	React.useEffect(() => {
-		if (!dirty) return;
-		const warn = (event: BeforeUnloadEvent) => event.preventDefault();
-		window.addEventListener("beforeunload", warn);
-		return () => window.removeEventListener("beforeunload", warn);
-	}, [dirty]);
 
 	async function save() {
 		if (!saved) return;
@@ -200,6 +194,8 @@ export function CodeBlocksPage() {
 					</section>
 				</div>
 			)}
+
+			<SaveBar dirty={dirty} saving={saving} onSave={() => void save()} onDiscard={() => saved && setTheme(saved.theme)} />
 		</div>
 	);
 }

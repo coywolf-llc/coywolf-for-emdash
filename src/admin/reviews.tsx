@@ -8,6 +8,7 @@ import { ArrowCounterClockwise, FloppyDisk } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { SaveBar } from "./save-bar.js";
 import { DEFAULT_ACCENT, MAX_CUSTOM_CSS, SAMPLE_REVIEW, isAccent, pageCss, renderReviewHtml, sanitizeCustomCss } from "../reviews/lib.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack";
@@ -86,13 +87,6 @@ export function ReviewsPage() {
 	const dirty = styleDirty;
 	const accentValid = isAccent(style.accent);
 	const tooLong = style.css.length > MAX_CUSTOM_CSS;
-
-	React.useEffect(() => {
-		if (!dirty) return;
-		const warn = (event: BeforeUnloadEvent) => event.preventDefault();
-		window.addEventListener("beforeunload", warn);
-		return () => window.removeEventListener("beforeunload", warn);
-	}, [dirty]);
 
 	async function save() {
 		if (!saved || !accentValid || tooLong) return;
@@ -219,6 +213,14 @@ export function ReviewsPage() {
 					</section>
 				</div>
 			)}
+
+			<SaveBar
+				dirty={dirty}
+				saving={saving}
+				canSave={accentValid && !tooLong}
+				onSave={() => void save()}
+				onDiscard={() => saved && setStyle(saved.style)}
+			/>
 		</div>
 	);
 }
