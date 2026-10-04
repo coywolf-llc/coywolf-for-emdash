@@ -10,7 +10,6 @@ import { z } from "zod";
 import { registerFeatures } from "../core/features.js";
 import type { PackModule } from "../core/module.js";
 import { parseInput } from "../shared.js";
-import { CHROME_CSS, renderBlock } from "./render.js";
 import { invalidateTheme } from "./settings.js";
 import { DEFAULT_THEME, THEME_SETTING, isTheme, themeCss, themeOptions } from "./themes.js";
 
@@ -108,6 +107,8 @@ export function codeBlocksPack(_options: CodeBlocksOptions): PackModule {
 						z.object({ theme: z.string().max(100), label: z.boolean(), copy: z.boolean(), lineNumbers: z.boolean() }),
 						ctx.input,
 					);
+					// Lazy: keeps lowlight and its grammars out of the plugin's startup path.
+					const { CHROME_CSS, renderBlock } = await import("./render.js");
 					return {
 						css: CHROME_CSS + themeCss(input.theme),
 						html: renderBlock(SAMPLE, { label: input.label, copy: input.copy, lineNumbers: input.lineNumbers }),

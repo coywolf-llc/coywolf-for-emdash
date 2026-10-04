@@ -96,7 +96,7 @@ export function resolveLanguage(raw: string | null | undefined): ResolvedLanguag
 			grammar: grammar && engine().registered(grammar) ? grammar : null,
 		};
 	}
-	const id = needle.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || null;
+	const id = needle.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "") || null;
 	// Unknown to the editor but maybe a highlight.js alias (e.g. "ps1"); otherwise plain text.
 	const grammar = id && engine().registered(id) ? id : null;
 	return { id, label: id ? (raw as string).trim().slice(0, 40) : null, grammar };
@@ -104,8 +104,26 @@ export function resolveLanguage(raw: string | null | undefined): ResolvedLanguag
 
 // ── hast → HTML ──────────────────────────────────────────────────
 
-/** Skip highlighting for very large blocks (Workers CPU time). */
-export const MAX_HIGHLIGHT_CHARS = 100_000;
+/**
+ * Skip highlighting for large blocks and long lines: highlight.js grammars
+ * (JS/TS/CSS especially) are superlinear on long lines, which would burn
+ * Workers CPU time (a 40k-character line takes seconds).
+ */
+export const MAX_HIGHLIGHT_CHARS = 30_000;
+export const MAX_HIGHLIGHT_LINE = 2_000;
+
+function tooCostly(code: string): boolean {
+	if (code.length > MAX_HIGHLIGHT_CHARS) return true;
+	let start = 0;
+	while (start <= code.length) {
+		const end = code.indexOf("\n", start);
+		const stop = end === -1 ? code.length : end;
+		if (stop - start > MAX_HIGHLIGHT_LINE) return true;
+		if (end === -1) break;
+		start = end + 1;
+	}
+	return false;
+}
 
 const CLASS_OK = /^(?:hljs-[a-z0-9_-]+|[a-z][a-z0-9]*_+)$/i;
 
@@ -175,7 +193,7 @@ export function hastToLines(tree: Root): string[] {
 
 export function highlightLines(code: string, grammar: string | null): string[] {
 	const tree: Root =
-		grammar && code.length <= MAX_HIGHLIGHT_CHARS
+		grammar && !tooCostly(code)
 			? engine().highlight(grammar, code)
 			: { type: "root", children: [{ type: "text", value: code }] };
 	return hastToLines(tree);
@@ -200,9 +218,50 @@ const COPY_ICON =
 const CHECK_ICON =
 	'<svg class="cw-code-i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="20 6 9 17 4 12"/></svg>';
 
+/** Rendered blocks, per isolate, so page views don't re-highlight. */
+const CACHE_MAX = 200;
+const cache = new Map<string, string>();
+
+/** cyrb53: fast 53-bit string hash. */
+function hash(text: string): string {
+	let h1 = 0xdeadbeef;
+	let h2 = 0x41c6ce57;
+	for (let i = 0; i < text.length; i++) {
+		const ch = text.charCodeAt(i);
+		h1 = Math.imul(h1 ^ ch, 2654435761);
+		h2 = Math.imul(h2 ^ ch, 1597334677);
+	}
+	h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+	h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+	return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
 export function renderBlock(node: CodeNode, options: BlockOptions): string {
+	const code = String(node.code ?? "");
+	const key = [
+		Number(options.label),
+		Number(options.copy),
+		Number(options.lineNumbers),
+		typeof node.language === "string" ? node.language : "",
+		typeof node.filename === "string" ? node.filename : "",
+		code.length,
+		hash(code),
+	].join("\u0000");
+	const hit = cache.get(key);
+	if (hit !== undefined) {
+		cache.delete(key);
+		cache.set(key, hit);
+		return hit;
+	}
+	const html = renderUncached({ ...node, code }, options);
+	cache.set(key, html);
+	if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value as string);
+	return html;
+}
+
+function renderUncached(node: CodeNode, options: BlockOptions): string {
 	const lang = resolveLanguage(node.language);
-	const lines = highlightLines(String(node.code ?? ""), lang.grammar);
+	const lines = highlightLines(node.code, lang.grammar);
 	const body = options.lineNumbers ? lines.map((l) => `<span class="cw-line">${l}</span>`).join("\n") : lines.join("\n");
 	const langClass = lang.id ? `language-${lang.id}` : "";
 	const label = options.label && lang.label ? `<span class="cw-code-label">${escapeHtml(lang.label)}</span>` : "";

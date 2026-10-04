@@ -116,3 +116,35 @@ test("very large blocks skip highlighting", () => {
 	const code = "const x = 1;\n".repeat(Math.ceil(r.MAX_HIGHLIGHT_CHARS / 13) + 1);
 	assert.ok(!r.highlightLines(code, "javascript").some((l) => l.includes("<span")));
 });
+
+test("any line over the limit skips highlighting, quickly", () => {
+	const long = `const s = "${"a".repeat(r.MAX_HIGHLIGHT_LINE)}";`;
+	const started = performance.now();
+	const lines = r.highlightLines(`let a = 1;\n${long}\nlet b = 2;`, "javascript");
+	assert.ok(performance.now() - started < 50);
+	assert.equal(lines.length, 3);
+	assert.ok(!lines.some((l) => l.includes("<span")));
+	assert.ok(lines[1]!.includes("&quot;"));
+	const ok = `const s = "${"a".repeat(r.MAX_HIGHLIGHT_LINE - 20)}";`;
+	assert.ok(r.highlightLines(ok, "javascript")[0]!.includes("<span"));
+	const huge = `x = "${"b".repeat(40_000)}"`;
+	const t2 = performance.now();
+	r.highlightLines(huge, "typescript");
+	assert.ok(performance.now() - t2 < 50);
+});
+
+test("rendered blocks are cached and keyed by options and code", () => {
+	const node = { code: "let a = 1;", language: "js" };
+	const a = r.renderBlock(node, { label: true, copy: false, lineNumbers: false });
+	assert.equal(r.renderBlock({ ...node }, { label: true, copy: false, lineNumbers: false }), a);
+	assert.notEqual(r.renderBlock(node, { label: true, copy: false, lineNumbers: true }), a);
+	assert.notEqual(r.renderBlock({ ...node, code: "let a = 2;" }, { label: true, copy: false, lineNumbers: false }), a);
+});
+
+test("unknown language ids are capped at 40 characters", () => {
+	const lang = r.resolveLanguage("x".repeat(100));
+	assert.equal(lang.id!.length, 40);
+	const html = r.renderBlock({ code: "y", language: "z".repeat(100) }, { label: false, copy: false, lineNumbers: false });
+	assert.ok(html.includes(`data-language="${"z".repeat(40)}"`));
+	assert.ok(!html.includes("z".repeat(41)));
+});

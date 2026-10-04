@@ -3,8 +3,8 @@
  * Generates src/codeBlocks/themes.generated.ts from highlight.js's own theme
  * stylesheets (node_modules/highlight.js/styles). Each theme is rescoped
  * under `.cw-code` (the `.hljs` root becomes the block wrapper, token rules
- * become descendants), layout rules (`pre code.hljs`, `code.hljs`, padding,
- * display, overflow) are dropped, @-blocks (only the obsolete
+ * become descendants), layout rules (`pre code.hljs`, `code.hljs`) and layout
+ * properties (display, width, padding, margin, overflow, …) are dropped, @-blocks (only the obsolete
  * -ms-high-contrast queries) are dropped, and the output is minified. Each
  * theme's original header comment (author / license) is kept above its entry.
  *
@@ -43,7 +43,8 @@ const THEMES = [
 	["solarized-dark", "Solarized Dark", "base16/solarized-dark"],
 ];
 
-const DROP_ROOT_PROPS = new Set(["display", "overflow", "overflow-x", "overflow-y", "padding", "padding-top", "padding-right", "padding-bottom", "padding-left"]);
+/** Layout properties are the block chrome's job; themes only supply colors and font styles. */
+const LAYOUT_PROP = /^(?:display|position|float|width|height|min-width|max-width|min-height|max-height|overflow(?:-[xy])?|padding(?:-\w+)?|margin(?:-\w+)?|box-sizing)$/;
 
 function rescopeSelector(sel) {
 	sel = sel.trim().replace(/\s+/g, " ");
@@ -53,7 +54,7 @@ function rescopeSelector(sel) {
 	return replaced.startsWith(".cw-code") ? replaced : `.cw-code ${replaced}`;
 }
 
-function minifyBody(body, isRoot) {
+function minifyBody(body) {
 	return body
 		.split(";")
 		.map((d) => d.trim().replace(/\s+/g, " "))
@@ -62,7 +63,7 @@ function minifyBody(body, isRoot) {
 			const i = d.indexOf(":");
 			return [d.slice(0, i).trim().toLowerCase(), d.slice(i + 1).trim()];
 		})
-		.filter(([prop]) => !(isRoot && DROP_ROOT_PROPS.has(prop)))
+		.filter(([prop]) => !LAYOUT_PROP.test(prop))
 		.map(([p, v]) => `${p}:${v}`)
 		.join(";");
 }
@@ -99,7 +100,7 @@ function convert(file) {
 		const selectors = match[1].split(",").map(rescopeSelector).filter(Boolean);
 		if (!selectors.length) continue;
 		const isRoot = selectors.includes(".cw-code");
-		const body = minifyBody(match[2], isRoot);
+		const body = minifyBody(match[2]);
 		if (!body) continue;
 		if (isRoot) {
 			const bg = body.match(/background(?:-color)?:\s*(#[0-9a-f]{3,6}|white|black)\b/i);
