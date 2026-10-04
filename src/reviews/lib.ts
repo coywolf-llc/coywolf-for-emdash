@@ -294,13 +294,14 @@ export function renderReviewHtml(review: Review): string {
 }
 
 /**
- * The box's CSS. Every design value is a custom property read with a fallback
+ * The box's CSS. Light/dark colors use light-dark(), so the box follows the
+ * page's own `color-scheme` (a light-only theme stays light). Every design value is a custom property read with a fallback
  * (never set by this CSS), so a site can set them on `.cw-review`, on a
  * wrapper, or on :root. The accent setting is the badge's fallback color.
  */
 export function reviewCss(accent: string = DEFAULT_ACCENT): string {
 	const a = isAccent(accent) ? accent : DEFAULT_ACCENT;
-	return `.cw-review{box-sizing:border-box;display:flex;flex-wrap:wrap;align-items:center;gap:var(--cw-review-gap,1rem 1.5rem);margin:var(--cw-review-margin,0 0 1.5rem);padding:var(--cw-review-padding,2rem 1rem);background:var(--cw-review-bg,#fff);color:var(--cw-review-color,inherit);border:var(--cw-review-border,1px solid #dfe0e3);border-radius:var(--cw-review-radius,12px);font-family:var(--cw-review-font,inherit)}
+	return `.cw-review{box-sizing:border-box;display:flex;flex-wrap:wrap;align-items:center;gap:var(--cw-review-gap,1rem 1.5rem);margin:var(--cw-review-margin,0 0 1.5rem);padding:var(--cw-review-padding,2rem 1rem);background:var(--cw-review-bg,light-dark(#fff,var(--cw-review-bg-dark,#1d1f23)));color:var(--cw-review-color,inherit);border:var(--cw-review-border,1px solid var(--cw-review-border-color,light-dark(#dfe0e3,var(--cw-review-border-color-dark,#3a3d44))));border-radius:var(--cw-review-radius,12px);font-family:var(--cw-review-font,inherit)}
 .cw-review *{box-sizing:border-box}
 .cw-review__rating{flex:1 0 var(--cw-review-rating-width,7rem);margin:0;text-align:center}
 .cw-review__badge{display:inline-block;padding:var(--cw-review-badge-padding,.5rem 1rem);background:var(--cw-review-accent,${a});color:var(--cw-review-badge-color,#fff);border-radius:var(--cw-review-badge-radius,10%);font-size:var(--cw-review-badge-size,3.5rem);font-weight:800;line-height:1.1;font-variant-numeric:tabular-nums}
@@ -310,9 +311,8 @@ export function reviewCss(accent: string = DEFAULT_ACCENT): string {
 .cw-review__col{min-width:0}
 .cw-review .cw-review__heading{margin:0;padding:0;font-size:var(--cw-review-heading-size,1.2rem);line-height:1.3;text-transform:var(--cw-review-heading-transform,uppercase);color:var(--cw-review-heading-color,inherit)}
 .cw-review .cw-review__list{margin:.75rem 0 0 1.25rem;padding:0;list-style:var(--cw-review-list-style,square)}
-.cw-review .cw-review__item{margin:0;padding:.2rem 0;font-size:var(--cw-review-list-size,1rem);font-weight:500;color:var(--cw-review-list-color,#555)}
-.cw-review .cw-review__summary{flex:1 1 100%;margin:0;color:var(--cw-review-summary-color,inherit)}
-@media (prefers-color-scheme:dark){.cw-review{background:var(--cw-review-bg-dark,var(--cw-review-bg,#1d1f23));border:var(--cw-review-border-dark,var(--cw-review-border,1px solid #3a3d44))}.cw-review .cw-review__item{color:var(--cw-review-list-color-dark,var(--cw-review-list-color,#c9ccd1))}}`;
+.cw-review .cw-review__item{margin:0;padding:.2rem 0;font-size:var(--cw-review-list-size,1rem);font-weight:500;color:var(--cw-review-list-color,light-dark(#555,var(--cw-review-list-color-dark,#c9ccd1)))}
+.cw-review .cw-review__summary{flex:1 1 100%;margin:0;color:var(--cw-review-summary-color,inherit)}`;
 }
 
 /** Built-in CSS followed by the site's custom CSS (so it overrides). */
@@ -409,8 +409,11 @@ export function reviewSchema(review: Review, n: number, ctx: ReviewSchemaContext
 		...(ctx.datePublished && !Number.isNaN(Date.parse(ctx.datePublished)) ? { datePublished: ctx.datePublished } : {}),
 		mainEntityOfPage: { "@id": `${ctx.pageUrl}#webpage` },
 	};
-	if (review.pros.length) node.positiveNotes = itemList(review.pros);
-	if (review.cons.length) node.negativeNotes = itemList(review.cons);
+	// Pros and cons: Product reviews only, and Google needs at least two statements in all.
+	if (review.itemType === "Product" && review.pros.length + review.cons.length >= 2) {
+		if (review.pros.length) node.positiveNotes = itemList(review.pros);
+		if (review.cons.length) node.negativeNotes = itemList(review.cons);
+	}
 	if (review.summary) node.reviewBody = review.summary;
 
 	if (review.itemType === "Product") return { ...item, review: node };

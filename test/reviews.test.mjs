@@ -196,6 +196,7 @@ test("attachReviews: Product with nested Review, ids, ItemList, links, dedupe", 
 	assert.equal(s.itemReviewed["@type"], "SoftwareApplication");
 	assert.equal(s.itemReviewed["@id"], `${URL_}#review-2-item`);
 	assert.equal(s.itemReviewed.brand, undefined);
+	assert.equal(s.positiveNotes, undefined, "pros and cons only for Product reviews");
 	// Article.about keeps existing entities and adds the items.
 	const article = nodes.find((n) => n["@id"] === `${URL_}#article`);
 	assert.deepEqual(article.about, [{ "@id": "https://www.wikidata.org/wiki/Q1" }, { "@id": `${URL_}#review-1-item` }, { "@id": `${URL_}#review-2-item` }]);
@@ -252,4 +253,20 @@ test("reviewSchema date validation", () => {
 	const node = reviewSchema(r, 1, { pageUrl: URL_, origin: ORIGIN, author: { "@id": "a" }, datePublished: "not a date" });
 	assert.equal(node.datePublished, undefined);
 	assert.equal(node.itemReviewed.brand, undefined);
+});
+
+test("pros and cons need at least two statements", () => {
+	const ctx = { pageUrl: URL_, origin: ORIGIN, author: { "@id": "a" } };
+	const one = reviewSchema(normalizeReview({ itemName: "P", rating: 4, pros: "Only one" }), 1, ctx);
+	assert.equal(one.review.positiveNotes, undefined);
+	assert.equal(one.review.negativeNotes, undefined);
+	const two = reviewSchema(normalizeReview({ itemName: "P", rating: 4, pros: "One", cons: "Two" }), 1, ctx);
+	assert.equal(two.review.positiveNotes.itemListElement.length, 1);
+	assert.equal(two.review.negativeNotes.itemListElement.length, 1);
+});
+
+test("CSS follows the page's color-scheme, not the OS", () => {
+	const css = reviewCss();
+	assert.ok(!css.includes("prefers-color-scheme"));
+	assert.match(css, /light-dark\(#fff,var\(--cw-review-bg-dark,#1d1f23\)\)/);
 });

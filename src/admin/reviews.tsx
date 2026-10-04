@@ -252,8 +252,8 @@ export function ReviewsPage() {
 						{!mainOn && <p className="mb-2 text-sm text-kumo-subtle">Review blocks are off, so the site doesn't show them yet.</p>}
 						<Preview style={style} width={width} />
 						<p className="mt-2 text-xs text-kumo-subtle">
-							The preview uses this page's fonts and your computer's light or dark setting; on the site the box inherits your theme's
-							fonts and text color.
+							The preview uses this page's fonts and your computer's light or dark setting. On the site the box uses your theme's fonts
+							and text color, and turns dark only if the theme supports dark mode (its color-scheme).
 						</p>
 					</section>
 				</div>

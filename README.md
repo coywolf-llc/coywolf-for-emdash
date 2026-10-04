@@ -640,17 +640,20 @@ Every part has a stable class: `.cw-review` (the card), `__rating`, `__badge`, `
 | `--cw-review-accent` | the Reviews page color | Badge background |
 | `--cw-review-badge-color` | `#fff` | Badge text |
 | `--cw-review-badge-size` / `-badge-padding` / `-badge-radius` | `3.5rem` / `.5rem 1rem` / `10%` | |
-| `--cw-review-bg` / `--cw-review-bg-dark` | `#fff` / `#1d1f23` | Card background (light / dark mode) |
-| `--cw-review-border` / `--cw-review-border-dark` | `1px solid #dfe0e3` / `1px solid #3a3d44` | |
+| `--cw-review-bg` / `--cw-review-bg-dark` | `#fff` / `#1d1f23` | Card background (light / dark); `--cw-review-bg` alone sets both |
+| `--cw-review-border` | `1px solid` + the border color | Whole border shorthand (e.g. `0`); overrides the colors below |
+| `--cw-review-border-color` / `--cw-review-border-color-dark` | `#dfe0e3` / `#3a3d44` | |
 | `--cw-review-radius` / `-padding` / `-margin` | `12px` / `2rem 1rem` / `0 0 1.5rem` | |
 | `--cw-review-color` / `-font` | `inherit` | Text color and font |
 | `--cw-review-heading-color` / `-heading-size` / `-heading-transform` | `inherit` / `1.2rem` / `uppercase` | |
-| `--cw-review-list-color` / `--cw-review-list-color-dark` / `-list-size` / `-list-style` | `#555` / `#c9ccd1` / `1rem` / `square` | |
+| `--cw-review-list-color` / `--cw-review-list-color-dark` / `-list-size` / `-list-style` | `#555` / `#c9ccd1` / `1rem` / `square` | `--cw-review-list-color` alone sets both |
 | `--cw-review-caption-color` / `-caption-size` | `inherit` / `1rem` | The "4.5 out of 5" line |
 | `--cw-review-gap` / `-column-gap` | `1rem 1.5rem` | Space between the badge and lists, and between the lists |
 | `--cw-review-rating-width` | `7rem` | Badge column's minimum width |
 | `--cw-review-stack-at` | `26rem` | Narrowest the lists area gets beside the badge before the badge moves above it |
 | `--cw-review-column-min` | `13rem` | Narrowest a list column gets before the lists stack; `100%` keeps them in one column |
+
+Light and dark colors use CSS `light-dark()`, so the box follows the page's own `color-scheme`: on a theme that declares `color-scheme: light dark` it turns dark with the page, and on a light-only theme (no `color-scheme`) it stays light whatever the visitor's system setting. The `-dark` properties are the dark half.
 
 The layout uses flex and grid wrapping instead of a media query, so it adapts to the box's own width (a sidebar or a phone alike) and the "breakpoints" are the custom properties above.
 
@@ -670,10 +673,11 @@ With Schema & Social's graph on, each review joins the page's `@graph` like vide
 
 - **Products** become a top-level `Product` (`<page>#review-N-item`, with name, `brand` as a `Brand`, url and image). The `Review` (`<page>#review-N`) is nested in it as `review`. Google reads pros and cons (`positiveNotes` / `negativeNotes`, each an `ItemList` of `ListItem`s with position and name) only from a Review nested in a Product, and a nested review needs no `itemReviewed`.
 - **Other types** become a top-level `Review` with the item in `itemReviewed`. That's the shape Google's review-snippet docs show, and it avoids validating, say, an Event or SoftwareApplication as its own rich result.
+- **Pros and cons** are emitted only for Product reviews with at least two statements in all (Google's minimum); they still show in the box either way.
 - **Every review** has a `reviewRating` (`Rating`, `ratingValue`, `bestRating` 5, `worstRating` 0, because the scale starts at 0), the Article's author(s) as `author` (else the publisher), the graph's publisher, the Article's `datePublished`, `mainEntityOfPage` → the WebPage, and the summary as `reviewBody`. The item is added to the Article's (or WebPage's) `about`, alongside AI Enrichment's entities.
 - **Not emitted**: reviews without an item name or a rating, and "self-serving" reviews, which Google ignores. Those are an Organization or Local business whose URL is on your own site or whose name is the publisher's.
 
-With the graph off, each review is a standalone JSON-LD script in the same shape. The author is the page's byline name (else the site), and the publisher is the site. Google requires at least two pros and cons combined for the pros-and-cons treatment, and some item types need more properties for their own rich results (an Event's date and location, for example). The block doesn't collect those, so validate important pages in Google's Rich Results Test.
+With the graph off, each review is a standalone JSON-LD script in the same shape. The author is the page's byline name (else the site), and the publisher is the site. Some item types need more properties for their own rich results (an Event's date and location, for example). The block doesn't collect those, so validate important pages in Google's Rich Results Test. Google's product snippets focus on one product per page: several Product reviews on one page are all output, but Google may use only one of them.
 
 ### Legacy WordPress reviews
 
