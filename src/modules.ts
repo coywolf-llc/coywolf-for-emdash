@@ -3,6 +3,7 @@
  * To add a module: import its factory and middleware, then add one entry to
  * MODULES (and MIDDLEWARE if it serves site URLs).
  */
+import { aiPack } from "./ai/pack.js";
 import { backupsPack } from "./backups/pack.js";
 import { codeBlocksPack } from "./codeBlocks/pack.js";
 import type { PackMiddleware, PackModule } from "./core/module.js";
@@ -23,6 +24,7 @@ export const MODULES: Factory[] = [
 	(o) => (o.schema === false ? null : schemaPack(o.schema ?? {})),
 	(o) => (o.files === false ? null : filesPack(o.files ?? {})),
 	(o) => (o.search === false ? null : searchPack(o.search ?? {})),
+	(o) => (o.ai === false ? null : aiPack(o.ai ?? {})),
 ];
 
 export const MIDDLEWARE: PackMiddleware[] = [redirectsMiddleware, filesMiddleware, searchRateLimitMiddleware];
