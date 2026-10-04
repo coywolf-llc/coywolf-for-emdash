@@ -122,9 +122,20 @@ export function safeColor(value: unknown): string {
 /** Large-upload ids: "f" + 15 lowercase base-32 characters. Media library ids are ULIDs (26 uppercase). */
 export const UPLOAD_ID = /^f[a-z2-7]{15}$/;
 export const MEDIA_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+/**
+ * Files moved from Coywolf Files for WordPress keep their WordPress id (20
+ * lowercase hex characters), so old download links and imported blocks still
+ * resolve. They're stored like large uploads.
+ */
+export const WORDPRESS_FILE_ID = /^[0-9a-f]{20}$/;
+
+/** Ids stored as large uploads (plugin storage) rather than media library items. */
+export function isUploadId(id: string): boolean {
+	return UPLOAD_ID.test(id) || WORDPRESS_FILE_ID.test(id);
+}
 
 export function isFileId(id: string): boolean {
-	return UPLOAD_ID.test(id) || MEDIA_ID.test(id);
+	return isUploadId(id) || MEDIA_ID.test(id);
 }
 
 export function newUploadId(): string {

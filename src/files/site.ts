@@ -7,7 +7,7 @@
  */
 import { PLUGIN_ID } from "../core/features.js";
 import { createDownloadCounter } from "./counts.js";
-import { normalizeBase, safeColor } from "./format.js";
+import { isUploadId, normalizeBase, safeColor } from "./format.js";
 
 export const COLLECTIONS = {
 	uploads: "files_uploads",
@@ -106,7 +106,7 @@ export async function resolveFile(db: D1Database, id: string): Promise<FileRecor
 	const hit = fileCache.get(id);
 	if (hit && Date.now() - hit.at < FILE_TTL) return hit.value;
 	let value: FileRecord | null = null;
-	if (id.startsWith("f")) {
+	if (isUploadId(id)) {
 		const row = await db
 			.prepare("SELECT data FROM _plugin_storage WHERE plugin_id = ? AND collection = ? AND id = ?")
 			.bind(PLUGIN_ID, COLLECTIONS.uploads, id)

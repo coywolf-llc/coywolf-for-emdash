@@ -34,6 +34,8 @@ export interface CoywolfOptions {
 	videos?: VideosOptions | false;
 	robots?: RobotsOptions | false;
 	reviews?: ReviewsOptions | false;
+	/** WordPress import tools (no options yet). `false` leaves the module out. */
+	wpImport?: Record<string, never> | false;
 	/**
 	 * Entry URL patterns for collections the theme routes differently from
 	 * EmDash's url_pattern, e.g. `{ posts: "/{term:category|uncategorized}/{slug}/" }`.
