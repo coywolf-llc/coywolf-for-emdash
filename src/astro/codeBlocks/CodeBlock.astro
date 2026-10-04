@@ -1,0 +1,62 @@
+---
+/**
+ * Portable Text `code` block, replacing EmDash's built-in renderer when the
+ * Code blocks feature is on. Highlighting runs here on the server (lowlight);
+ * the chrome CSS, the active theme's CSS and the tiny copy script are inlined
+ * once per page, by the first code block, so pages without code get nothing.
+ * When the feature is off this renders EmDash's own code block markup
+ * (EmDashCode.astro).
+ */
+import { siteFeatures } from "../../core/features.js";
+import EmDashCode from "./EmDashCode.astro";
+
+interface Props {
+	node: { _type: "code"; _key: string; code: string; language?: string; filename?: string };
+	[key: string]: unknown;
+}
+
+const { node } = Astro.props;
+
+// Claim the per-page assets synchronously, before any await, so the first
+// block in document order carries them even when siblings render in parallel.
+const locals = (Astro.locals ?? {}) as Record<string, unknown>;
+const hasCode = Boolean(node?.code);
+const firstBlock = hasCode && !locals.__cwCodeAssets;
+if (hasCode) locals.__cwCodeAssets = true;
+
+const features = await siteFeatures();
+const on = hasCode && features.codeBlocks === true;
+const copy = features["codeBlocks.copy"] === true;
+
+let html = "";
+let css = "";
+let script = "";
+if (on) {
+	// Loaded only when the feature is on, so the grammars and themes stay out of
+	// the request path otherwise.
+	const [{ CHROME_CSS, COPY_SCRIPT, renderBlock }, { siteTheme }, { themeCss }] = await Promise.all([
+		import("../../codeBlocks/render.js"),
+		import("../../codeBlocks/settings.js"),
+		import("../../codeBlocks/themes.js"),
+	]);
+	html = renderBlock(node, {
+		label: features["codeBlocks.label"] === true,
+		copy,
+		lineNumbers: features["codeBlocks.lineNumbers"] === true,
+	});
+	if (firstBlock) {
+		css = CHROME_CSS + themeCss(await siteTheme());
+		if (copy) script = COPY_SCRIPT;
+	}
+}
+---
+
+{on ? (
+	<>
+		{css && <style is:inline set:html={css} />}
+		<Fragment set:html={html} />
+		{script && <script is:inline set:html={script} />}
+	</>
+) : (
+	<EmDashCode {...Astro.props} />
+)}

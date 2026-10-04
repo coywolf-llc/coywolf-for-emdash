@@ -4,6 +4,7 @@
  * component checks its feature switch and renders nothing (or EmDash's own
  * renderer) when it's off.
  */
+import CodeBlock from "./codeBlocks/CodeBlock.astro";
 import BreadcrumbsComponent from "./headings/Breadcrumbs.astro";
 import BreadcrumbsBlock from "./headings/BreadcrumbsBlock.astro";
 import HeadingBlock from "./headings/HeadingBlock.astro";
@@ -12,6 +13,7 @@ import TableOfContents from "./headings/TableOfContents.astro";
 export const blockComponents = {
 	"coywolf-toc": TableOfContents,
 	"coywolf-breadcrumbs": BreadcrumbsBlock,
+	code: CodeBlock,
 };
 
 /** Breadcrumb trail for theme layouts (Headings & TOC module). */

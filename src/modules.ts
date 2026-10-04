@@ -4,6 +4,7 @@
  * MODULES (and MIDDLEWARE if it serves site URLs).
  */
 import { backupsPack } from "./backups/pack.js";
+import { codeBlocksPack } from "./codeBlocks/pack.js";
 import type { PackMiddleware, PackModule } from "./core/module.js";
 import { headingsPack } from "./headings/pack.js";
 import { redirectsMiddleware, redirectsPack } from "./redirects/pack.js";
@@ -15,6 +16,7 @@ export const MODULES: Factory[] = [
 	(o) => (o.backups ? backupsPack(o.backups) : null),
 	(o) => (o.redirects === false ? null : redirectsPack(o.redirects ?? {})),
 	(o) => (o.headings === false ? null : headingsPack(o.headings ?? {})),
+	(o) => (o.codeBlocks === false ? null : codeBlocksPack(o.codeBlocks ?? {})),
 ];
 
 export const MIDDLEWARE: PackMiddleware[] = [redirectsMiddleware];
