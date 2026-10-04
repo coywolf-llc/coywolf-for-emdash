@@ -15,6 +15,7 @@ import { redirectsMiddleware, redirectsPack } from "./redirects/pack.js";
 import { schemaPack } from "./schema/pack.js";
 import { searchPack, searchRateLimitMiddleware } from "./search/pack.js";
 import type { CoywolfOptions } from "./options.js";
+import { videosCaptionsMiddleware, videosPack, videosSitemapMiddleware } from "./videos/pack.js";
 
 type Factory = (options: CoywolfOptions) => PackModule | null;
 
@@ -29,6 +30,7 @@ export const MODULES: Factory[] = [
 	(o) => (o.ai === false ? null : aiPack(o.ai ?? {})),
 	(o) => (o.discovery === false ? null : discoveryPack(o.discovery ?? {})),
 	(o) => (o.links === false ? null : linksPack()),
+	(o) => (o.videos === false ? null : videosPack(o.videos ?? {})),
 ];
 
-export const MIDDLEWARE: PackMiddleware[] = [redirectsMiddleware, filesMiddleware, searchRateLimitMiddleware, ...discoveryMiddleware];
+export const MIDDLEWARE: PackMiddleware[] = [redirectsMiddleware, filesMiddleware, searchRateLimitMiddleware, ...discoveryMiddleware, videosSitemapMiddleware, videosCaptionsMiddleware];

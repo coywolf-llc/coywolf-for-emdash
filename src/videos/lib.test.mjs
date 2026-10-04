@@ -1,0 +1,196 @@
+// Run: node --experimental-strip-types --test src/videos/lib.test.mjs
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import {
+	aspectRatio,
+	buildVideoObject,
+	buildVideoSitemap,
+	clockDuration,
+	customerHostFromUrl,
+	findVideoBlocks,
+	hmacHex,
+	isoDuration,
+	normalizeCustomerHost,
+	playerConfig,
+	playerSrc,
+	posterUrl,
+	verifyWebhookSignature,
+	vttToTranscript,
+} from "./lib.ts";
+
+const UID = "0123456789abcdef0123456789abcdef";
+const UID2 = "fedcba9876543210fedcba9876543210";
+const HOST = "customer-abc123.cloudflarestream.com";
+
+test("isoDuration", () => {
+	assert.equal(isoDuration(0), null);
+	assert.equal(isoDuration(-5), null);
+	assert.equal(isoDuration("nope"), null);
+	assert.equal(isoDuration(0.4), "PT1S");
+	assert.equal(isoDuration(45), "PT45S");
+	assert.equal(isoDuration(60), "PT1M");
+	assert.equal(isoDuration(61.6), "PT1M2S");
+	assert.equal(isoDuration(3600), "PT1H");
+	assert.equal(isoDuration(3723), "PT1H2M3S");
+	assert.equal(isoDuration(7205), "PT2H5S");
+});
+
+test("clockDuration", () => {
+	assert.equal(clockDuration(0), "");
+	assert.equal(clockDuration(65), "1:05");
+	assert.equal(clockDuration(3723), "1:02:03");
+});
+
+test("customer host normalization", () => {
+	assert.equal(normalizeCustomerHost("customer-ABC123.cloudflarestream.com"), HOST);
+	assert.equal(normalizeCustomerHost(`https://${HOST}/xyz/iframe`), HOST);
+	assert.equal(normalizeCustomerHost("abc123"), HOST);
+	assert.equal(normalizeCustomerHost("evil.example.com"), null);
+	assert.equal(normalizeCustomerHost(""), null);
+	assert.equal(customerHostFromUrl(`https://${HOST}/${UID}/thumbnails/thumbnail.jpg`), HOST);
+	assert.equal(customerHostFromUrl("https://videodelivery.net/x"), null);
+});
+
+test("findVideoBlocks walks Portable Text at any depth, dedupes, reads WP markers", () => {
+	const marker = `<div data-wb-block="cloudflare-stream" data-wb-attrs="{&quot;id&quot;:&quot;${UID2}&quot;,&quot;host&quot;:&quot;${HOST}&quot;,&quot;name&quot;:&quot;Loop&quot;}"></div>`;
+	const data = {
+		title: "Post",
+		content: [
+			{ _type: "block", children: [{ _type: "span", text: "hello" }] },
+			{ _type: "coywolf-video", _key: "a", uid: UID, title: "  Intro ", posterTime: 3, posterImage: "javascript:alert(1)" },
+			{ _type: "columns", columns: [{ content: [{ _type: "coywolf-video", uid: UID, title: "dupe" }] }] },
+			{ _type: "coywolf-video", uid: "not-a-uid" },
+			{ _type: "htmlBlock", html: marker },
+			{ _type: "htmlBlock", html: "<p>other</p>" },
+		],
+		sidebar: [{ _type: "coywolf-video", uid: UID2 }],
+	};
+	const refs = findVideoBlocks(data);
+	assert.deepEqual(refs, [
+		{ uid: UID, title: "Intro", posterTime: 3 },
+		{ uid: UID2, title: "Loop", legacy: true },
+	]);
+	assert.deepEqual(findVideoBlocks(null), []);
+	assert.deepEqual(findVideoBlocks({ content: [] }), []);
+});
+
+test("player config and src", () => {
+	const gif = playerConfig({ preset: "gif", controls: true });
+	assert.equal(gif.autoplay && gif.loop && gif.muted && !gif.controls, true);
+	assert.equal(playerConfig({ host: HOST, id: UID }).gif, true, "legacy markers default to the GIF preset");
+	const std = playerConfig({ uid: UID, autoplay: true });
+	assert.equal(std.muted, true, "autoplay forces muted");
+	assert.equal(std.controls, true);
+	const src = new URL(playerSrc(HOST, UID, gif, { startTime: 12.7, poster: "https://x/p.jpg", accent: "#ff0000", background: "nope" }));
+	assert.equal(src.origin + src.pathname, `https://${HOST}/${UID}/iframe`);
+	assert.equal(src.searchParams.get("autoplay"), "true");
+	assert.equal(src.searchParams.get("controls"), "false");
+	assert.equal(src.searchParams.get("preload"), "true");
+	assert.equal(src.searchParams.get("startTime"), "12s");
+	assert.equal(src.searchParams.get("primaryColor"), "#ff0000");
+	assert.equal(src.searchParams.get("letterboxColor"), "transparent");
+	assert.equal(src.searchParams.get("poster"), "https://x/p.jpg");
+	assert.ok(playerSrc(null, UID, std).startsWith(`https://iframe.videodelivery.net/${UID}?`));
+});
+
+test("poster and aspect ratio", () => {
+	assert.equal(posterUrl(HOST, UID, { posterImage: "https://img/x.jpg" }), "https://img/x.jpg");
+	assert.equal(posterUrl(HOST, UID, { posterTime: 5 }, { posterImage: "https://img/y.jpg" }), `https://${HOST}/${UID}/thumbnails/thumbnail.jpg?time=5s&width=1200`);
+	assert.equal(posterUrl(HOST, UID, {}, { posterImage: "https://img/y.jpg" }), "https://img/y.jpg");
+	assert.equal(posterUrl(null, UID, {}, { posterTime: 2 }, 320), `https://videodelivery.net/${UID}/thumbnails/thumbnail.jpg?time=2s&width=320`);
+	assert.equal(aspectRatio(1920, 1080), "1920 / 1080");
+	assert.equal(aspectRatio(0, 0, 56.25), "100 / 56.25");
+	assert.equal(aspectRatio(), "16 / 9");
+});
+
+test("VideoObject schema", () => {
+	const schema = buildVideoObject({
+		ref: { uid: UID, caption: "<b>Block</b> description &amp; more" },
+		video: {
+			uid: UID,
+			name: "Stream name",
+			duration: 125,
+			created: "2026-01-02T03:04:05Z",
+			posterTime: 4,
+			downloadUrl: "https://dl/x.mp4",
+			captions: [{ language: "en", label: "English" }],
+			transcript: "Hello there world",
+		},
+		host: HOST,
+		siteUrl: "https://example.com/",
+		page: { title: "Page", description: "Page desc", publishedTime: "2025-01-01T00:00:00Z" },
+		counts: { plays: 10, likes: 3 },
+		likesEnabled: true,
+		captionsEnabled: true,
+	});
+	assert.equal(schema["@type"], "VideoObject");
+	assert.equal(schema.name, "Stream name");
+	assert.equal(schema.description, "Block description & more");
+	assert.deepEqual(schema.thumbnailUrl, [`https://${HOST}/${UID}/thumbnails/thumbnail.jpg?time=4s&width=1200`]);
+	assert.equal(schema.duration, "PT2M5S");
+	assert.equal(schema.uploadDate, "2026-01-02T03:04:05Z");
+	assert.equal(schema.embedUrl, `https://${HOST}/${UID}/iframe`);
+	assert.equal(schema.contentUrl, "https://dl/x.mp4");
+	assert.equal(schema.interactionStatistic.length, 2);
+	assert.equal(schema.interactionStatistic[0].userInteractionCount, 10);
+	assert.equal(schema.caption.contentUrl, `https://example.com/coywolf-video-captions/${UID}/en.vtt`);
+	assert.equal(schema.transcript, "Hello there world");
+
+	const bare = buildVideoObject({ ref: { uid: UID }, host: null, siteUrl: "https://e.com", page: { title: "Page title" } });
+	assert.equal(bare.name, "Page title");
+	assert.equal(bare.description, "Page title");
+	assert.equal("duration" in bare, false);
+	assert.equal("contentUrl" in bare, false);
+	assert.equal("interactionStatistic" in bare, false);
+	assert.equal("uploadDate" in bare, false);
+	assert.equal("caption" in bare, false);
+});
+
+test("video sitemap XML", () => {
+	const xml = buildVideoSitemap([
+		{
+			loc: "https://example.com/a?x=1&y=2",
+			videos: [
+				{
+					thumbnail: "https://t/1.jpg?time=0s&width=1200",
+					title: "Tom & Jerry <live>",
+					description: "",
+					playerLoc: `https://${HOST}/${UID}/iframe`,
+					contentLoc: "https://dl/x.mp4",
+					duration: 90.4,
+					viewCount: 7,
+					publicationDate: "2026-01-02T03:04:05Z",
+				},
+			],
+		},
+		{ loc: "https://example.com/empty", videos: [] },
+	]);
+	assert.ok(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>'));
+	assert.ok(xml.includes('xmlns:video="http://www.google.com/schemas/sitemap-video/1.1"'));
+	assert.ok(xml.includes("<loc>https://example.com/a?x=1&amp;y=2</loc>"));
+	assert.ok(xml.includes("<video:title>Tom &amp; Jerry &lt;live&gt;</video:title>"));
+	assert.ok(xml.includes("<video:description>Tom &amp; Jerry &lt;live&gt;</video:description>"), "empty description falls back to the title");
+	assert.ok(xml.includes("<video:duration>90</video:duration>"));
+	assert.ok(xml.includes("<video:view_count>7</video:view_count>"));
+	assert.ok(!xml.includes("example.com/empty"));
+	const order = ["thumbnail_loc", "title", "description", "content_loc", "player_loc", "duration", "view_count", "publication_date"].map((t) => xml.indexOf(`<video:${t}>`));
+	assert.deepEqual([...order].sort((a, b) => a - b), order, "elements follow the schema sequence");
+});
+
+test("VTT transcript", () => {
+	const vtt = "﻿WEBVTT\n\nNOTE a comment\n\n1\n00:00:00.000 --> 00:00:02.000\n<v Bob>Hello &amp; welcome</v>\n\n00:00:02.000 --> 00:00:04.000\nto the   show.\n";
+	assert.equal(vttToTranscript(vtt), "Hello & welcome to the show.");
+});
+
+test("webhook signature", async () => {
+	const body = JSON.stringify({ uid: UID, readyToStream: true });
+	const time = 1_700_000_000;
+	const sig = await hmacHex("s3cret", `${time}.${body}`);
+	assert.equal(await verifyWebhookSignature(`time=${time},sig1=${sig}`, body, "s3cret", time + 5), true);
+	assert.equal(await verifyWebhookSignature(`time=${time},sig1=${sig}`, `${body} `, "s3cret", time), false);
+	assert.equal(await verifyWebhookSignature(`time=${time},sig1=${sig}`, body, "other", time), false);
+	assert.equal(await verifyWebhookSignature(`time=${time},sig1=${sig}`, body, "s3cret", time + 601), false, "stale");
+	assert.equal(await verifyWebhookSignature(null, body, "s3cret", time), false);
+	assert.equal(await verifyWebhookSignature("garbage", body, "s3cret", time), false);
+});

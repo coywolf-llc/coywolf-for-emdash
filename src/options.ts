@@ -8,6 +8,7 @@ import type { LinksOptions } from "./links/module.js";
 import type { RedirectsOptions } from "./redirects/module.js";
 import type { SchemaOptions } from "./schema/module.js";
 import type { SearchOptions } from "./search/module.js";
+import type { VideosOptions } from "./videos/module.js";
 
 /**
  * Modules to include in the build. Backups needs its bindings, so it's
@@ -25,4 +26,5 @@ export interface CoywolfOptions {
 	ai?: AiOptions | false;
 	discovery?: DiscoveryOptions | false;
 	links?: LinksOptions | false;
+	videos?: VideosOptions | false;
 }

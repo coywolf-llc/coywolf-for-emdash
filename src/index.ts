@@ -22,6 +22,7 @@ import type { CoywolfOptions } from "./options.js";
 
 export type { BackupsOptions } from "./backups/module.js";
 export type { RedirectsOptions } from "./redirects/module.js";
+export type { VideosOptions } from "./videos/module.js";
 export type { CoywolfOptions } from "./options.js";
 
 const VERSION = "0.3.0";

@@ -1,0 +1,728 @@
+/**
+ * Videos admin page: the Cloudflare Stream library with plays, likes and
+ * where each video is used; editing, captions, uploads (straight from the
+ * browser to Stream), index rebuild and the Stream webhook.
+ */
+import { Badge, Banner, Button, Checkbox, Dialog, DropdownMenu, Input, InputArea, Loader } from "@cloudflare/kumo";
+import {
+	ArrowClockwise,
+	ClosedCaptioning,
+	Copy,
+	DotsThree,
+	PencilSimple,
+	Plug,
+	Trash,
+	UploadSimple,
+	VideoCamera,
+} from "@phosphor-icons/react";
+import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
+import * as React from "react";
+
+const API = "/_emdash/api/plugins/coywolf-pack/videos";
+
+interface Usage {
+	title: string | null;
+	url: string | null;
+	collection: string;
+	status: string;
+}
+
+interface Video {
+	uid: string;
+	name: string;
+	description: string;
+	duration: number;
+	created: string | null;
+	width: number;
+	height: number;
+	state: string;
+	ready: boolean;
+	size: number;
+	allowedOrigins: string[];
+	thumbnail: string;
+	plays: number;
+	likes: number;
+	usedIn: Usage[];
+	captions: Array<{ language: string; label?: string }>;
+}
+
+interface Status {
+	configured: boolean;
+	host: string | null;
+	features: Record<string, boolean>;
+	webhook: { subscribed: boolean; url: string };
+	sitemapUrl: string;
+}
+
+interface Meta {
+	uid: string;
+	name?: string;
+	description?: string;
+	posterTime?: number;
+	posterImage?: string;
+	allowedOrigins?: string[];
+	downloadUrl?: string;
+	downloadStatus?: string;
+}
+
+interface Caption {
+	language: string;
+	label?: string;
+	generated?: boolean;
+	status?: string;
+}
+
+const errorText = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
+const dateFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" });
+const numberFormat = new Intl.NumberFormat("en-US");
+
+function clock(seconds: number): string {
+	if (!seconds) return "";
+	const total = Math.round(seconds);
+	const h = Math.floor(total / 3600);
+	const m = Math.floor((total % 3600) / 60);
+	const s = String(total % 60).padStart(2, "0");
+	return h ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
+}
+
+async function post<T>(path: string, body: unknown = {}): Promise<T> {
+	const response = await apiFetch(`${API}/${path}`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	});
+	return parseApiResponse<T>(response, "The request failed");
+}
+
+// ── Edit ─────────────────────────────────────────────────────────
+
+function EditDialog(props: { video: Video | null; onClose: () => void; onSaved: (message: string) => void }) {
+	const [meta, setMeta] = React.useState<Meta>();
+	const [download, setDownload] = React.useState<{ status?: string; url?: string; percent?: number } | null>(null);
+	const [name, setName] = React.useState("");
+	const [description, setDescription] = React.useState("");
+	const [posterTime, setPosterTime] = React.useState("");
+	const [posterImage, setPosterImage] = React.useState("");
+	const [origins, setOrigins] = React.useState("");
+	const [downloads, setDownloads] = React.useState(false);
+	const [pending, setPending] = React.useState(false);
+	const [error, setError] = React.useState<string>();
+
+	React.useEffect(() => {
+		const video = props.video;
+		setMeta(undefined);
+		setError(undefined);
+		if (!video) return;
+		setName(video.name);
+		setDescription(video.description);
+		setOrigins(video.allowedOrigins.join(", "));
+		post<{ meta: Meta | null; download: typeof download }>("detail", { uid: video.uid })
+			.then((d) => {
+				const m = d.meta ?? { uid: video.uid };
+				setMeta(m);
+				setDownload(d.download);
+				setDescription(m.description ?? "");
+				setPosterTime(m.posterTime !== undefined ? String(m.posterTime) : "");
+				setPosterImage(m.posterImage ?? "");
+				setOrigins((m.allowedOrigins ?? video.allowedOrigins).join(", "));
+				setDownloads(Boolean(d.download));
+			})
+			.catch((cause) => setError(errorText(cause, "Could not load the video")));
+	}, [props.video]);
+
+	const save = async () => {
+		if (!props.video) return;
+		setPending(true);
+		setError(undefined);
+		try {
+			const time = posterTime.trim() === "" ? null : Number(posterTime);
+			if (time !== null && (!Number.isFinite(time) || time < 0)) throw new Error("The poster frame must be a number of seconds.");
+			await post("update", {
+				uid: props.video.uid,
+				name,
+				description,
+				posterTime: time,
+				posterImage: posterImage.trim() || null,
+				allowedOrigins: origins
+					.split(/[\s,]+/)
+					.map((o) => o.trim())
+					.filter(Boolean),
+				...(downloads !== Boolean(download) ? { downloads } : {}),
+			});
+			props.onSaved(`Saved ${name || props.video.uid}.`);
+		} catch (cause) {
+			setError(errorText(cause, "Could not save the video"));
+		} finally {
+			setPending(false);
+		}
+	};
+
+	return (
+		<Dialog.Root open={props.video !== null} onOpenChange={(open) => !open && !pending && props.onClose()}>
+			<Dialog className="p-6" size="lg">
+				<Dialog.Title className="text-lg font-semibold">Edit video</Dialog.Title>
+				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">
+					The name is saved to Cloudflare Stream. The description and poster are used by blocks that don't set their own,
+					and by schema and the video sitemap.
+				</Dialog.Description>
+				{!meta && !error ? (
+					<div className="py-8 text-center">
+						<Loader />
+					</div>
+				) : (
+					<form
+						className="mt-4 space-y-4"
+						onSubmit={(e) => {
+							e.preventDefault();
+							void save();
+						}}
+					>
+						<Input label="Name" value={name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} required />
+						<InputArea
+							label="Description"
+							rows={4}
+							value={description}
+							onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setDescription(e.target.value)}
+						/>
+						<div className="grid gap-4 sm:grid-cols-2">
+							<Input
+								label="Poster frame (seconds)"
+								inputMode="decimal"
+								placeholder="0"
+								value={posterTime}
+								onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPosterTime(e.target.value)}
+							/>
+							<Input
+								label="Poster image URL (optional)"
+								placeholder="https://…"
+								value={posterImage}
+								onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPosterImage(e.target.value)}
+							/>
+						</div>
+						<Input
+							label="Allowed origins (empty allows any site)"
+							placeholder="example.com, *.example.com"
+							value={origins}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setOrigins(e.target.value)}
+						/>
+						<Checkbox
+							label="Downloadable MP4 (used as the schema contentUrl)"
+							checked={downloads}
+							onCheckedChange={(checked: boolean) => setDownloads(checked)}
+						/>
+						{download && (
+							<p className="text-sm text-kumo-subtle" aria-live="polite">
+								MP4: {download.status === "ready" ? "ready" : `${download.status ?? "pending"}${download.percent ? ` (${Math.round(download.percent)}%)` : ""}`}
+							</p>
+						)}
+						{error && <Banner variant="error" role="alert" description={error} />}
+						<div className="flex justify-end gap-2">
+							<Button type="button" variant="secondary" disabled={pending} onClick={props.onClose}>
+								Cancel
+							</Button>
+							<Button type="submit" variant="primary" disabled={pending}>
+								{pending ? "Saving…" : "Save"}
+							</Button>
+						</div>
+					</form>
+				)}
+				{error && !meta && <Banner variant="error" role="alert" className="mt-4" description={error} />}
+			</Dialog>
+		</Dialog.Root>
+	);
+}
+
+// ── Captions ─────────────────────────────────────────────────────
+
+function CaptionsDialog(props: { video: Video | null; onClose: () => void }) {
+	const [captions, setCaptions] = React.useState<Caption[]>();
+	const [lang, setLang] = React.useState("en");
+	const [file, setFile] = React.useState<File | null>(null);
+	const [busy, setBusy] = React.useState<string>();
+	const [error, setError] = React.useState<string>();
+	const uid = props.video?.uid;
+
+	React.useEffect(() => {
+		setCaptions(undefined);
+		setError(undefined);
+		if (!uid) return;
+		post<{ captions: Caption[] }>("captions/list", { uid })
+			.then((d) => setCaptions(d.captions))
+			.catch((cause) => setError(errorText(cause, "Could not load captions")));
+	}, [uid]);
+
+	const run = async (label: string, path: string, body: Record<string, unknown>) => {
+		if (!uid) return;
+		setBusy(label);
+		setError(undefined);
+		try {
+			const d = await post<{ captions?: Caption[] }>(path, { uid, ...body });
+			if (d.captions) setCaptions(d.captions);
+		} catch (cause) {
+			setError(errorText(cause, `${label} failed`));
+		} finally {
+			setBusy(undefined);
+		}
+	};
+
+	const upload = async () => {
+		if (!file) return;
+		if (file.size > 3_000_000) {
+			setError("Caption files must be under 3 MB.");
+			return;
+		}
+		await run("Upload", "captions/upload", { lang: lang.trim(), vtt: await file.text() });
+		setFile(null);
+	};
+
+	return (
+		<Dialog.Root open={props.video !== null} onOpenChange={(open) => !open && !busy && props.onClose()}>
+			<Dialog className="p-6" size="lg">
+				<Dialog.Title className="text-lg font-semibold">Captions{props.video ? `: ${props.video.name}` : ""}</Dialog.Title>
+				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">
+					Upload a WebVTT file or have Stream generate captions from the audio. Ready tracks are copied to the site for
+					the caption files and transcript in schema.
+				</Dialog.Description>
+				<div className="mt-4 space-y-4">
+					{!captions && !error ? (
+						<div className="py-6 text-center">
+							<Loader />
+						</div>
+					) : captions && captions.length === 0 ? (
+						<p className="text-sm text-kumo-subtle">No captions yet.</p>
+					) : (
+						<ul className="divide-y rounded-lg border">
+							{(captions ?? []).map((c) => (
+								<li key={c.language} className="flex items-center gap-3 px-3 py-2 text-sm">
+									<span className="font-mono">{c.language}</span>
+									<span className="flex-1 truncate">{c.label}</span>
+									{c.generated && <Badge variant="outline">generated</Badge>}
+									<Badge variant={c.status === "ready" ? "secondary" : "outline"}>{c.status ?? "ready"}</Badge>
+									<Button
+										variant="ghost"
+										shape="square"
+										icon={<Trash aria-hidden="true" />}
+										aria-label={`Delete ${c.language} captions`}
+										disabled={Boolean(busy)}
+										onClick={() => {
+											if (window.confirm(`Delete the ${c.language} captions?`)) void run("Delete", "captions/delete", { lang: c.language });
+										}}
+									/>
+								</li>
+							))}
+						</ul>
+					)}
+					<div className="grid gap-3 sm:grid-cols-[8rem_minmax(0,1fr)] sm:items-end">
+						<Input label="Language" value={lang} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLang(e.target.value)} />
+						<div>
+							<label className="mb-1.5 block text-sm font-medium" htmlFor="cw-vtt-file">
+								WebVTT file
+							</label>
+							<input
+								id="cw-vtt-file"
+								type="file"
+								accept=".vtt,text/vtt"
+								className="block w-full text-sm"
+								onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+							/>
+						</div>
+					</div>
+					<div className="flex flex-wrap justify-end gap-2">
+						<Button variant="secondary" disabled={Boolean(busy)} onClick={() => void run("Refresh", "captions/refresh", {}).then(() => run("Reload", "captions/list", {}))}>
+							Copy to site
+						</Button>
+						<Button variant="secondary" disabled={Boolean(busy) || !lang.trim()} onClick={() => void run("Generate", "captions/generate", { lang: lang.trim() })}>
+							Generate {lang.trim() || "…"}
+						</Button>
+						<Button variant="primary" icon={<UploadSimple />} disabled={Boolean(busy) || !file || !lang.trim()} onClick={() => void upload()}>
+							Upload
+						</Button>
+					</div>
+					<p className="text-sm text-kumo-subtle" aria-live="polite">
+						{busy ? `${busy}…` : ""}
+					</p>
+					{error && <Banner variant="error" role="alert" description={error} />}
+				</div>
+			</Dialog>
+		</Dialog.Root>
+	);
+}
+
+// ── Upload ───────────────────────────────────────────────────────
+
+const TUS_CHUNK = 50 * 1024 * 1024;
+
+function uploadBasic(url: string, file: File, onProgress: (pct: number) => void): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const xhr = new XMLHttpRequest();
+		const form = new FormData();
+		form.append("file", file, file.name);
+		xhr.upload.onprogress = (e) => e.lengthComputable && onProgress((e.loaded / e.total) * 100);
+		xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`Stream rejected the upload (HTTP ${xhr.status}).`)));
+		xhr.onerror = () => reject(new Error("The upload was interrupted."));
+		xhr.open("POST", url);
+		xhr.send(form);
+	});
+}
+
+async function uploadTus(url: string, file: File, onProgress: (pct: number) => void): Promise<void> {
+	let offset = 0;
+	while (offset < file.size) {
+		const chunk = file.slice(offset, offset + TUS_CHUNK);
+		const res = await fetch(url, {
+			method: "PATCH",
+			headers: { "Tus-Resumable": "1.0.0", "Upload-Offset": String(offset), "Content-Type": "application/offset+octet-stream" },
+			body: chunk,
+		});
+		if (!res.ok) throw new Error(`Stream rejected part of the upload (HTTP ${res.status}).`);
+		offset = Number(res.headers.get("Upload-Offset") ?? offset + chunk.size);
+		onProgress((offset / file.size) * 100);
+	}
+}
+
+function UploadDialog(props: { open: boolean; onClose: () => void; onUploaded: (name: string) => void }) {
+	const [file, setFile] = React.useState<File | null>(null);
+	const [name, setName] = React.useState("");
+	const [progress, setProgress] = React.useState<number | null>(null);
+	const [error, setError] = React.useState<string>();
+
+	const start = async () => {
+		if (!file) return;
+		setError(undefined);
+		setProgress(0);
+		try {
+			const target = await post<{ method: "basic" | "tus"; uploadURL: string }>("upload", { name: name.trim() || file.name, size: file.size });
+			if (target.method === "basic") await uploadBasic(target.uploadURL, file, setProgress);
+			else await uploadTus(target.uploadURL, file, setProgress);
+			const label = name.trim() || file.name;
+			setFile(null);
+			setName("");
+			setProgress(null);
+			props.onUploaded(label);
+		} catch (cause) {
+			setError(errorText(cause, "Upload failed"));
+			setProgress(null);
+		}
+	};
+	const uploading = progress !== null;
+
+	return (
+		<Dialog.Root open={props.open} onOpenChange={(open) => !open && !uploading && props.onClose()}>
+			<Dialog className="p-6" size="lg">
+				<Dialog.Title className="text-lg font-semibold">Upload a video</Dialog.Title>
+				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">
+					The file goes straight from your browser to Cloudflare Stream. Keep this dialog open until the upload finishes;
+					Stream then processes the video for a few minutes.
+				</Dialog.Description>
+				<div className="mt-4 space-y-4">
+					<div>
+						<label className="mb-1.5 block text-sm font-medium" htmlFor="cw-video-file">
+							Video file
+						</label>
+						<input
+							id="cw-video-file"
+							type="file"
+							accept="video/*"
+							className="block w-full text-sm"
+							disabled={uploading}
+							onChange={(e) => {
+								const f = e.target.files?.[0] ?? null;
+								setFile(f);
+								if (f && !name) setName(f.name.replace(/\.[^.]+$/, ""));
+							}}
+						/>
+					</div>
+					<Input label="Name" value={name} disabled={uploading} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} />
+					{uploading && (
+						<div>
+							<progress className="w-full" max={100} value={progress ?? 0} aria-label="Upload progress" />
+						</div>
+					)}
+					<p className="text-sm text-kumo-subtle" aria-live="polite">
+						{uploading ? `Uploading… ${Math.round(progress ?? 0)}%` : ""}
+					</p>
+					{error && <Banner variant="error" role="alert" description={error} />}
+					<div className="flex justify-end gap-2">
+						<Button variant="secondary" disabled={uploading} onClick={props.onClose}>
+							Cancel
+						</Button>
+						<Button variant="primary" icon={<UploadSimple />} disabled={uploading || !file} onClick={() => void start()}>
+							Upload
+						</Button>
+					</div>
+				</div>
+			</Dialog>
+		</Dialog.Root>
+	);
+}
+
+// ── Page ─────────────────────────────────────────────────────────
+
+export function VideosPage() {
+	const [status, setStatus] = React.useState<Status>();
+	const [videos, setVideos] = React.useState<Video[]>();
+	const [error, setError] = React.useState<string>();
+	const [notice, setNotice] = React.useState<string>();
+	const [query, setQuery] = React.useState("");
+	const [editing, setEditing] = React.useState<Video | null>(null);
+	const [captioning, setCaptioning] = React.useState<Video | null>(null);
+	const [uploading, setUploading] = React.useState(false);
+	const [busy, setBusy] = React.useState<string>();
+
+	const load = React.useCallback(async (refresh = false) => {
+		setError(undefined);
+		try {
+			const s = await parseApiResponse<Status>(await apiFetch(`${API}/status`), "Could not load the Videos status");
+			setStatus(s);
+			if (!s.configured) {
+				setVideos([]);
+				return;
+			}
+			const data = await post<{ items: Video[] }>("list", { refresh });
+			setVideos(data.items);
+		} catch (cause) {
+			setError(errorText(cause, "Could not load videos"));
+		}
+	}, []);
+	React.useEffect(() => {
+		void load();
+	}, [load]);
+
+	const action = async (label: string, fn: () => Promise<string>) => {
+		setBusy(label);
+		setError(undefined);
+		setNotice(undefined);
+		try {
+			setNotice(await fn());
+		} catch (cause) {
+			setError(errorText(cause, `${label} failed`));
+		} finally {
+			setBusy(undefined);
+		}
+	};
+
+	const test = () => action("Test connection", async () => (await post<{ message: string }>("test")).message);
+
+	const reindex = () =>
+		action("Rebuild index", async () => {
+			let state: unknown = null;
+			let found = 0;
+			let scanned = 0;
+			for (let i = 0; i < 500; i++) {
+				const r = await post<{ done: boolean; state: unknown; found: number; scanned: number; progress: string }>("reindex", { state });
+				found += r.found;
+				scanned += r.scanned;
+				setBusy(`Rebuilding the index (${r.progress})`);
+				if (r.done) break;
+				state = r.state;
+			}
+			await load();
+			return `Scanned ${numberFormat.format(scanned)} entries and found ${numberFormat.format(found)} embedded ${found === 1 ? "video" : "videos"}.`;
+		});
+
+	const webhook = (subscribe: boolean) =>
+		action(subscribe ? "Subscribe" : "Unsubscribe", async () => {
+			await post(subscribe ? "webhook/subscribe" : "webhook/unsubscribe");
+			await load();
+			return subscribe ? "Stream will notify this site when videos finish processing." : "Stream webhook removed.";
+		});
+
+	const q = query.trim().toLowerCase();
+	const visible = (videos ?? []).filter((v) => !q || v.name.toLowerCase().includes(q) || v.uid.includes(q) || v.description.toLowerCase().includes(q));
+	const f = status?.features ?? {};
+
+	return (
+		<div className="space-y-6">
+			<header className="grid min-w-0 gap-4 border-b border-kumo-line pb-4">
+				<div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1">
+					<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Videos</h1>
+					<div className="flex shrink-0 justify-end gap-2">
+						<Button variant="secondary" icon={<ArrowClockwise />} disabled={!status?.configured || Boolean(busy)} onClick={() => void load(true)}>
+							Refresh
+						</Button>
+						<Button variant="primary" icon={<UploadSimple />} disabled={!status?.configured} onClick={() => setUploading(true)}>
+							Upload
+						</Button>
+					</div>
+					<p className="col-span-2 text-sm leading-5 text-pretty text-kumo-subtle">
+						Your Cloudflare Stream library. Add videos to posts with the <strong>Coywolf Video</strong> block; plays,
+						likes and the posts each video appears in show here.
+					</p>
+				</div>
+				{status?.configured && (
+					<div className="sm:w-72">
+						<Input
+							label="Search"
+							placeholder="Name, description or video ID"
+							value={query}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
+						/>
+					</div>
+				)}
+			</header>
+
+			<div aria-live="polite">
+				{busy && <p className="text-sm text-kumo-subtle">{busy}…</p>}
+				{notice && <Banner variant="default" role="status" title={notice} />}
+			</div>
+			{error && <Banner variant="error" role="alert" title="Something went wrong" description={error} />}
+
+			{status && !status.configured && (
+				<Banner
+					variant="default"
+					title="Connect Cloudflare Stream"
+					description="Add your account ID and an API token with Stream: Edit under Plugins → Coywolf Pack → Settings (or set the CF_ACCOUNT_ID and CF_STREAM_TOKEN Worker variables), then reload this page."
+				/>
+			)}
+
+			{!videos && !error ? (
+				<div className="py-12 text-center text-kumo-subtle">
+					<Loader />
+				</div>
+			) : videos && status?.configured && videos.length === 0 ? (
+				<div className="py-10 text-center text-kumo-subtle">
+					<VideoCamera size={40} className="mx-auto mb-3 opacity-30" aria-hidden="true" />
+					<p className="text-base font-medium">No videos yet</p>
+					<p className="mt-1 text-sm">Upload one to get started.</p>
+				</div>
+			) : videos && videos.length > 0 ? (
+				<div className="rounded-lg border">
+					<div className="flex items-center gap-4 border-b bg-kumo-tint/50 px-4 py-2 text-sm font-medium text-kumo-subtle">
+						<div className="w-24 shrink-0" />
+						<div className="min-w-0 flex-1">Video</div>
+						<div className="w-16 text-end">Length</div>
+						<div className="hidden w-28 lg:block">Uploaded</div>
+						{f.engagement && <div className="hidden w-16 text-end md:block">Plays</div>}
+						{f.engagement && <div className="hidden w-14 text-end md:block">Likes</div>}
+						<div className="w-16 text-end">Used in</div>
+						<div className="w-10" />
+					</div>
+					{visible.map((v) => (
+						<div key={v.uid} className="flex items-center gap-4 border-b px-4 py-2 text-sm last:border-0">
+							<div className="w-24 shrink-0">
+								<img src={v.thumbnail} alt="" loading="lazy" width={96} height={54} className="aspect-video w-24 rounded bg-kumo-tint object-cover" />
+							</div>
+							<div className="min-w-0 flex-1">
+								<div className="truncate font-medium" title={v.name}>
+									{v.name}
+								</div>
+								<div className="mt-0.5 flex items-center gap-1 truncate text-xs text-kumo-subtle">
+									<span className="font-mono">{v.uid}</span>
+									{!v.ready && <Badge variant="outline">{v.state}</Badge>}
+									{v.captions.length > 0 && <Badge variant="outline">CC</Badge>}
+								</div>
+							</div>
+							<div className="w-16 text-end tabular-nums">{clock(v.duration)}</div>
+							<div className="hidden w-28 text-xs text-kumo-subtle lg:block">{v.created ? dateFormat.format(new Date(v.created)) : ""}</div>
+							{f.engagement && <div className="hidden w-16 text-end tabular-nums md:block">{numberFormat.format(v.plays)}</div>}
+							{f.engagement && <div className="hidden w-14 text-end tabular-nums md:block">{numberFormat.format(v.likes)}</div>}
+							<div
+								className="w-16 text-end tabular-nums"
+								title={v.usedIn.map((u) => `${u.title ?? "(untitled)"} (${u.collection}, ${u.status})`).join("\n") || "Not used"}
+							>
+								{v.usedIn.length}
+							</div>
+							<div className="flex w-10 justify-end">
+								<DropdownMenu>
+									<DropdownMenu.Trigger
+										render={
+											<Button type="button" variant="ghost" shape="square" icon={<DotsThree aria-hidden="true" />} aria-label={`Actions for ${v.name}`} />
+										}
+									/>
+									<DropdownMenu.Content className="p-1">
+										<DropdownMenu.Item
+											className="py-1 data-highlighted:bg-kumo-fill"
+											icon={<PencilSimple className="me-1.5 size-3.5" aria-hidden="true" />}
+											onClick={() => setEditing(v)}
+										>
+											Edit
+										</DropdownMenu.Item>
+										{f.captions && (
+											<DropdownMenu.Item
+												className="py-1 data-highlighted:bg-kumo-fill"
+												icon={<ClosedCaptioning className="me-1.5 size-3.5" aria-hidden="true" />}
+												onClick={() => setCaptioning(v)}
+											>
+												Captions
+											</DropdownMenu.Item>
+										)}
+										<DropdownMenu.Item
+											className="py-1 data-highlighted:bg-kumo-fill"
+											icon={<Copy className="me-1.5 size-3.5" aria-hidden="true" />}
+											onClick={() => {
+												void navigator.clipboard.writeText(v.uid);
+												setNotice(`Copied the ID of ${v.name}.`);
+											}}
+										>
+											Copy video ID
+										</DropdownMenu.Item>
+									</DropdownMenu.Content>
+								</DropdownMenu>
+							</div>
+						</div>
+					))}
+					{visible.length === 0 && <p className="px-4 py-6 text-center text-sm text-kumo-subtle">No videos match.</p>}
+				</div>
+			) : null}
+
+			{status && (
+				<section className="space-y-3 border-t border-kumo-line pt-4" aria-labelledby="cw-videos-tools">
+					<h2 id="cw-videos-tools" className="text-base font-semibold">
+						Tools
+					</h2>
+					<div className="flex flex-wrap gap-2">
+						<Button variant="secondary" icon={<Plug />} disabled={Boolean(busy)} onClick={() => void test()}>
+							Test connection
+						</Button>
+						<Button variant="secondary" disabled={Boolean(busy)} onClick={() => void reindex()}>
+							Rebuild embed index
+						</Button>
+						{f.webhook &&
+							(status.webhook.subscribed ? (
+								<Button variant="secondary" disabled={Boolean(busy)} onClick={() => void webhook(false)}>
+									Unsubscribe Stream webhook
+								</Button>
+							) : (
+								<Button variant="secondary" disabled={Boolean(busy) || !status.configured} onClick={() => void webhook(true)}>
+									Subscribe Stream webhook
+								</Button>
+							))}
+					</div>
+					<ul className="space-y-1 text-sm text-kumo-subtle">
+						<li>Player host: {status.host ?? "not known yet (refresh the library, or set the customer subdomain in Settings)"}</li>
+						{f.sitemap && (
+							<li>
+								Video sitemap:{" "}
+								<a className="underline" href={status.sitemapUrl} target="_blank" rel="noreferrer">
+									{status.sitemapUrl}
+								</a>{" "}
+								(add it to your robots.txt or Search Console)
+							</li>
+						)}
+						{f.webhook && <li>Webhook: {status.webhook.subscribed ? `subscribed (${status.webhook.url})` : "not subscribed"}</li>}
+					</ul>
+				</section>
+			)}
+
+			<EditDialog
+				video={editing}
+				onClose={() => setEditing(null)}
+				onSaved={(message) => {
+					setEditing(null);
+					setNotice(message);
+					void load(true);
+				}}
+			/>
+			<CaptionsDialog video={captioning} onClose={() => setCaptioning(null)} />
+			<UploadDialog
+				open={uploading}
+				onClose={() => setUploading(false)}
+				onUploaded={(name) => {
+					setUploading(false);
+					setNotice(`Uploaded ${name}. Stream is processing it.`);
+					void load(true);
+				}}
+			/>
+		</div>
+	);
+}
