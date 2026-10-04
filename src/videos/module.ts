@@ -21,6 +21,7 @@ import {
 	isImageUrl,
 	RecentKeys,
 	isUid,
+	normalizeCustomerHost,
 	posterUrl,
 	sha256Hex,
 	MAX_CAPTION_BYTES,
@@ -35,6 +36,7 @@ import {
 	type EmbedEntry,
 	SETTINGS,
 	SITEMAP_KEY,
+	adminSettings,
 	allEmbeds,
 	bump,
 	captionStore,
@@ -44,6 +46,7 @@ import {
 	embedStore,
 	invalidateEmbeds,
 	invalidateLibrary,
+	invalidatePublicConfig,
 	invalidateSitemap,
 	library,
 	metaFor,
@@ -73,6 +76,30 @@ export const F = {
 
 export const TASKS = { captions: "videos-captions-refresh", likes: "videos-likes-prune", downloads: "videos-downloads-refresh" } as const;
 
+const hexColor = z
+	.string()
+	.trim()
+	.refine((v) => v === "" || /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(v), "Colors must be hex, such as #f6821f.");
+
+const settingsInput = z.object({
+	accountId: z
+		.string()
+		.trim()
+		.refine((v) => v === "" || /^[0-9a-f]{32}$/i.test(v), "The account ID should be 32 hexadecimal characters.")
+		.optional(),
+	/** Write-only: a new token replaces the saved one; empty keeps it. */
+	token: z.string().trim().max(500).optional(),
+	clearToken: z.boolean().optional(),
+	customerSubdomain: z
+		.string()
+		.trim()
+		.max(253)
+		.refine((v) => v === "" || normalizeCustomerHost(v) !== null, "Use the customer subdomain, such as customer-abc123.cloudflarestream.com.")
+		.optional(),
+	accentColor: hexColor.optional(),
+	backgroundColor: hexColor.optional(),
+});
+
 const uidSchema = z.string().regex(/^[0-9a-f]{32}$/, "Not a Stream video ID.");
 const langSchema = z.string().regex(/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/, "Use a language code such as en or pt-BR.");
 
@@ -88,7 +115,7 @@ async function stream<T>(fn: () => Promise<T>): Promise<T> {
 
 async function requireClient(ctx: Ctx) {
 	const api = await client(ctx);
-	if (!api) throw PluginRouteError.badRequest("Add your Cloudflare account ID and Stream API token in the plugin settings first.");
+	if (!api) throw PluginRouteError.badRequest("Add your Cloudflare account ID and Stream API token on the Videos page → Settings first.");
 	return api;
 }
 
@@ -315,6 +342,37 @@ export function videosModule(options: VideosOptions) {
 				};
 			},
 		},
+
+		/** The Videos page's Settings tab (the token is reported as set or not, never returned). */
+		"videos/settings": {
+			permission: "plugins:manage" as const,
+			handler: async (ctx: Ctx) => {
+				await requireFeature(ctx, F.main);
+				return adminSettings(ctx);
+			},
+		},
+
+		"videos/settings/save": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.main);
+				const input = parseInput(settingsInput, ctx.input);
+				// Only the fields sent are written (the setup card sends just the connection).
+				if (input.accountId !== undefined) await ctx.settings.set(SETTINGS.accountId, input.accountId);
+				if (input.customerSubdomain !== undefined)
+					await ctx.settings.set(SETTINGS.host, input.customerSubdomain ? (normalizeCustomerHost(input.customerSubdomain) ?? "") : "");
+				if (input.accentColor !== undefined) await ctx.settings.set(SETTINGS.accent, input.accentColor);
+				if (input.backgroundColor !== undefined) await ctx.settings.set(SETTINGS.background, input.backgroundColor);
+				if (input.clearToken) await ctx.settings.delete(SETTINGS.token);
+				else if (input.token) await ctx.settings.set(SETTINGS.token, input.token);
+				invalidatePublicConfig();
+				await invalidateLibrary(ctx);
+				ctx.log.info("Videos settings saved", { tokenChanged: Boolean(input.clearToken || input.token) });
+				return adminSettings(ctx);
+			},
+		}),
 
 		"videos/test": definePluginRoute({
 			permission: "plugins:manage",

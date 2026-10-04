@@ -30,7 +30,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.4.7
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.4.8
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -51,6 +51,8 @@ emdash({
 ```
 
 Each module appears under **Plugins → Coywolf Pack** in the admin. Omit a module (or set it to `false`) to turn it off.
+
+Each module's settings live on its own page (Backups, Files → Settings, Videos → Settings, Link Manager → Settings, AI Enrichment → Settings, Schema, Code Blocks, Discovery, Robots.txt), grouped into sections. Features that need an API key or binding stay hidden until it's there, with a setup card in their place. The plugin's generic **Settings** page (**Plugins → Coywolf Pack → Settings**) lists only the API keys and tokens, which EmDash stores encrypted (so the site needs `EMDASH_ENCRYPTION_KEY`): the AI Enrichment API key, the File Downloads R2 secret access key, the Videos Stream API token and webhook secret, and the Cloudflare Radar API token. Each can also be entered on its module's page.
 
 In development, keep Vite from pre-bundling the plugin. A pre-bundled copy gets its own instance of `emdash`, which breaks plugin error handling. Its UI libraries should stay pre-bundled:
 
@@ -91,7 +93,7 @@ The options are read when the Worker starts (EmDash creates the plugin then), so
 
 - **Database**: a restorable SQL dump of the site's D1 database: users, passkeys, settings, redirects, menus, plugin data, and content. Search indexes rebuild automatically on restore.
 - **Media**: a mirror of the R2 media bucket. Replaced or deleted files are kept under a dated folder until retention expires.
-- **Admin**: **Back up now**, downloads, and a dashboard widget that warns when backups stop. Settings: daily scheduled backup, retention (default 30 days), staleness warning.
+- **Admin**: **Back up now**, downloads, and a dashboard widget that warns when backups stop. Settings (**Schedule and retention** on the Backups page): daily scheduled backup (default off), retention (default 30 days), staleness warning (default 36 hours).
 - **Restore** (optional, see below): **Rewind to this backup** (D1 Time Travel, with **Undo rewind**), **Restore to a new database** (import plus per-table row-count check), and **Restore missing media**.
 
 Theme code isn't included: it lives in your Git repository.
@@ -274,12 +276,12 @@ The Coywolf Files plugin for WordPress, on EmDash. Add a **File download** block
 ### Setup
 
 1. Turn on **File Downloads** under **Plugins → Features**. The middleware from the Redirects setup (`coywolfPack()`) serves the download URLs; nothing else to add.
-2. Settings (the Coywolf Pack plugin settings): download URL base (default `download`), optional public bucket / CDN URL, card color scheme, accent color, and largest upload (default 5 GB).
+2. Settings (**Files → Settings**): download URL base (default `download`), optional public bucket / CDN URL, card color scheme, accent color, and largest upload (default 5 GB).
 3. Bindings: `DB` and `MEDIA`. To keep large uploads in their own bucket, bind it as `FILES` (or pass `files: { uploads: "MYBINDING" }`, and note the middleware looks for `FILES`).
 
 ### Large uploads
 
-1. Create an R2 API token (**R2 → Manage API tokens**) with **Object Read & Write** on the bucket. Enter the account ID, access key ID, secret access key (stored encrypted), and bucket name in the settings. The bucket must be the one bound as `MEDIA` (or `FILES`), since downloads stream through that binding.
+1. Create an R2 API token (**R2 → Manage API tokens**) with **Object Read & Write** on the bucket. Enter the account ID, access key ID, secret access key (stored encrypted), and bucket name under **Files → Settings → Large uploads**. Until all four are saved, the Files page shows a setup card instead of the uploader and the CORS check. The bucket must be the one bound as `MEDIA` (or `FILES`), since downloads stream through that binding.
 2. Add a CORS policy to the bucket (**R2 → bucket → Settings → CORS Policy**):
 
    ```json
@@ -502,7 +504,7 @@ Feature switches: **Link Manager** (`links`) and **Scheduled link checking** (`l
 
 ### Setup
 
-No bindings or secrets, but EmDash needs to know the site URL (**Settings → General**, or `site` in `astro.config`) to tell internal links from external ones; nothing is indexed until it's set. Plugin settings: subrequests per check run (default 40), whether to check links to your own site (default on), and a User-Agent override. The checker presents a current desktop Chrome by default, which avoids most false "Blocked" results.
+No bindings or secrets, but EmDash needs to know the site URL (**Settings → General**, or `site` in `astro.config`) to tell internal links from external ones; nothing is indexed until it's set. Settings (**Link Manager → Settings**): subrequests per check run (default 40), whether to check links to your own site (default on), and a User-Agent override. The checker presents a current desktop Chrome by default, which avoids most false "Blocked" results.
 
 ### Notes
 
@@ -541,7 +543,7 @@ The Coywolf Video Manager for EmDash, on Cloudflare Stream.
 ### Setup
 
 1. Create an API token with **Account → Stream → Edit**.
-2. Under **Plugins → Coywolf Pack → Settings**, enter the account ID and the token (a secret setting, which needs EmDash's `EMDASH_ENCRYPTION_KEY`). Or set `CF_ACCOUNT_ID` and the `CF_STREAM_TOKEN` Worker secret, the same variables EmDash's `cloudflareStream()` media provider reads. Optional settings: the customer subdomain (`customer-….cloudflarestream.com`, learned from the library if empty), and the player accent and background colors.
+2. On the **Videos** page, enter the account ID and the token in the **Connect** card (or later under **Videos → Settings**; the token is a secret setting, which needs EmDash's `EMDASH_ENCRYPTION_KEY`). Until Stream is connected, the page shows only that card: the library, uploads, captions and the webhook appear once it's connected. Or set `CF_ACCOUNT_ID` and the `CF_STREAM_TOKEN` Worker secret, the same variables EmDash's `cloudflareStream()` media provider reads. Optional settings (**Videos → Settings → Player**): the customer subdomain (`customer-….cloudflarestream.com`, learned from the library if empty), and the player accent and background colors.
 3. Turn on **Videos** (and any sub-features) under **Plugins → Coywolf Pack → Features**, open the **Videos** page, and click **Test connection**. Then **Rebuild embed index** once.
 4. For the sitemap and caption files, add `coywolfPack()` to the site middleware (see Redirects), and list the sitemap in `robots.txt`:
 
@@ -592,7 +594,7 @@ RADAR_API_TOKEN=… node scripts/build-bots.mjs
 
 With `robots.radarSync` on and a token set, the `robots-refresh-bots` task runs weekly (and **Refresh from Radar** runs it now). It makes one request, `GET https://api.cloudflare.com/client/v4/radar/bots?limit=1000`, and stores only differences from the bundled list in plugin storage (`robots_bots`), so a quiet week writes nothing. Radar publishes user-agent patterns, not robots.txt tokens, so bots that first appear this way get a token derived from their pattern and stay **unverified** until the bundled list is updated with a source. Bots that leave Radar stay usable and are marked.
 
-Create a Cloudflare API token with **Account → Radar → Read** and either paste it into the plugin settings (**Cloudflare Radar API token**, stored encrypted) or set it as a Worker secret:
+Create a Cloudflare API token with **Account → Radar → Read** and either paste it into the setup card under **Crawler directory** on the Robots.txt page (stored encrypted; it's also on the plugin's generic Settings page) or set it as a Worker secret:
 
 ```bash
 npx wrangler secret put RADAR_API_TOKEN

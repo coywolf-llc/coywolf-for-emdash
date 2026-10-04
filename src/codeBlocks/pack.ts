@@ -64,15 +64,6 @@ export function codeBlocksPack(_options: CodeBlocksOptions): PackModule {
 		label: "Code Blocks",
 		features: FEATURES,
 		adminPages: [{ path: "/code-blocks", label: "Code Blocks", icon: "code" }],
-		settingsSchema: {
-			[THEME_SETTING]: {
-				type: "select",
-				label: "Code block theme",
-				description: "Colors for code blocks on the site.",
-				options: themeOptions().map((t) => ({ value: t.id, label: t.label })),
-				default: DEFAULT_THEME,
-			},
-		},
 		routes: {
 			"codeBlocks/settings": {
 				permission: "plugins:manage" as const,

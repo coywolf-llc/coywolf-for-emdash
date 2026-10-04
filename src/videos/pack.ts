@@ -4,7 +4,7 @@ import { PLUGIN_ID, registerFeatures } from "../core/features.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { BLOCK_TYPE } from "./lib.js";
 import { F, type VideosOptions, videosModule } from "./module.js";
-import { STORAGE, videosSettingsSchema } from "./store.js";
+import { STORAGE } from "./store.js";
 
 export type { VideosOptions } from "./module.js";
 
@@ -31,7 +31,6 @@ export function videosPack(options: VideosOptions): PackModule {
 		hookFeature: { "page:metadata": F.schema },
 		tasks: videos.tasks,
 		adminPages: [{ path: "/videos", label: "Videos", icon: "video" }],
-		settingsSchema: videosSettingsSchema,
 		storage: STORAGE,
 		capabilities: ["content:read", "schema:read"],
 		portableTextBlocks: [

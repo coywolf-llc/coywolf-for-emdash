@@ -18,6 +18,7 @@ import { configureContentUrls } from "./core/content-url.js";
 import { PLUGIN_ID, isOn, knownFeatures } from "./core/features.js";
 import { featuresRoutes } from "./core/features-module.js";
 import type { PackModule } from "./core/module.js";
+import { secretSettingsSchema } from "./core/secrets.js";
 import { MODULES } from "./modules.js";
 import type { CoywolfOptions } from "./options.js";
 
@@ -28,7 +29,7 @@ export type { RobotsOptions } from "./robots/module.js";
 export type { CoywolfOptions } from "./options.js";
 export type { ContentUrlOptions, TrailingSlash } from "./core/content-url.js";
 
-const VERSION = "0.4.7";
+const VERSION = "0.4.8";
 const PACKAGE = "@coywolf/emdash";
 
 const FEATURES_PAGE = { path: "/features", label: "Features", icon: "toggle-right" };
@@ -45,7 +46,7 @@ function surfaces(modules: PackModule[]) {
 		pages: [FEATURES_PAGE, ...modules.flatMap((m) => m.adminPages ?? [])],
 		widgets: modules.flatMap((m) => m.widgets ?? []),
 		blocks: modules.flatMap((m) => m.portableTextBlocks ?? []),
-		settingsSchema: Object.assign({}, ...modules.map((m) => m.settingsSchema ?? {})),
+		settingsSchema: secretSettingsSchema(modules.map((m) => m.settingsSchema)),
 		storage: Object.assign({}, ...modules.map((m) => m.storage ?? {})),
 		capabilities: [...new Set([...modules.flatMap((m) => m.capabilities ?? []), ...hookCapabilities(modules)])] as PluginCapability[],
 		allowedHosts: [...new Set(modules.flatMap((m) => m.allowedHosts ?? []))],

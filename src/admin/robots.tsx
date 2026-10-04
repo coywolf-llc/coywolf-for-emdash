@@ -11,6 +11,7 @@ import * as React from "react";
 import { type BotEntry, CATEGORY_LABELS, categoryLabel } from "../robots/bots.js";
 import { evaluate } from "../robots/rep.js";
 import { type RobotsConfig, type RobotsRule, type RuleKind, directives, generate, isValidToken } from "../robots/rules.js";
+import { SecretField, SetupCard } from "./settings-ui.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/robots";
 
@@ -30,7 +31,7 @@ interface PageData {
 	siteUrl: string;
 	emdashRobotsTxt: string | null;
 	presets: Array<Omit<RobotsRule, "id" | "enabled">>;
-	radar: { tokenConfigured: boolean; state: SyncState | null; baselineDate: string };
+	radar: { tokenConfigured: boolean; tokenSource: "settings" | "env" | null; state: SyncState | null; baselineDate: string };
 }
 
 const KIND_LABELS: Record<RuleKind, string> = {
@@ -373,6 +374,61 @@ function Tester(props: { robotsTxt: string; bots: BotEntry[]; siteUrl: string })
 	);
 }
 
+type TokenSource = PageData["radar"]["tokenSource"];
+
+/** Save, replace or remove the Radar token here (a secret setting, stored encrypted). */
+function RadarTokenForm(props: { source: TokenSource; onChanged: (source: TokenSource, message: string) => void; onCancel?: () => void }) {
+	const [token, setToken] = React.useState("");
+	const [pending, setPending] = React.useState<"save" | "clear">();
+	const [error, setError] = React.useState<string>();
+	const send = async (body: { token?: string; clear?: boolean }) => {
+		setPending(body.clear ? "clear" : "save");
+		setError(undefined);
+		try {
+			const result = await post<{ tokenSource: TokenSource }>("radar-token", body);
+			setToken("");
+			props.onChanged(result.tokenSource, body.clear ? "Radar token removed." : "Radar token saved.");
+		} catch (cause) {
+			setError(errorText(cause, "Could not save the token"));
+		} finally {
+			setPending(undefined);
+		}
+	};
+	return (
+		<form
+			className="space-y-3"
+			onSubmit={(e) => {
+				e.preventDefault();
+				if (token.trim()) void send({ token: token.trim() });
+			}}
+		>
+			<div className="sm:max-w-md">
+				<SecretField
+					label="Cloudflare Radar API token"
+					saved={props.source === "settings"}
+					value={token}
+					onChange={setToken}
+					description="Create a Custom Token with Account → Radar → Read. Stored encrypted."
+					onClear={() => void send({ clear: true })}
+					clearing={pending === "clear"}
+					disabled={Boolean(pending)}
+				/>
+			</div>
+			{error && <Banner variant="error" role="alert" description={error} />}
+			<div className="flex gap-2">
+				<Button type="submit" variant="primary" disabled={Boolean(pending) || !token.trim()}>
+					{pending === "save" ? "Saving…" : "Save token"}
+				</Button>
+				{props.onCancel && (
+					<Button type="button" variant="secondary" disabled={Boolean(pending)} onClick={props.onCancel}>
+						Cancel
+					</Button>
+				)}
+			</div>
+		</form>
+	);
+}
+
 export function RobotsPage() {
 	const [data, setData] = React.useState<PageData>();
 	const [config, setConfig] = React.useState<RobotsConfig>();
@@ -383,6 +439,14 @@ export function RobotsPage() {
 	const [saving, setSaving] = React.useState(false);
 	const [dirty, setDirty] = React.useState(false);
 	const [syncing, setSyncing] = React.useState(false);
+	const [editingToken, setEditingToken] = React.useState(false);
+	/** Token changes only touch the Radar status, so unsaved rule edits survive. */
+	const tokenChanged = (source: TokenSource, message: string) => {
+		setData((d) => (d ? { ...d, radar: { ...d.radar, tokenSource: source, tokenConfigured: Boolean(source) } } : d));
+		setEditingToken(false);
+		setError(undefined);
+		setNotice(message);
+	};
 
 	const load = React.useCallback(async () => {
 		setError(undefined);
@@ -659,9 +723,18 @@ export function RobotsPage() {
 					<h2 id="robots-directory" className="text-base font-semibold">
 						Crawler directory
 					</h2>
-					<Button variant="secondary" icon={<ArrowsClockwise />} disabled={syncing || !data.radar.tokenConfigured} onClick={() => void refresh()}>
-						{syncing ? "Refreshing…" : "Refresh from Radar"}
-					</Button>
+					{data.radar.tokenConfigured && (
+						<div className="flex flex-wrap gap-2">
+							{data.radar.tokenSource === "settings" && !editingToken && (
+								<Button variant="ghost" onClick={() => setEditingToken(true)}>
+									Change token
+								</Button>
+							)}
+							<Button variant="secondary" icon={<ArrowsClockwise />} disabled={syncing} onClick={() => void refresh()}>
+								{syncing ? "Refreshing…" : "Refresh from Radar"}
+							</Button>
+						</div>
+					)}
 				</div>
 				<p className="text-sm text-kumo-subtle">
 					{bots.length} crawlers from Cloudflare Radar's bot directory and operators' documentation (bundled list from{" "}
@@ -669,15 +742,27 @@ export function RobotsPage() {
 					<Badge variant="warning">unverified</Badge> token that the operator doesn't document; they still work as robots.txt tokens
 					if the crawler uses them.
 				</p>
-				<p className="text-sm text-kumo-subtle" aria-live="polite">
-					{!data.radar.tokenConfigured
-						? "To refresh the list weekly, add a Cloudflare Radar API token (Account → Radar → Read) in the plugin settings and turn on “Weekly crawler list from Cloudflare Radar” under Features."
-						: data.radar.state
-							? data.radar.state.ok
-								? `Last Radar sync ${dateFormat.format(new Date(data.radar.state.at))}: ${data.radar.state.total} bots, ${data.radar.state.added} new.`
-								: `Last Radar sync failed ${dateFormat.format(new Date(data.radar.state.at))}: ${data.radar.state.error}`
-							: "Radar token set; no sync has run yet."}
-				</p>
+				{data.radar.tokenConfigured ? (
+					<>
+						<p className="text-sm text-kumo-subtle" aria-live="polite">
+							{data.radar.state
+								? data.radar.state.ok
+									? `Last Radar sync ${dateFormat.format(new Date(data.radar.state.at))}: ${data.radar.state.total} bots, ${data.radar.state.added} new.`
+									: `Last Radar sync failed ${dateFormat.format(new Date(data.radar.state.at))}: ${data.radar.state.error}`
+								: "Radar token set; no sync has run yet."}{" "}
+							{data.radar.tokenSource === "env" && "Using the RADAR_API_TOKEN Worker secret."} Turn on “Weekly crawler list from Cloudflare Radar” under
+							Features to refresh it every week.
+						</p>
+						{editingToken && <RadarTokenForm source={data.radar.tokenSource} onChanged={tokenChanged} onCancel={() => setEditingToken(false)} />}
+					</>
+				) : (
+					<SetupCard
+						title="Add a Cloudflare Radar API token to keep this list current"
+						description="Optional. With a token, Refresh from Radar updates the crawler list now, and the weekly sync (under Features) keeps it current. Or set the RADAR_API_TOKEN Worker secret."
+					>
+						<RadarTokenForm source={data.radar.tokenSource} onChanged={tokenChanged} />
+					</SetupCard>
+				)}
 			</section>
 
 			<RuleDialog

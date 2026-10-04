@@ -3,12 +3,13 @@
  * with downloads, where each is used, a direct-to-R2 uploader, a CORS check,
  * and delete.
  */
-import { Badge, Banner, Button, Dialog, DropdownMenu, Input, Loader, Meter, Select } from "@cloudflare/kumo";
+import { Badge, Banner, Button, Dialog, DropdownMenu, Input, Loader, Meter, Select, Tabs } from "@cloudflare/kumo";
 import { ArrowsClockwise, CloudArrowUp, DotsThree, FileArrowDown, LinkSimple, ShieldCheck, Trash, X } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
 import { formatSize, iconFor } from "../files/format.js";
+import { SecretField, SettingsSection, SetupCard } from "./settings-ui.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/files";
 const CONCURRENCY = 4;
@@ -41,6 +42,19 @@ interface ListResponse {
 	base: string;
 	countsEnabled: boolean;
 	largeUploadsEnabled: boolean;
+	r2Configured: boolean;
+}
+
+interface FilesSettings {
+	filesBase: string;
+	filesPublicBaseUrl: string;
+	filesScheme: "auto" | "light" | "dark";
+	filesAccent: string;
+	filesMaxUploadGb: number;
+	filesR2AccountId: string;
+	filesR2AccessKeyId: string;
+	filesR2Bucket: string;
+	r2SecretSet: boolean;
 }
 
 interface CorsResult {
@@ -268,6 +282,146 @@ function CorsDialog(props: { result: CorsResult | null; onClose: () => void }) {
 	);
 }
 
+// ── Settings ─────────────────────────────────────────────────────
+
+type SettingsDraft = Omit<FilesSettings, "filesMaxUploadGb" | "r2SecretSet"> & { filesMaxUploadGb: string; filesR2SecretAccessKey: string };
+
+function SettingsPanel(props: { largeUploadsEnabled: boolean; onSaved: (message: string) => void }) {
+	const [saved, setSaved] = React.useState<FilesSettings>();
+	const [draft, setDraft] = React.useState<SettingsDraft>();
+	const [error, setError] = React.useState<string>();
+	const [pending, setPending] = React.useState<"save" | "clear">();
+
+	const apply = (s: FilesSettings) => {
+		setSaved(s);
+		const { r2SecretSet: _set, filesMaxUploadGb, ...rest } = s;
+		setDraft({ ...rest, filesMaxUploadGb: String(filesMaxUploadGb), filesR2SecretAccessKey: "" });
+	};
+	React.useEffect(() => {
+		apiFetch(`${API}/settings`)
+			.then((response) => parseApiResponse<FilesSettings>(response, "Could not load the settings"))
+			.then(apply)
+			.catch((cause) => setError(errorText(cause, "Could not load the settings")));
+	}, []);
+
+	const set = (patch: Partial<SettingsDraft>) => setDraft((d) => (d ? { ...d, ...patch } : d));
+	const save = async (clearR2Secret = false) => {
+		if (!draft) return;
+		setPending(clearR2Secret ? "clear" : "save");
+		setError(undefined);
+		try {
+			const { filesR2SecretAccessKey, filesMaxUploadGb, ...rest } = draft;
+			const result = await post<FilesSettings>("settings/save", {
+				...rest,
+				filesMaxUploadGb: Number(filesMaxUploadGb),
+				...(clearR2Secret ? { clearR2Secret: true } : filesR2SecretAccessKey.trim() ? { filesR2SecretAccessKey: filesR2SecretAccessKey.trim() } : {}),
+			});
+			apply(result);
+			props.onSaved(clearR2Secret ? "R2 secret access key removed." : "File Downloads settings saved.");
+		} catch (cause) {
+			setError(errorText(cause, "Could not save the settings"));
+		} finally {
+			setPending(undefined);
+		}
+	};
+
+	if (!draft || !saved)
+		return error ? (
+			<Banner variant="error" role="alert" title="Could not load the settings" description={error} />
+		) : (
+			<div className="py-12 text-center">
+				<Loader />
+			</div>
+		);
+
+	const field = (key: "filesBase" | "filesPublicBaseUrl" | "filesAccent" | "filesR2AccountId" | "filesR2AccessKeyId" | "filesR2Bucket") => ({
+		value: draft[key],
+		onChange: (e: React.ChangeEvent<HTMLInputElement>) => set({ [key]: e.target.value }),
+	});
+
+	return (
+		<form
+			className="space-y-6"
+			onSubmit={(e) => {
+				e.preventDefault();
+				void save();
+			}}
+		>
+			<SettingsSection id="files-links" title="Download links" description="Where download links point. Changing the base changes every download link on the site.">
+				<div className="grid gap-4 sm:grid-cols-2">
+					<Input label="Download URL base" placeholder="download" description={`Links look like /${draft.filesBase || "download"}/<id>/<file name>. One path segment.`} {...field("filesBase")} />
+					<Input
+						label="Public bucket or CDN URL (optional)"
+						placeholder="https://files.example.com"
+						description="Redirect downloads to this URL plus the object key instead of streaming them through the Worker. Use only when media and large uploads share that bucket."
+						{...field("filesPublicBaseUrl")}
+					/>
+				</div>
+			</SettingsSection>
+
+			<SettingsSection id="files-card" title="Download card" description="How the File download block looks on the site.">
+				<div className="grid gap-4 sm:grid-cols-2">
+					<Select
+						label="Color scheme"
+						value={draft.filesScheme}
+						onValueChange={(value: string | null) => set({ filesScheme: value === "light" || value === "dark" ? value : "auto" })}
+						items={[
+							{ value: "auto", label: "Auto (follow the visitor's system setting)" },
+							{ value: "light", label: "Light" },
+							{ value: "dark", label: "Dark" },
+						]}
+					/>
+					<Input label="Accent color (optional)" placeholder="#007392" description="Hex color for the download button and focus ring. Empty uses the default." {...field("filesAccent")} />
+				</div>
+			</SettingsSection>
+
+			<SettingsSection
+				id="files-r2"
+				title="Large uploads"
+				description={
+					<>
+						Files over 50 MB, or of any type, upload straight from the browser to R2 through its S3 API. Create an R2 API token with Object Read &amp; Write
+						on the bucket. R2 storage and operations are billed to your account.
+						{!props.largeUploadsEnabled && " Turn on Large uploads under Features to use them."}
+					</>
+				}
+			>
+				<div className="grid gap-4 sm:grid-cols-2">
+					<Input label="R2 account ID" description="Your Cloudflare account ID (32 characters)." {...field("filesR2AccountId")} />
+					<Input label="R2 bucket name" placeholder="mysite-media" description="The bucket bound as MEDIA, unless you set a separate uploads binding." {...field("filesR2Bucket")} />
+					<Input label="R2 access key ID" autoComplete="off" {...field("filesR2AccessKeyId")} />
+					<SecretField
+						label="R2 secret access key"
+						saved={saved.r2SecretSet}
+						value={draft.filesR2SecretAccessKey}
+						onChange={(value) => set({ filesR2SecretAccessKey: value })}
+						description="Stored encrypted."
+						onClear={() => void save(true)}
+						clearing={pending === "clear"}
+						disabled={Boolean(pending)}
+					/>
+					<Input
+						type="number"
+						min={1}
+						max={5000}
+						label="Largest upload (GB)"
+						description="Larger uploads are refused. Default 5."
+						value={draft.filesMaxUploadGb}
+						onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ filesMaxUploadGb: e.target.value })}
+					/>
+				</div>
+			</SettingsSection>
+
+			{error && <Banner variant="error" role="alert" description={error} />}
+			<div className="flex justify-end">
+				<Button type="submit" variant="primary" disabled={Boolean(pending)}>
+					{pending === "save" ? "Saving…" : "Save settings"}
+				</Button>
+			</div>
+		</form>
+	);
+}
+
 // ── Page ─────────────────────────────────────────────────────────
 
 export function FilesPage() {
@@ -280,6 +434,7 @@ export function FilesPage() {
 	const [cors, setCors] = React.useState<CorsResult | null>(null);
 	const [busy, setBusy] = React.useState<string>();
 	const [progress, setProgress] = React.useState<UploadProgress | null>(null);
+	const [tab, setTab] = React.useState("files");
 	const abortRef = React.useRef<AbortController | null>(null);
 	const inputRef = React.useRef<HTMLInputElement>(null);
 
@@ -375,10 +530,12 @@ export function FilesPage() {
 				<div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1">
 					<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Files</h1>
 					<div className="flex shrink-0 flex-wrap justify-end gap-2">
-						<Button variant="secondary" icon={<ArrowsClockwise />} disabled={!!busy} onClick={() => void reindex()}>
-							{busy === "reindex" ? "Rebuilding…" : "Rebuild usage"}
-						</Button>
-						{data?.largeUploadsEnabled && (
+						{tab === "files" && (
+							<Button variant="secondary" icon={<ArrowsClockwise />} disabled={!!busy} onClick={() => void reindex()}>
+								{busy === "reindex" ? "Rebuilding…" : "Rebuild usage"}
+							</Button>
+						)}
+						{tab === "files" && data?.largeUploadsEnabled && data.r2Configured && (
 							<>
 								<Button variant="secondary" icon={<ShieldCheck />} disabled={!!busy} onClick={() => void checkCors()}>
 									{busy === "cors" ? "Checking…" : "Check CORS"}
@@ -412,6 +569,7 @@ export function FilesPage() {
 						{data && !data.largeUploadsEnabled ? " Turn on Large uploads (Features) to upload files over 50 MB or of any type." : ""}
 					</p>
 				</div>
+				{tab === "files" && (
 				<div className="flex flex-col gap-2 sm:flex-row sm:items-end">
 					<div className="sm:w-72">
 						<Input
@@ -434,7 +592,17 @@ export function FilesPage() {
 						/>
 					</div>
 				</div>
+				)}
 			</header>
+
+			<Tabs
+				value={tab}
+				onValueChange={setTab}
+				tabs={[
+					{ value: "files", label: "Files" },
+					{ value: "settings", label: "Settings" },
+				]}
+			/>
 
 			<div aria-live="polite" className="space-y-3">
 				{progress && (
@@ -451,7 +619,29 @@ export function FilesPage() {
 			</div>
 			{error && <Banner variant="error" role="alert" title="Something went wrong" description={error} />}
 
-			{!data && !error ? (
+			{tab === "settings" ? (
+				<SettingsPanel
+					largeUploadsEnabled={data?.largeUploadsEnabled ?? false}
+					onSaved={(message) => {
+						setError(undefined);
+						setNotice(message);
+						void load();
+					}}
+				/>
+			) : null}
+
+			{tab === "files" && data?.largeUploadsEnabled && !data.r2Configured && (
+				<SetupCard
+					title="Add R2 credentials to upload large files"
+					description="Large uploads go straight from the browser to your R2 bucket, so they need an R2 API token: the account ID, access key ID, secret access key and bucket name."
+				>
+					<Button variant="secondary" onClick={() => setTab("settings")}>
+						Open Settings
+					</Button>
+				</SetupCard>
+			)}
+
+			{tab !== "files" ? null : !data && !error ? (
 				<div className="py-12 text-center text-kumo-subtle">
 					<Loader />
 				</div>

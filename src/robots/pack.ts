@@ -4,7 +4,7 @@ import { registerFeatures } from "../core/features.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { serveRobots } from "./middleware.js";
 import { type RobotsOptions, robotsModule } from "./module.js";
-import { OVERLAY_COLLECTION, RADAR_HOST, RADAR_TOKEN_SETTING, syncRadar } from "./radar.js";
+import { OVERLAY_COLLECTION, RADAR_HOST, syncRadar } from "./radar.js";
 
 const FEATURES = [
 	{
@@ -46,14 +46,6 @@ export function robotsPack(options: RobotsOptions): PackModule {
 			},
 		],
 		adminPages: [{ path: "/robots", label: "Robots.txt", icon: "robot" }],
-		settingsSchema: {
-			[RADAR_TOKEN_SETTING]: {
-				type: "secret",
-				label: "Cloudflare Radar API token (Robots.txt Rules)",
-				description:
-					"Optional. Keeps the crawler list current from Cloudflare Radar each week. Create a Custom Token with Account → Radar → Read. The RADAR_API_TOKEN Worker secret works too.",
-			},
-		},
 		storage: { [OVERLAY_COLLECTION]: { indexes: [] } },
 		capabilities: ["network:request"],
 		allowedHosts: [RADAR_HOST],

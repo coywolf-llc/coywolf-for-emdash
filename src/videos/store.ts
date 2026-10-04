@@ -44,38 +44,11 @@ export const SETTINGS = {
 	webhookSecret: "videosWebhookSecret",
 } as const;
 
-export const videosSettingsSchema = {
-	[SETTINGS.accountId]: {
-		type: "string",
-		label: "Videos: Cloudflare account ID",
-		description: "The account that holds your Stream library. Falls back to the CF_ACCOUNT_ID Worker variable.",
-	},
-	[SETTINGS.token]: {
-		type: "secret",
-		label: "Videos: Stream API token",
-		description: "An API token with Account → Stream → Edit. Falls back to the CF_STREAM_TOKEN Worker secret.",
-	},
-	[SETTINGS.host]: {
-		type: "string",
-		label: "Videos: Stream customer subdomain",
-		description: "e.g. customer-abc123.cloudflarestream.com (Stream → any video → Embed). Learned automatically if empty.",
-	},
-	[SETTINGS.accent]: {
-		type: "string",
-		label: "Videos: player accent color",
-		description: "Hex color for the play button and progress bar, e.g. #f6821f. Empty uses Stream's default.",
-	},
-	[SETTINGS.background]: {
-		type: "string",
-		label: "Videos: player background color",
-		description: "Hex color behind letterboxed videos. Empty is transparent.",
-	},
-	[SETTINGS.webhookSecret]: {
-		type: "secret",
-		label: "Videos: Stream webhook signing secret",
-		description: "Filled in by Subscribe on the Videos page. Leave as is.",
-	},
-};
+/**
+ * The API token and webhook secret are declared secret in the plugin's
+ * settingsSchema (src/core/secrets.ts); the account ID and player settings
+ * are plain values edited on the Videos page → Settings, read with fallbacks.
+ */
 
 export type Ctx = PluginContext;
 
@@ -139,6 +112,33 @@ export async function credentials(ctx: Ctx): Promise<StreamCredentials | null> {
 	const a = accountId?.trim() || secret(env, "CF_ACCOUNT_ID");
 	const t = token?.trim() || secret(env, "CF_STREAM_TOKEN");
 	return a && t ? { accountId: a, token: t } : null;
+}
+
+/** The saved settings for the Videos page's Settings tab (the token only as set / not set). */
+export async function adminSettings(ctx: Ctx) {
+	const [accountId, token, host, accent, background] = await Promise.all([
+		ctx.settings.get<string>(SETTINGS.accountId),
+		ctx.settings.get<string>(SETTINGS.token).catch(() => null),
+		ctx.settings.get<string>(SETTINGS.host),
+		ctx.settings.get<string>(SETTINGS.accent),
+		ctx.settings.get<string>(SETTINGS.background),
+	]);
+	let env: Record<string, unknown> = {};
+	try {
+		env = await workerEnv();
+	} catch {
+		env = {};
+	}
+	return {
+		accountId: accountId ?? "",
+		tokenSet: Boolean(token?.trim()),
+		customerSubdomain: host ?? "",
+		accentColor: accent ?? "",
+		backgroundColor: background ?? "",
+		/** Worker variables used when the settings are empty. */
+		envAccountId: Boolean(secret(env, "CF_ACCOUNT_ID")),
+		envToken: Boolean(secret(env, "CF_STREAM_TOKEN")),
+	};
 }
 
 export async function client(ctx: Ctx): Promise<StreamClient | null> {

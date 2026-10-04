@@ -2,7 +2,7 @@ import type { PluginContext } from "emdash";
 
 import { isOn, registerFeatures, siteFeatures } from "../core/features.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
-import { CLEANUP_TASK, COUNTS_FEATURE, FILES_FEATURE, LARGE_UPLOADS_FEATURE, type FilesOptions, filesModule, filesSettingsSchema, filesStorage, abortStaleUploads, indexEntry, unindexEntry } from "./module.js";
+import { CLEANUP_TASK, COUNTS_FEATURE, FILES_FEATURE, LARGE_UPLOADS_FEATURE, type FilesOptions, filesModule, filesStorage, abortStaleUploads, indexEntry, unindexEntry } from "./module.js";
 import { serveDownload } from "./serve.js";
 import { BLOCK_TYPE } from "./walker.js";
 
@@ -56,7 +56,6 @@ export function filesPack(options: FilesOptions): PackModule {
 			},
 		],
 		adminPages: [{ path: "/files", label: "Files", icon: "file-arrow-down" }],
-		settingsSchema: filesSettingsSchema,
 		storage: filesStorage,
 		capabilities: ["content:read", "schema:read", "media:read", "network:request"],
 		allowedHosts: ["*.r2.cloudflarestorage.com"],

@@ -3,7 +3,7 @@
  * EmDash admin's own list pages (Redirects, Bylines): Kumo controls, a bordered
  * row list, and confirmation dialogs.
  */
-import { Badge, Banner, Button, Dialog, DropdownMenu, Input, Loader } from "@cloudflare/kumo";
+import { Badge, Banner, Button, Dialog, DropdownMenu, Input, Loader, Switch } from "@cloudflare/kumo";
 import {
 	ArrowCounterClockwise,
 	ClockCounterClockwise,
@@ -15,6 +15,8 @@ import {
 } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
+
+import { SettingsSection } from "./settings-ui.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/backups";
 
@@ -167,6 +169,90 @@ function TypedConfirmDialog(props: {
 	);
 }
 
+/** Schedule and retention (stored as plugin settings; not on the generic Settings page). */
+function ScheduleSettings(props: { data: ListResponse; onSaved: () => Promise<void> }) {
+	const initial = React.useCallback(
+		() => ({ scheduled: props.data.scheduled, retentionDays: String(props.data.retentionDays), staleAfterHours: String(props.data.staleAfterHours) }),
+		[props.data.scheduled, props.data.retentionDays, props.data.staleAfterHours],
+	);
+	const [draft, setDraft] = React.useState(initial);
+	React.useEffect(() => setDraft(initial()), [initial]);
+	const [pending, setPending] = React.useState(false);
+	const [status, setStatus] = React.useState<{ error: boolean; text: string }>();
+	const dirty =
+		draft.scheduled !== props.data.scheduled ||
+		draft.retentionDays !== String(props.data.retentionDays) ||
+		draft.staleAfterHours !== String(props.data.staleAfterHours);
+
+	const save = async () => {
+		setPending(true);
+		setStatus(undefined);
+		try {
+			await post("settings/save", {
+				scheduled: draft.scheduled,
+				retentionDays: Number(draft.retentionDays),
+				staleAfterHours: Number(draft.staleAfterHours),
+			});
+			await props.onSaved();
+			setStatus({ error: false, text: "Backup settings saved." });
+		} catch (cause) {
+			setStatus({ error: true, text: errorText(cause, "Could not save the backup settings") });
+		} finally {
+			setPending(false);
+		}
+	};
+
+	return (
+		<form
+			onSubmit={(e) => {
+				e.preventDefault();
+				void save();
+			}}
+		>
+			<SettingsSection
+				id="backups-schedule"
+				title="Schedule and retention"
+				description="How often the site backs itself up, how long backups are kept, and when to warn that backups have stopped."
+				actions={
+					<Button type="submit" variant="primary" disabled={pending || !dirty}>
+						{pending ? "Saving…" : "Save"}
+					</Button>
+				}
+			>
+				<Switch
+					label="Back up once a day from the site itself"
+					checked={draft.scheduled}
+					onCheckedChange={(checked: boolean) => setDraft((d) => ({ ...d, scheduled: checked }))}
+				/>
+				<p className="-mt-2 text-sm text-kumo-subtle">Leave this off if an external job (such as a GitHub Action) already backs up the site.</p>
+				<div className="grid gap-4 sm:grid-cols-2">
+					<Input
+						type="number"
+						min={1}
+						max={365}
+						label="Keep backups for (days)"
+						description="Older database backups and replaced media copies are deleted daily. The media mirror itself is kept."
+						value={draft.retentionDays}
+						onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft((d) => ({ ...d, retentionDays: e.target.value }))}
+					/>
+					<Input
+						type="number"
+						min={1}
+						max={720}
+						label="Warn when the newest backup is older than (hours)"
+						description="Shown on this page and the dashboard widget."
+						value={draft.staleAfterHours}
+						onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft((d) => ({ ...d, staleAfterHours: e.target.value }))}
+					/>
+				</div>
+				<div aria-live="polite">
+					{status && (status.error ? <Banner variant="error" role="alert" description={status.text} /> : <p className="text-sm text-kumo-subtle">{status.text}</p>)}
+				</div>
+			</SettingsSection>
+		</form>
+	);
+}
+
 type Action =
 	| { kind: "rewind"; backup: Backup }
 	| { kind: "restore-new"; backup: Backup }
@@ -296,7 +382,7 @@ export function BackupsPage() {
 					description={
 						data.scheduled
 							? "Scheduled backups may not be running. Check the site's logs."
-							: "Turn on daily scheduled backups in the Coywolf plugin's settings, or check your external backup job."
+							: "Turn on daily scheduled backups under Schedule and retention below, or check your external backup job."
 					}
 				/>
 			)}
@@ -330,7 +416,7 @@ export function BackupsPage() {
 				<div className="py-10 text-center text-kumo-subtle">
 					<Database size={40} className="mx-auto mb-3 opacity-30" aria-hidden="true" />
 					<p className="text-base font-medium">No backups yet</p>
-					<p className="mt-1 text-sm">Back up now, or turn on daily backups in the Coywolf plugin's settings.</p>
+					<p className="mt-1 text-sm">Back up now, or turn on daily backups under Schedule and retention below.</p>
 				</div>
 			) : data ? (
 				<div className="rounded-lg border">
@@ -424,6 +510,8 @@ export function BackupsPage() {
 					</Button>
 				</section>
 			)}
+
+			{data && <ScheduleSettings data={data} onSaved={load} />}
 
 			<TypedConfirmDialog
 				open={action?.kind === "rewind"}

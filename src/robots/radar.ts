@@ -36,6 +36,17 @@ export interface SyncState {
 	error?: string;
 }
 
+/** Where the Radar token comes from: the encrypted plugin setting, the Worker secret, or nowhere. */
+export async function radarTokenSource(ctx: Pick<PluginContext, "settings">): Promise<"settings" | "env" | null> {
+	const fromSettings = await ctx.settings.get<string>(RADAR_TOKEN_SETTING).catch(() => null);
+	if (fromSettings?.trim()) return "settings";
+	try {
+		return secret(await workerEnv(), RADAR_TOKEN_SECRET)?.trim() ? "env" : null;
+	} catch {
+		return null;
+	}
+}
+
 export async function radarToken(ctx: Pick<PluginContext, "settings">): Promise<string | undefined> {
 	const fromSettings = await ctx.settings.get<string>(RADAR_TOKEN_SETTING);
 	if (fromSettings?.trim()) return fromSettings.trim();
