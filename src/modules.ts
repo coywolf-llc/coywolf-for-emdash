@@ -4,7 +4,7 @@
  * MODULES (and MIDDLEWARE if it serves site URLs).
  */
 import { aiPack } from "./ai/pack.js";
-import { backupsPack } from "./backups/pack.js";
+import { backupsDownloadMiddleware, backupsPack } from "./backups/pack.js";
 import { codeBlocksPack } from "./codeBlocks/pack.js";
 import type { PackMiddleware, PackModule } from "./core/module.js";
 import { headingsPack } from "./headings/pack.js";
@@ -39,4 +39,4 @@ export const MODULES: Factory[] = [
 	(o) => (o.reviews === false ? null : reviewsPack(o.reviews ?? {})),
 ];
 
-export const MIDDLEWARE: PackMiddleware[] = [redirectsMiddleware, robotsMiddleware, filesMiddleware, searchRateLimitMiddleware, ...discoveryMiddleware, videosSitemapMiddleware, videosCaptionsMiddleware];
+export const MIDDLEWARE: PackMiddleware[] = [backupsDownloadMiddleware, redirectsMiddleware, robotsMiddleware, filesMiddleware, searchRateLimitMiddleware, ...discoveryMiddleware, videosSitemapMiddleware, videosCaptionsMiddleware];

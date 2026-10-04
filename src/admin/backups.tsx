@@ -107,16 +107,26 @@ function isStale(data: ListResponse): boolean {
 	return !latest || (Date.now() - new Date(latest.createdAt).getTime()) / 3_600_000 > data.staleAfterHours;
 }
 
+/**
+ * Download a backup's database dump. The server makes a short-lived link that
+ * streams the file from R2 (so any size works), served by the Coywolf Pack
+ * site middleware; the browser saves it like any other download.
+ */
 async function download(backup: Backup) {
-	const params = new URLSearchParams({ stamp: backup.stamp, file: backup.file });
-	const response = await apiFetch(`${API}/download?${params}`);
-	if (!response.ok) throw new Error(`Download failed (${response.status})`);
-	const url = URL.createObjectURL(await response.blob());
-	const link = document.createElement("a");
-	link.href = url;
-	link.download = `${backup.stamp}-${backup.file}`;
-	link.click();
-	URL.revokeObjectURL(url);
+	const link = await post<{ url: string; filename: string }>("download-link", { stamp: backup.stamp, file: backup.file });
+	const check = await fetch(link.url, { method: "HEAD", credentials: "same-origin" }).catch(() => null);
+	if (!check?.ok) {
+		throw new Error(
+			"The download link didn't answer. Make sure coywolfPack() from @coywolf/emdash/middleware is in the site's src/middleware.ts (see the plugin README).",
+		);
+	}
+	const a = document.createElement("a");
+	a.href = link.url;
+	a.download = link.filename;
+	a.style.display = "none";
+	document.body.appendChild(a);
+	a.click();
+	a.remove();
 }
 
 /** Destructive confirmation that requires typing a word, styled like the admin's ConfirmDialog. */
@@ -360,7 +370,8 @@ export function BackupsPage() {
 					</div>
 					<p className="col-span-2 text-sm leading-5 text-pretty text-kumo-subtle">
 						Each backup is a full copy of the database (content, users, settings, menus, redirects) plus a mirror of the
-						media library{data ? `, kept for ${data.retentionDays} days` : ""}. Theme code lives in your Git repository.
+						media library{data ? `, kept for ${data.retentionDays} days` : ""}. Theme code lives in your Git repository. Download
+						any backup to keep your own copy: it's a standard SQL file that restores into any D1 database.
 					</p>
 				</div>
 			</header>
@@ -464,7 +475,7 @@ export function BackupsPage() {
 												)
 											}
 										>
-											Download
+											Download (.sql.gz)
 										</DropdownMenu.Item>
 										<DropdownMenu.Separator className="my-0.5" />
 										<DropdownMenu.Item

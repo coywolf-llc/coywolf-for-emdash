@@ -4,10 +4,12 @@
  * usage log.
  */
 import { Badge, Banner, Button, Checkbox, Input, InputArea, Loader, Select, Tabs } from "@cloudflare/kumo";
-import { ArrowClockwise, Check, Play, Sparkle, Stop, X } from "@phosphor-icons/react";
+import { ArrowClockwise, Check, DownloadSimple, Play, Sparkle, Stop, X } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { entitiesToCsv } from "../ai/export.js";
+import { saveFile, siteSlug, today } from "./download.js";
 import { CredentialGuide } from "./guides.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/ai";
@@ -56,8 +58,10 @@ interface Status {
 interface Entity {
 	name: string;
 	type: string;
+	description: string;
 	qid: string;
 	wikipedia: string;
+	website: string;
 	primary: boolean;
 }
 
@@ -673,6 +677,27 @@ function ImagesPanel(props: { setNotice: (s: string) => void; setError: (s: stri
 function EntitiesPanel(props: { setNotice: (s: string) => void; setError: (s: string) => void }) {
 	const [filter, setFilter] = React.useState("all");
 	const { items, error, load } = useList<EntryRecord>("entries", filter);
+	const [exporting, setExporting] = React.useState(false);
+	/** Every analyzed entry (all pages, whatever the filter), as CSV. */
+	const exportCsv = async () => {
+		setExporting(true);
+		try {
+			const all: EntryRecord[] = [];
+			let cursor: string | undefined;
+			for (let page = 0; page < 1000; page++) {
+				const result = await post<{ items: EntryRecord[]; cursor?: string; hasMore: boolean }>("entries", { filter: "all", ...(cursor ? { cursor } : {}) });
+				all.push(...result.items);
+				if (!result.hasMore || !result.cursor) break;
+				cursor = result.cursor;
+			}
+			saveFile(entitiesToCsv(all), `ai-entities-${siteSlug() || "site"}-${today()}.csv`, "text/csv");
+			props.setNotice(`Exported ${all.length.toLocaleString()} analyzed ${all.length === 1 ? "entry" : "entries"}.`);
+		} catch (cause) {
+			props.setError(errorText(cause, "Export failed"));
+		} finally {
+			setExporting(false);
+		}
+	};
 	const reanalyze = async (entry: EntryRecord) => {
 		try {
 			await post("entry/reanalyze", { collection: entry.collection, id: entry.entryId });
@@ -698,6 +723,9 @@ function EntitiesPanel(props: { setNotice: (s: string) => void; setError: (s: st
 							]}
 						/>
 					</div>
+					<Button variant="secondary" icon={<DownloadSimple />} disabled={exporting || !items?.length} onClick={() => void exportCsv()}>
+						{exporting ? "Exporting…" : "Export CSV"}
+					</Button>
 					<Button variant="ghost" shape="square" icon={<ArrowClockwise />} aria-label="Reload" onClick={() => void load()} />
 				</div>
 			}

@@ -1,7 +1,8 @@
 import type { PluginContext } from "emdash";
 
 import { registerFeatures } from "../core/features.js";
-import type { PackModule } from "../core/module.js";
+import type { PackMiddleware, PackModule } from "../core/module.js";
+import { configureBackupDownloads, serveBackupDownload } from "./download.js";
 import { BACKUPS_TASK, type BackupsOptions, backupsModule } from "./module.js";
 
 const FEATURES = [
@@ -10,6 +11,8 @@ const FEATURES = [
 registerFeatures(FEATURES);
 
 export function backupsPack(options: BackupsOptions): PackModule {
+	// Module-level so the site middleware can find the backup bucket (createPlugin() runs at isolate start).
+	configureBackupDownloads(options);
 	const backups = backupsModule(options);
 	return {
 		id: "backups",
@@ -21,3 +24,10 @@ export function backupsPack(options: BackupsOptions): PackModule {
 		widgets: [{ id: "backup-status", title: "Backups", size: "third" }],
 	};
 }
+
+/** Streams backup downloads at the links the Backups page creates (see ./download.ts). */
+export const backupsDownloadMiddleware: PackMiddleware = {
+	module: "backups",
+	feature: "backups",
+	handle: (context, env) => serveBackupDownload(context.request, context.url, env),
+};

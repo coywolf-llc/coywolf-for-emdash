@@ -8,6 +8,7 @@ import {
 	CaretDown,
 	CaretRight,
 	DotsThree,
+	DownloadSimple,
 	EyeSlash,
 	GearSix,
 	LinkBreak,
@@ -18,6 +19,9 @@ import {
 } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
+
+import { linksToCsv } from "../links/export.js";
+import { saveFile, siteSlug, today } from "./download.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/links";
 const ADMIN = "/_emdash/admin";
@@ -592,6 +596,29 @@ export function LinksPage() {
 		}
 	};
 
+	/** Every link that matches the current filters (all pages), as CSV. */
+	const exportCsv = async () => {
+		setBusy("Exporting links…");
+		setError(undefined);
+		try {
+			const rows: LinkRow[] = [];
+			let next: string | null = null;
+			for (let page = 0; page < 1000; page++) {
+				const result: ListResponse = await post<ListResponse>("list", { status, scope, host: deferredHost || undefined, q: deferredQuery || undefined, cursor: next });
+				rows.push(...result.items);
+				next = result.nextCursor;
+				if (!next) break;
+			}
+			const filtered = status !== "all" || scope !== "all" || deferredHost || deferredQuery;
+			saveFile(linksToCsv(rows), `links-${status === "all" ? "" : `${status}-`}${siteSlug() || "site"}-${today()}.csv`, "text/csv");
+			setNotice(`Exported ${plural(rows.length, "link")}${filtered ? " matching the current filters" : ""}.`);
+		} catch (cause) {
+			setError(errorText(cause, "Export failed"));
+		} finally {
+			setBusy(undefined);
+		}
+	};
+
 	const items = data?.items ?? [];
 	const selectedRows = items.filter((r) => selected.has(r.id));
 	const allSelected = items.length > 0 && selectedRows.length === items.length;
@@ -617,6 +644,15 @@ export function LinksPage() {
 						</Button>
 						<Button variant="secondary" icon={<Prohibit />} onClick={() => setRulesOpen(true)}>
 							Ignore rules
+						</Button>
+						<Button
+							variant="secondary"
+							icon={<DownloadSimple />}
+							disabled={!data?.total || Boolean(busy)}
+							title="Download the links matching the current filters as a CSV file"
+							onClick={() => void exportCsv()}
+						>
+							Export CSV
 						</Button>
 						<Button variant="secondary" icon={<MagnifyingGlass />} disabled={scanState?.status === "running"} onClick={() => void scan(true)}>
 							Scan content

@@ -6,16 +6,18 @@
  * again on the server (including the self-check) before it's saved.
  */
 import { Badge, Banner, Button, Checkbox, Dialog, DropdownMenu, Input, InputArea, Loader, Switch, Tabs } from "@cloudflare/kumo";
-import { CheckCircle, Copy, DotsThree, Info, PencilSimple, Plus, Robot, Sparkle, Trash, Warning, X, XCircle } from "@phosphor-icons/react";
+import { CheckCircle, Copy, DotsThree, DownloadSimple, FileArrowUp, Info, PencilSimple, Plus, Robot, Sparkle, Trash, Warning, X, XCircle } from "@phosphor-icons/react";
 import * as React from "react";
 
 import type { BotEntry } from "../robots/bots.js";
 import { describeRule, summarize } from "../robots/explain.js";
 import { evaluate } from "../robots/rep.js";
 import { type RobotsConfig, type RobotsRule, TEMPLATES, directives, resolveAgents } from "../robots/rules.js";
+import { exportRobotsRules, readRobotsImport } from "../robots/transfer.js";
 import { type Finding, analyzeConfigChange, checkConfig } from "../robots/validate.js";
 import { BotsTab } from "./robots-bots.js";
 import { dateTimeFormat, errorText, get, newId, post, tokenIndex, useCopy } from "./robots-shared.js";
+import { saveFile, siteSlug, today } from "./download.js";
 import { RuleWizard } from "./robots-wizard.js";
 
 interface SyncState {
@@ -175,6 +177,9 @@ function ServedFile(props: { text: string; emdash: PageData["emdash"]; config: R
 					</span>
 					<Button variant="secondary" icon={<Copy />} onClick={() => copy(props.text)}>
 						Copy
+					</Button>
+					<Button variant="secondary" icon={<DownloadSimple />} onClick={() => saveFile(props.text, "robots.txt")}>
+						Download
 					</Button>
 					{props.siteUrl && (
 						<a className="text-sm underline" href={`${props.siteUrl}/robots.txt`} target="_blank" rel="noreferrer noopener">
@@ -359,7 +364,10 @@ function SettingsTab(props: {
 	onSave: (config: RobotsConfig, label: string) => Promise<void>;
 	onRestore: (item: HistoryItem) => void;
 	onReset: () => void;
+	onImport: (config: RobotsConfig, filename: string) => void;
 }) {
+	const fileRef = React.useRef<HTMLInputElement>(null);
+	const [fileError, setFileError] = React.useState<string>();
 	const [draft, setDraft] = React.useState(props.config);
 	const [saving, setSaving] = React.useState(false);
 	const [error, setError] = React.useState<string>();
@@ -467,6 +475,47 @@ function SettingsTab(props: {
 						</Button>
 					)}
 				</div>
+			</section>
+
+			<section className="space-y-2" aria-labelledby="robots-transfer">
+				<h2 id="robots-transfer" className="text-base font-semibold">
+					Export and import
+				</h2>
+				<p className="text-sm text-kumo-subtle">
+					Save your rules and settings as a file to keep a copy or move them to another site. Importing a file replaces the current rules and settings; the current version stays in Version
+					history.
+				</p>
+				<div className="flex flex-wrap gap-2">
+					<Button
+						variant="secondary"
+						icon={<DownloadSimple />}
+						onClick={() => saveFile(exportRobotsRules(props.config, props.data.siteUrl || undefined), `robots-rules-${siteSlug() || "site"}-${today()}.json`, "application/json")}
+					>
+						Export rules
+					</Button>
+					<Button variant="secondary" icon={<FileArrowUp />} onClick={() => fileRef.current?.click()}>
+						Import rules…
+					</Button>
+					<input
+						ref={fileRef}
+						type="file"
+						accept=".json,application/json"
+						className="sr-only"
+						tabIndex={-1}
+						aria-hidden="true"
+						onChange={(e) => {
+							const file = e.target.files?.[0];
+							e.target.value = "";
+							if (!file) return;
+							setFileError(undefined);
+							file
+								.text()
+								.then((text) => props.onImport(readRobotsImport(text), file.name))
+								.catch((cause) => setFileError(errorText(cause, "Could not read that file.")));
+						}}
+					/>
+				</div>
+				{fileError && <Banner variant="error" role="alert" description={fileError} />}
 			</section>
 
 			<section className="space-y-2" aria-labelledby="robots-history">
@@ -762,6 +811,19 @@ export function RobotsPage() {
 							},
 						})
 					}
+					onImport={(next, filename) => {
+						const problem = checkConfig(next, data.siteUrl || undefined);
+						setConfirm({
+							title: "Import these rules?",
+							body: `${filename} has ${next.rules.length} rule${next.rules.length === 1 ? "" : "s"}. They replace your ${config.rules.length} rule${config.rules.length === 1 ? "" : "s"} and the settings above; the current version stays in Version history.${problem ? ` It can't be used: ${problem}` : ""}`,
+							findings: analyzeConfigChange(config, next, data.siteUrl || undefined),
+							confirmLabel: "Import",
+							onConfirm: async () => {
+								if (problem) throw new Error(problem);
+								await persist(next, `Imported from ${filename}`.slice(0, 200), "Imported. /robots.txt now serves the imported rules.");
+							},
+						});
+					}}
 					onReset={() =>
 						setConfirm({
 							title: "Reset to EmDash's original?",

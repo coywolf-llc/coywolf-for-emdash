@@ -32,7 +32,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.7.3
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.8.0
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -95,10 +95,14 @@ The options are read when the Worker starts (EmDash creates the plugin then), so
 
 - **Database**: a restorable SQL dump of the site's D1 database: users, passkeys, settings, redirects, menus, plugin data, and content. Search indexes rebuild automatically on restore.
 - **Media**: a mirror of the R2 media bucket. Replaced or deleted files are kept under a dated folder until retention expires.
-- **Admin**: **Back up now**, downloads, and a dashboard widget that warns when backups stop. Settings (**Schedule and retention** on the Backups page): daily scheduled backup (default off), retention (default 30 days), staleness warning (default 36 hours).
+- **Admin**: **Back up now**, **Download** any backup (see below), and a dashboard widget that warns when backups stop. Settings (**Schedule and retention** on the Backups page): daily scheduled backup (default off), retention (default 30 days), staleness warning (default 36 hours).
 - **Restore** (optional, see below): **Rewind to this backup** (D1 Time Travel, with **Undo rewind**), **Restore to a new database** (import plus per-table row-count check), and **Restore missing media**.
 
 Theme code isn't included: it lives in your Git repository.
+
+### Download a backup
+
+Each backup's menu has **Download (.sql.gz)**: the gzipped SQL dump of the whole database, saved as `<name>-<stamp>.sql.gz`. It restores into any D1 database (see **Manual restore**), so you always have your own copy. The page asks the `backups/download-link` route (admins only) for a link that works for ten minutes, and the `coywolfPack()` middleware streams the file from R2 at `/_coywolf-pack/backup/<token>/<file name>`, so dumps of any size download without the Worker holding them in memory. Links are random, unlisted tokens stored in the backup bucket (`downloads/`), sent with `Cache-Control: private, no-store`; expired ones are deleted when the next link is made. Media isn't part of the download: the media mirror stays in the backup bucket (copy it with `rclone` or the R2 dashboard).
 
 ### Setup
 
@@ -116,6 +120,7 @@ Theme code isn't included: it lives in your Git repository.
    ```
 
 2. Options: `database` (default `"DB"`), `media` (`"MEDIA"`), `backups` (`"BACKUPS"`), `name` (dump file prefix, default `"database"`).
+3. Downloads need the `coywolfPack()` middleware (see the Redirects setup).
 
 ### Enable restore
 
@@ -146,13 +151,14 @@ d1/<stamp>/manifest.json         stamp, size, SHA-256, source, row counts, Time 
 media/current/<key>              mirror of the media bucket
 media/changed/<stamp>/<key>      media replaced or deleted at that backup
 restore/undo/<time>.json         undo points for rewinds
+downloads/<token>.json           download links (ten minutes each)
 ```
 
 External jobs (a nightly GitHub Action, for example) can write to the same layout, and the admin lists those backups too.
 
 ### Manual restore
 
-Restore into a **new, empty** D1 database and switch the `DB` binding to it. Never import over the live database:
+Restore a downloaded backup (or one copied from the bucket) into a **new, empty** D1 database and switch the `DB` binding to it. Never import over the live database:
 
 ```bash
 npx wrangler d1 create mysite-restore
@@ -175,7 +181,7 @@ EmDash's built-in Redirects (**Manage → Redirects**) handle site-relative page
 - **External destinations**, such as affiliate links (`/visit/partner`) and articles that moved to another site.
 - **File paths**, such as old WordPress `/wp-content/uploads/` image URLs. EmDash's middleware skips any path with a file extension.
 
-Features: exact paths (with or without a trailing slash) or regular expressions with `$1`–`$9` substitution, 301/302/307/308/410, enable/disable, notes, hit counts, a URL tester, and bulk import (JSON, or tab/comma-separated `source, target, type, is_regex` rows; a Coywolf SEO export from WordPress works as is). Rules are stored in the site's D1 database (`coywolf_redirects`), so backups include them.
+Features: exact paths (with or without a trailing slash) or regular expressions with `$1`–`$9` substitution, 301/302/307/308/410, enable/disable, notes, hit counts, a URL tester, bulk import (paste or choose a file: JSON, or tab/comma-separated `source, target, type, is_regex` rows; a Coywolf SEO export from WordPress works as is), and **Export** as CSV or JSON. Rules are stored in the site's D1 database (`coywolf_redirects`), so backups include them.
 
 ### Setup
 
@@ -207,6 +213,15 @@ wp db query "SELECT source, target, type, is_regex FROM wp_coywolf_seo_redirects
 ```
 
 Paste the output into **Redirects → Import**.
+
+### Export and move redirects
+
+**Export** (next to Import) downloads every rule as CSV (for spreadsheets) or JSON. Either file imports back on this or any other site through **Import → Choose file**, updating rules with the same source:
+
+- CSV columns: `source, target, type, is_regex, enabled, note`, then `hits, last_hit, created_at, updated_at` for reference (Import ignores them, so hit counts start over on the new site). Cells that a spreadsheet would run as a formula (starting with `=`, `+`, `-` or `@`) get a leading apostrophe, which spreadsheets hide; Import removes it again, so the round trip is exact.
+- JSON: an array of rules, as the list route returns them.
+
+Import takes up to 5,000 rules (2 MB) at a time; split bigger files.
 
 ## Headings & TOC
 
@@ -307,7 +322,7 @@ The Coywolf Files plugin for WordPress, on EmDash. Add a **File download** block
 
 - **Block**: pick a file from the Media Library or from large uploads, then give it a title and description for that placement. Toggles show or hide the icon, description, meta line, Download, and Copy link. The card is server-rendered, scoped (`cw-file`), follows light/dark (or a fixed scheme), and ships one small script for Copy link (clipboard, checkmark, screen-reader announcement).
 - **Download URLs**: `/download/<id>/<file name>`, served by the pack middleware. Files stream from R2 with `Content-Disposition: attachment`, the right `Content-Type`, `Content-Length`, `ETag`, conditional requests, and single byte ranges with `If-Range` (resumable downloads; a request for several ranges gets the whole file). Or set a public bucket / CDN URL and downloads redirect there.
-- **Files page** (**Plugins → Files**): every file used in a File download block plus every large upload, with type, size, upload date, downloads, and the entries that use it. Search, In use / Unused filters, copy link, and delete. Deleting a large upload removes the object from R2; the page lists the entries that still use it (their blocks then render nothing). Media Library files are deleted in the Media Library.
+- **Files page** (**Plugins → Files**): every file used in a File download block plus every large upload, with type, size, upload date, downloads, and the entries that use it. Search, In use / Unused filters, copy link, delete, and **Export CSV** (every file with its full download URL, size, download count, last download, and the entries that use it). Deleting a large upload removes the object from R2; the page lists the entries that still use it (their blocks then render nothing). Media Library files are deleted in the Media Library.
 - **Large uploads**: files of any type and size (EmDash's own uploads stop at 50 MB and images, video, audio, and PDF) go straight from the browser to R2 in 8 MB+ parts, four at a time, with progress, retries, and Cancel. The Worker only signs URLs (AWS Signature V4 with Web Crypto, no AWS SDK).
 
 ### Feature switches
@@ -498,7 +513,7 @@ All four are off by default, under the **AI Enrichment** switch on the Coywolf P
 
 ### How it runs
 
-Saving, publishing, or uploading never waits on AI: hooks only add the entry or image to a queue (after a short wait, so a burst of saves becomes one job, and only when the entry's text actually changed). A scheduled job works through the queue every two minutes, a few items at a time (**Items per scheduled run**), and stops for the day at **Max model calls per day** (default 200; an entry costs up to three calls, an image one). Each run also stays under 40 outbound requests (model calls plus Wikidata lookups), so it fits the Workers Free plan's subrequest limit; entries and images take turns, so a backlog of one doesn't hold up the other. Failed items are retried after 5 and 20 minutes, then marked as errors; a retry reuses the model output it already paid for. Deleting an entry removes its analysis. **Run bulk** on the AI page queues every published entry (skipping unchanged ones) or every image without alt text. The AI page also has a connection test, the queue status, suggestions to review, the analyzed entities, and a 30-day usage log with token counts.
+Saving, publishing, or uploading never waits on AI: hooks only add the entry or image to a queue (after a short wait, so a burst of saves becomes one job, and only when the entry's text actually changed). A scheduled job works through the queue every two minutes, a few items at a time (**Items per scheduled run**), and stops for the day at **Max model calls per day** (default 200; an entry costs up to three calls, an image one). Each run also stays under 40 outbound requests (model calls plus Wikidata lookups), so it fits the Workers Free plan's subrequest limit; entries and images take turns, so a backlog of one doesn't hold up the other. Failed items are retried after 5 and 20 minutes, then marked as errors; a retry reuses the model output it already paid for. Deleting an entry removes its analysis. **Run bulk** on the AI page queues every published entry (skipping unchanged ones) or every image without alt text. The AI page also has a connection test, the queue status, suggestions to review, the analyzed entities (with **Export CSV**: one row per entity with its Wikidata, Wikipedia and website links, plus each entry's AI description), and a 30-day usage log with token counts.
 
 ### Setup
 
@@ -558,6 +573,7 @@ An inventory of every link in your content, ported from Coywolf SEO's Link Manag
 - **Inventory**: link marks in Portable Text (including nested blocks, columns and tables), linked images, buttons, embeds, iframes, and URL fields. Each link shows its anchor text, internal or external, and the entries that use it, with links to edit them. Entries are re-indexed when they're saved, deleted or restored; **Scan content** (and a background job on first use) indexes everything else.
 - **Checking** (sub-feature): every 5 minutes a background job checks links that are due: HEAD first, then GET when HEAD is refused, 10-second timeout, up to 5 redirects recorded. Statuses are **OK**, **Redirect** (with where it ends up), **Broken** (4xx/5xx), **Blocked** (403, 429, LinkedIn's 999, or a Cloudflare/AWS/DataDome bot challenge: the link is probably fine but can't be verified from a server), and **Error** (DNS, TLS, timeout, too many redirects). Broken links and errors are rechecked daily, the rest weekly. **Check now** and **Recheck** run checks on demand.
 - **Bulk actions**: **Replace** a URL across every entry that uses it (link text and other formatting are kept), **Unlink** (the text stays; linked images and buttons lose their link; embeds are left alone), **Ignore** a URL or domain, and **Recheck**. Ignore rules can also be domains, exact URLs, wildcards (`https://example.com/visit/*`) or regular expressions. Ignored links aren't checked or counted.
+- **Export CSV**: every link matching the current filters (all pages), with its status, HTTP code, final URL, the entries that use it, and their anchor text. Filter by **Broken** first for a list to hand to whoever fixes links. Cells that look like spreadsheet formulas are prefixed with an apostrophe.
 - **Dashboard widget** with the number of broken links.
 
 Feature switches: **Link Manager** (`links`) and **Scheduled link checking** (`links.check`), both off by default.
@@ -626,9 +642,9 @@ Use the block from theme code too: `import { CoywolfVideo } from "@coywolf/emdas
 
 Manage `robots.txt` in plain English instead of a text box. The page opens with a one-paragraph summary of the whole file (**Search engines can crawl everything. AI training crawlers are blocked from the whole site.**), then three tabs:
 
-- **Rules**: each rule as a sentence (“Block AI training crawlers (10) from the /private/ section and everything in it”), with an on/off switch, Edit (the same guided dialog), Duplicate and Delete. Order doesn't matter: crawlers follow the most specific matching line, and the file is written most-specific-first so older top-to-bottom crawlers agree. Below the list: a URL tester (**Can GPTBot fetch /2026/my-post/?**) and **What's being served**, the live file with Copy, plus EmDash's original file for reference.
+- **Rules**: each rule as a sentence (“Block AI training crawlers (10) from the /private/ section and everything in it”), with an on/off switch, Edit (the same guided dialog), Duplicate and Delete. Order doesn't matter: crawlers follow the most specific matching line, and the file is written most-specific-first so older top-to-bottom crawlers agree. Below the list: a URL tester (**Can GPTBot fetch /2026/my-post/?**) and **What's being served**, the live file with Copy and Download, plus EmDash's original file for reference.
 - **Bots**: the crawler directory (about 700 bots) with search and filters for category, purpose, operator, verification status and “used in rules”. Mark a bot verified (source URL and note, stored with the date and your name), rename it (the token never changes), add bots the directory lacks (token checked against `[A-Za-z0-9._-]+`, with a purpose), edit or delete them, and sync from Cloudflare Radar.
-- **Settings and history**: keep EmDash's admin private, keep media crawlable, “crawlers named in a rule also keep the rules for all crawlers”, sitemaps, rule-name comments, Extra lines (for experts), the last 20 saved versions with Restore, and **Reset to EmDash's original**.
+- **Settings and history**: keep EmDash's admin private, keep media crawlable, “crawlers named in a rule also keep the rules for all crawlers”, sitemaps, rule-name comments, Extra lines (for experts), the last 20 saved versions with Restore, **Reset to EmDash's original**, and **Export rules** / **Import rules…**: the rules and settings as a JSON file, to keep a copy or move them to another site. An import goes through the same checks as any change (with a confirmation listing the effects), replaces the current rules and settings, and keeps the current version in history.
 
 **Templates** (header) replace the rule list in one click, through the same checks: *Block AI training, allow AI search*, *Allow everything*, *Block everything except search engines*.
 
