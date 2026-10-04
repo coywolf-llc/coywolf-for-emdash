@@ -2,6 +2,7 @@
  * Builds llms.txt, the news sitemap, and per-entry Markdown from EmDash
  * content (inside the plugin context), with KV caching for the two lists.
  */
+import { siteName } from "../core/site.js";
 import { type CollectionSchemaInfo, type PluginContentItem, type PluginContext, after, getSiteSetting } from "emdash";
 
 import { absoluteUrl, matchEntryPath } from "../core/content-url.js";
@@ -91,7 +92,7 @@ export async function buildLlms(ctx: PluginContext, settings: DiscoverySettings)
 	}
 	const tagline = await getSiteSetting("tagline").catch(() => undefined);
 	const body = buildLlmsTxt({
-		name: ctx.site.name,
+		name: await siteName(ctx),
 		siteUrl: siteOrigin(ctx),
 		summary: settings.llms.summary || tagline,
 		intro: settings.llms.intro,
@@ -122,7 +123,7 @@ export async function buildNews(ctx: PluginContext, settings: DiscoverySettings,
 	}
 	const selectedArticles = selectNewsArticles(articles, now);
 	const body = buildNewsSitemap(selectedArticles, {
-		name: settings.news.publicationName || ctx.site.name || new URL(ctx.site.url).host,
+		name: settings.news.publicationName || (await siteName(ctx)) || new URL(ctx.site.url).host,
 		language: settings.news.language || ctx.site.locale,
 	});
 	return { body, count: selectedArticles.length, builtAt: new Date(now).toISOString() };

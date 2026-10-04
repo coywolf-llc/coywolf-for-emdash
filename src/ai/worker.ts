@@ -3,6 +3,7 @@
  * images (alt text + captions) from the queue. Runs on the cron tick (and the
  * admin's "Run now"), never inside a save: hooks only enqueue.
  */
+import { siteName } from "../core/site.js";
 import type { CollectionSchemaInfo, PluginContext } from "emdash";
 
 import { type FeatureMap, ctxFeatures, isOn } from "../core/features.js";
@@ -312,7 +313,7 @@ export async function analyzeMedia(ctx: PluginContext, options: AiOptions, s: Se
 		"imageText",
 		{
 			system: IMAGE_SYSTEM,
-			user: imagePrompt({ filename: media.filename, site: ctx.site?.name ?? "", locale: ctx.site?.locale || "en", extra: s.imageInstructions }),
+			user: imagePrompt({ filename: media.filename, site: await siteName(ctx), locale: ctx.site?.locale || "en", extra: s.imageInstructions }),
 			image: payload,
 			maxTokens: 1024,
 		},
