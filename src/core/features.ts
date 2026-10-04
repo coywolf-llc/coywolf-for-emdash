@@ -50,6 +50,18 @@ export async function ctxFeatures(ctx: SettingsCtx): Promise<FeatureMap> {
 	return resolveFeatures(await ctx.settings.get<FeatureMap>(FEATURES_SETTING));
 }
 
+/**
+ * Like ctxFeatures, but shares the per-isolate cache with siteFeatures so
+ * hooks that run on every page view (page:metadata, page:fragments) don't
+ * add a settings read to each render.
+ */
+export async function cachedCtxFeatures(ctx: SettingsCtx): Promise<FeatureMap> {
+	if (cached && Date.now() - cached.at < TTL_MS) return cached.features;
+	const features = await ctxFeatures(ctx);
+	cached = { features, at: Date.now() };
+	return features;
+}
+
 // ── Outside the plugin context (middleware, Astro components) ────
 
 const TTL_MS = 30_000;

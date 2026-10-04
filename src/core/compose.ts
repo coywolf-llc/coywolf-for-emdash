@@ -3,7 +3,7 @@
  */
 import type { PluginContext } from "emdash";
 
-import { type FeatureMap, ctxFeatures, isOn } from "./features.js";
+import { type FeatureMap, cachedCtxFeatures, ctxFeatures, isOn } from "./features.js";
 import type { PackModule, TaskDef } from "./module.js";
 
 /** Hooks whose results are collected from every module. */
@@ -30,7 +30,7 @@ export function composeHooks(modules: PackModule[], extra: { tasks: TaskDef[] })
 		if (name === "cron" || name === "plugin:activate") continue; // Composed below.
 		const participants = modules.filter((m) => m.hooks?.[name as keyof NonNullable<PackModule["hooks"]>]);
 		hooks[name] = async (event, ctx) => {
-			const features = await ctxFeatures(ctx);
+			const features = await cachedCtxFeatures(ctx);
 			if (COLLECTING.has(name)) {
 				const out: unknown[] = [];
 				for (const module of participants) {
