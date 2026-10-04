@@ -9,7 +9,7 @@
  */
 import type { PluginContext, StorageCollection } from "emdash";
 
-import { PLUGIN_ID, ctxFeatures, isOn, siteFeatures } from "../core/features.js";
+import { PLUGIN_ID, cachedCtxFeatures, isOn, siteFeatures } from "../core/features.js";
 import { type Entity, entityNodes } from "./logic.js";
 import type { EntryRecord } from "./store.js";
 
@@ -38,7 +38,7 @@ export async function getEntryEntities(source: Source, collection: string, id: s
 				.first<{ data: string }>();
 			record = row?.data ? (JSON.parse(row.data) as EntryRecord) : null;
 		} else {
-			if (!isOn(await ctxFeatures(source), "ai.entities")) return EMPTY;
+			if (!isOn(await cachedCtxFeatures(source), "ai.entities")) return EMPTY;
 			const entries = (source.storage as Record<string, StorageCollection>).aiEntries as StorageCollection<EntryRecord> | undefined;
 			record = (await entries?.get(`${collection}:${id}`)) ?? null;
 		}

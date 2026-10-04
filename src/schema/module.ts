@@ -295,6 +295,34 @@ async function authorNodes(ctx: PluginContext, page: PublicPageContext, config: 
 }
 
 /** Every contribution this module makes for a page (also used by the admin preview). */
+/**
+ * Add `about` / `mentions` from AI Enrichment to the page's Article node (or
+ * its WebPage when there's no Article). Loaded lazily so sites without the AI
+ * module don't pay for it.
+ */
+async function attachEntities(ctx: PluginContext, content: { collection: string; id: string }, graph: Record<string, unknown>) {
+	try {
+		const { getEntryEntities } = await import("../ai/entities.js");
+		const { about, mentions } = await getEntryEntities(ctx, content.collection, content.id);
+		if (!about.length && !mentions.length) return;
+		const nodes = (graph["@graph"] ?? []) as Record<string, unknown>[];
+		const byId = (suffix: string) => nodes.find((n) => typeof n["@id"] === "string" && (n["@id"] as string).endsWith(suffix));
+		const target = byId("#article") ?? byId("#webpage");
+		if (!target) return;
+		const merge = (key: "about" | "mentions", extra: Record<string, unknown>[]) => {
+			if (!extra.length) return;
+			const existing = target[key];
+			const list = existing === undefined ? [] : Array.isArray(existing) ? existing : [existing];
+			const all = [...list, ...extra];
+			target[key] = all.length === 1 ? all[0] : all;
+		};
+		merge("about", about);
+		merge("mentions", mentions);
+	} catch (error) {
+		ctx.log.warn("schema: could not attach AI entities", { error: String(error) });
+	}
+}
+
 export async function schemaContributions(
 	ctx: PluginContext,
 	page: PublicPageContext,
@@ -343,6 +371,8 @@ export async function schemaContributions(
 			breadcrumbs: isOn(on, SCHEMA_FEATURES.breadcrumbs),
 			homeLabel: config.settings.schemaBreadcrumbHome || "Home",
 		});
+		// AI Enrichment's Wikidata-grounded entities, when that feature is on.
+		if (page.content && isOn(on, "ai.entities")) await attachEntities(ctx, page.content, graph);
 		// Same id as EmDash's own JSON-LD, so this graph replaces it (first contribution wins).
 		out.push({ kind: "jsonld", id: "primary", graph });
 	} else if (isOn(on, SCHEMA_FEATURES.breadcrumbs)) {
