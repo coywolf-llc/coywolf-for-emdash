@@ -1,9 +1,9 @@
 /**
- * Code Blocks page: pick the site's code block theme with a live preview, and
- * turn the label, copy button and line numbers on or off (the same switches as
- * the Features page).
+ * Code Blocks page: pick the site's code block theme with a live preview.
+ * The label, copy button and line numbers are turned on or off on the
+ * Features page; the preview shows them as they're currently set.
  */
-import { Banner, Button, Loader, Select, Switch } from "@cloudflare/kumo";
+import { Banner, Button, Loader, Select } from "@cloudflare/kumo";
 import { FloppyDisk } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
@@ -18,12 +18,6 @@ interface ThemeOption {
 
 type Switches = Record<string, boolean>;
 
-const SWITCHES: Array<{ id: string; label: string; description: string }> = [
-	{ id: "codeBlocks", label: "Enhanced code blocks", description: "Highlight code blocks on the site with the theme below." },
-	{ id: "codeBlocks.label", label: "Language label", description: "Show the language (e.g. TypeScript) above each block." },
-	{ id: "codeBlocks.copy", label: "Copy button", description: "A copy-to-clipboard button on each block." },
-	{ id: "codeBlocks.lineNumbers", label: "Line numbers", description: "Number each line. Numbers aren't copied." },
-];
 
 const errorText = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
 
@@ -61,7 +55,7 @@ export function CodeBlocksPage() {
 					),
 				]);
 				const mine = features.modules.find((m) => m.id === "codeBlocks")?.features ?? [];
-				const state = Object.fromEntries(SWITCHES.map((s) => [s.id, mine.find((f) => f.id === s.id)?.enabled ?? false]));
+				const state: Switches = Object.fromEntries(mine.map((f) => [f.id, f.enabled]));
 				setThemes(settings.themes);
 				setTheme(settings.theme);
 				setSwitches(state);
@@ -96,8 +90,7 @@ export function CodeBlocksPage() {
 		};
 	}, [theme, switches]);
 
-	const changedSwitches = saved ? Object.fromEntries(Object.entries(switches).filter(([id, on]) => saved.switches[id] !== on)) : {};
-	const dirty = saved !== null && (theme !== saved.theme || Object.keys(changedSwitches).length > 0);
+	const dirty = saved !== null && theme !== saved.theme;
 
 	// Unsaved-changes guard.
 	React.useEffect(() => {
@@ -114,7 +107,6 @@ export function CodeBlocksPage() {
 		setStatus("Saving…");
 		try {
 			if (theme !== saved.theme) await post("codeBlocks/save", { theme }, "Couldn't save the theme");
-			if (Object.keys(changedSwitches).length) await post("features/save", { features: changedSwitches }, "Couldn't save the switches");
 			setSaved({ theme, switches });
 			setStatus("Saved. The site picks up changes within a minute.");
 		} catch (cause) {
@@ -180,28 +172,6 @@ export function CodeBlocksPage() {
 							))}
 						</Select>
 
-						<section className="rounded-lg border border-kumo-line" aria-label="Options">
-							<ul className="divide-y divide-kumo-line">
-								{SWITCHES.map((s, i) => {
-									const disabled = saving || (i > 0 && !mainOn);
-									return (
-										<li key={s.id} className={`flex items-start justify-between gap-4 px-4 py-3 ${i > 0 ? "pl-8" : ""}`}>
-											<div className="min-w-0">
-												<h2 className={i === 0 ? "text-base font-semibold" : "text-sm font-medium"}>{s.label}</h2>
-												<p className="mt-0.5 text-sm text-kumo-subtle">{s.description}</p>
-											</div>
-											<Switch
-												size={i === 0 ? undefined : "sm"}
-												aria-label={`${s.label}: ${switches[s.id] ? "on" : "off"}`}
-												checked={(switches[s.id] ?? false) && (i === 0 || mainOn)}
-												disabled={disabled}
-												onCheckedChange={(on: boolean) => setSwitches((cur) => ({ ...cur, [s.id]: on }))}
-											/>
-										</li>
-									);
-								})}
-							</ul>
-						</section>
 					</div>
 
 					<section aria-labelledby="cw-code-preview-title" className="min-w-0">

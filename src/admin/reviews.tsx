@@ -1,9 +1,9 @@
 /**
  * Reviews page: the review box's accent color and custom CSS, with a live
- * preview of a sample review (rendered by the same code as the site), and the
- * Reviews / Review schema switches (the same ones as the Features page).
+ * preview of a sample review (rendered by the same code as the site).
+ * Turning Reviews on or off happens on the Features page.
  */
-import { Banner, Button, Input, InputArea, Loader, Switch } from "@cloudflare/kumo";
+import { Banner, Button, Input, InputArea, Loader } from "@cloudflare/kumo";
 import { ArrowCounterClockwise, FloppyDisk } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
@@ -12,16 +12,11 @@ import { DEFAULT_ACCENT, MAX_CUSTOM_CSS, SAMPLE_REVIEW, isAccent, pageCss, rende
 
 const API = "/_emdash/api/plugins/coywolf-pack";
 
-type Switches = Record<string, boolean>;
 interface Style {
 	accent: string;
 	css: string;
 }
 
-const SWITCHES: Array<{ id: string; label: string; description: string }> = [
-	{ id: "reviews", label: "Review block", description: "Show Coywolf Review blocks on the site." },
-	{ id: "reviews.schema", label: "Review schema", description: "Review structured data with the rating, pros and cons." },
-];
 
 const EXAMPLE_CSS = `/* Target .cw-review … so rules only reach review boxes. */
 .cw-review {
@@ -67,9 +62,8 @@ function Preview({ style, width }: { style: Style; width: "wide" | "phone" }) {
 }
 
 export function ReviewsPage() {
-	const [saved, setSaved] = React.useState<{ style: Style; switches: Switches } | null>(null);
+	const [saved, setSaved] = React.useState<{ style: Style } | null>(null);
 	const [style, setStyle] = React.useState<Style>({ accent: DEFAULT_ACCENT, css: "" });
-	const [switches, setSwitches] = React.useState<Switches>({});
 	const [width, setWidth] = React.useState<"wide" | "phone">("wide");
 	const [error, setError] = React.useState<string | null>(null);
 	const [status, setStatus] = React.useState("");
@@ -78,27 +72,18 @@ export function ReviewsPage() {
 	React.useEffect(() => {
 		void (async () => {
 			try {
-				const [settings, features] = await Promise.all([
-					apiFetch(`${API}/reviews/settings`).then((r) => parseApiResponse<Style>(r, "Couldn't load settings")),
-					apiFetch(`${API}/features/list`).then((r) =>
-						parseApiResponse<{ modules: Array<{ id: string; features: Array<{ id: string; enabled: boolean }> }> }>(r, "Couldn't load features"),
-					),
-				]);
-				const mine = features.modules.find((m) => m.id === "reviews")?.features ?? [];
-				const state = Object.fromEntries(SWITCHES.map((s) => [s.id, mine.find((f) => f.id === s.id)?.enabled ?? false]));
+				const settings = await apiFetch(`${API}/reviews/settings`).then((r) => parseApiResponse<Style>(r, "Couldn't load settings"));
 				const loaded = { accent: settings.accent, css: settings.css };
 				setStyle(loaded);
-				setSwitches(state);
-				setSaved({ style: loaded, switches: state });
+				setSaved({ style: loaded });
 			} catch (cause) {
 				setError(errorText(cause, "Couldn't load settings"));
 			}
 		})();
 	}, []);
 
-	const changedSwitches = saved ? Object.fromEntries(Object.entries(switches).filter(([id, on]) => saved.switches[id] !== on)) : {};
 	const styleDirty = saved !== null && (style.accent !== saved.style.accent || style.css !== saved.style.css);
-	const dirty = styleDirty || Object.keys(changedSwitches).length > 0;
+	const dirty = styleDirty;
 	const accentValid = isAccent(style.accent);
 	const tooLong = style.css.length > MAX_CUSTOM_CSS;
 
@@ -117,9 +102,8 @@ export function ReviewsPage() {
 		try {
 			let next = style;
 			if (styleDirty) next = await post<Style>("reviews/save", style, "Couldn't save the style");
-			if (Object.keys(changedSwitches).length) await post("features/save", { features: changedSwitches }, "Couldn't save the switches");
 			setStyle(next);
-			setSaved({ style: next, switches });
+			setSaved({ style: next });
 			setStatus("Saved. The site picks up changes within a minute.");
 		} catch (cause) {
 			setStatus("");
@@ -128,8 +112,6 @@ export function ReviewsPage() {
 			setSaving(false);
 		}
 	}
-
-	const mainOn = switches.reviews ?? false;
 
 	return (
 		<div className="space-y-6">
@@ -163,26 +145,6 @@ export function ReviewsPage() {
 			{saved && (
 				<div className="grid gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]">
 					<div className="space-y-6">
-						<section className="rounded-lg border border-kumo-line" aria-label="Switches">
-							<ul className="divide-y divide-kumo-line">
-								{SWITCHES.map((s, i) => (
-									<li key={s.id} className={`flex items-start justify-between gap-4 px-4 py-3 ${i > 0 ? "pl-8" : ""}`}>
-										<div className="min-w-0">
-											<h2 className={i === 0 ? "text-base font-semibold" : "text-sm font-medium"}>{s.label}</h2>
-											<p className="mt-0.5 text-sm text-kumo-subtle">{s.description}</p>
-										</div>
-										<Switch
-											size={i === 0 ? undefined : "sm"}
-											aria-label={`${s.label}: ${switches[s.id] ? "on" : "off"}`}
-											checked={(switches[s.id] ?? false) && (i === 0 || mainOn)}
-											disabled={saving || (i > 0 && !mainOn)}
-											onCheckedChange={(on: boolean) => setSwitches((cur) => ({ ...cur, [s.id]: on }))}
-										/>
-									</li>
-								))}
-							</ul>
-						</section>
-
 						<div className="space-y-2">
 							<div className="flex items-end gap-2">
 								<input
@@ -249,7 +211,6 @@ export function ReviewsPage() {
 								</Button>
 							</div>
 						</div>
-						{!mainOn && <p className="mb-2 text-sm text-kumo-subtle">Review blocks are off, so the site doesn't show them yet.</p>}
 						<Preview style={style} width={width} />
 						<p className="mt-2 text-xs text-kumo-subtle">
 							The preview uses this page's fonts and your computer's light or dark setting. On the site the box uses your theme's fonts
