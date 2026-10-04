@@ -1,7 +1,8 @@
 /**
  * Robots.txt Rules: admin routes. The file itself is served by the pack
- * middleware (./middleware.ts); the URL tester runs in the browser against
- * the generated text (./rep.ts), so it always tests what will be served.
+ * middleware (./middleware.ts); the URL tester and the validator run in the
+ * browser against the generated text (./rep.ts), and the server re-checks
+ * every save (shape, contradictions and the self-check) before storing it.
  */
 import type { PluginContext } from "emdash";
 import { PluginRouteError, definePluginRoute } from "emdash";
@@ -9,80 +10,217 @@ import { z } from "zod";
 
 import { requireFeature } from "../core/features.js";
 import { parseInput, workerEnv } from "../shared.js";
-import { mergeDirectory } from "./bots.js";
+import { type BotOverride, applyOverrides, customSlug, mergeDirectory } from "./bots.js";
 import { BASELINE_DATE, baselineBots } from "./directory.js";
-import { CONFIG_SETTING, invalidateRobotsCache } from "./middleware.js";
+import { emdashRobots, importRobots } from "./importer.js";
+import { CONFIG_SETTING, invalidateRobotsCache, readEmdashCustomRobots } from "./middleware.js";
 import { RADAR_TOKEN_SETTING, SYNC_STATE_KEY, type SyncState, radarTokenSource, readOverlays, syncRadar } from "./radar.js";
-import { PRESETS, RULE_KINDS, RobotsValidationError, type RobotsConfig, generate, normalizeConfig, validateRule } from "./rules.js";
+import { PRESETS, RULE_KINDS, type RobotsConfig, generate, isValidToken, normalizeConfig } from "./rules.js";
+import { checkConfig } from "./validate.js";
 
-/** KV flag: the admin closed the notice about EmDash's own robots.txt. */
-const NOTICE_DISMISSED_KEY = "robots:emdashNoticeDismissed";
+export const HISTORY_COLLECTION = "robots_history";
+export const BOT_OVERRIDES_COLLECTION = "robots_bot_overrides";
+const HISTORY_LIMIT = 20;
 
 export interface RobotsOptions {
 	/** D1 binding of the site database. Default "DB". */
 	database?: string;
 }
 
+export interface HistoryEntry {
+	at: string;
+	by?: string;
+	label: string;
+	config: RobotsConfig;
+}
+
 const NO_NEWLINE = /^[^\r\n]*$/;
+const oneLine = (max: number) => z.string().max(max).regex(NO_NEWLINE, "Line breaks aren't allowed here.");
 
 const ruleInput = z.object({
 	id: z.string().min(1).max(64),
-	name: z.string().max(200),
+	name: z.string().max(300),
 	description: z.string().max(500).optional(),
 	enabled: z.boolean(),
-	agents: z.array(z.string().max(100).regex(NO_NEWLINE, "Crawler tokens can't contain line breaks.")).max(1000),
+	agents: z.array(oneLine(100)).max(1000),
 	directive: z.enum(["allow", "disallow"]),
 	kind: z.enum(RULE_KINDS),
-	path: z.string().max(2000).optional(),
-	ext: z.string().max(20).optional(),
-	allow: z.string().max(2000).optional(),
+	path: oneLine(2100).optional(),
+	ext: oneLine(20).optional(),
+	exts: z.array(oneLine(20)).max(50).optional(),
+	params: z.array(oneLine(100)).max(50).optional(),
+	allow: oneLine(2100).optional(),
 	strict: z.boolean().optional(),
+	anyDepth: z.boolean().optional(),
+	except: z.array(oneLine(2100)).max(50).optional(),
+	group: z.string().max(40).optional(),
+	source: z.enum(["user", "import", "template", "legacy"]).optional(),
 });
 
 const configInput = z.object({
+	version: z.number().optional(),
 	rules: z.array(ruleInput).max(200),
 	includeSitemap: z.boolean(),
-	sitemaps: z.array(z.string().max(2000).regex(NO_NEWLINE, "Sitemap URLs can't contain line breaks.")).max(50),
+	sitemaps: z.array(oneLine(2000)).max(50),
 	allowMedia: z.boolean(),
 	comments: z.boolean(),
 	extra: z.string().max(20_000),
+	inheritGeneral: z.boolean(),
+	emdashLines: z.boolean(),
+	importedAt: z.string().max(40).optional(),
+	importMode: z.enum(["rules", "verbatim"]).optional(),
+	importNotes: z.array(z.string().max(500)).max(10).optional(),
 });
 
-async function readEmdashRobots(database: string): Promise<string | null> {
+const siteUrlOf = (ctx: PluginContext) => (ctx.site.url || "").replace(/\/+$/, "");
+const who = (ctx: { user?: { name: string | null; email: string } }) => ctx.user?.name || ctx.user?.email || undefined;
+
+async function siteDb(database: string): Promise<D1Database | undefined> {
 	try {
-		const env = await workerEnv();
-		const db = env[database] as D1Database | undefined;
-		const row = db ? await db.prepare("SELECT value FROM options WHERE name = ?").bind("site:seo").first<{ value: string }>() : null;
-		const seo = row?.value ? (JSON.parse(row.value) as { robotsTxt?: string }) : null;
-		return seo?.robotsTxt?.trim() ? seo.robotsTxt : null;
+		return (await workerEnv())[database] as D1Database | undefined;
 	} catch {
-		return null;
+		return undefined;
 	}
 }
 
-const siteUrlOf = (ctx: PluginContext) => (ctx.site.url || "").replace(/\/+$/, "");
+/** The robots.txt EmDash itself would serve right now. */
+async function emdashServed(database: string, siteUrl: string): Promise<{ text: string; custom: boolean }> {
+	const db = await siteDb(database);
+	const custom = db ? await readEmdashCustomRobots(db) : null;
+	return { text: emdashRobots(custom, siteUrl || "https://example.com"), custom: Boolean(custom) };
+}
+
+/** Top-level sections from EmDash collections' URL patterns (e.g. "/recipes/{slug}" → "/recipes/"), for the rule dialog. */
+async function siteSections(database: string): Promise<Array<{ label: string; path: string }>> {
+	const db = await siteDb(database);
+	if (!db) return [];
+	try {
+		const { results } = await db.prepare("SELECT label, url_pattern FROM _emdash_collections WHERE url_pattern IS NOT NULL").all<{ label: string; url_pattern: string }>();
+		const out: Array<{ label: string; path: string }> = [];
+		for (const row of results ?? []) {
+			const head = row.url_pattern.split("{")[0];
+			const path = head.slice(0, head.lastIndexOf("/") + 1);
+			if (path.length > 1 && path.startsWith("/") && !out.some((o) => o.path === path)) out.push({ label: row.label, path });
+		}
+		return out.slice(0, 12);
+	} catch {
+		return [];
+	}
+}
+
+async function readHistory(ctx: PluginContext): Promise<Array<{ id: string; data: HistoryEntry }>> {
+	const collection = ctx.storage[HISTORY_COLLECTION];
+	if (!collection) return [];
+	const page = await collection.query({ limit: 100 });
+	return (page.items as Array<{ id: string; data: HistoryEntry }>).sort((a, b) => b.data.at.localeCompare(a.data.at));
+}
+
+async function pushHistory(ctx: PluginContext, entry: HistoryEntry): Promise<void> {
+	const collection = ctx.storage[HISTORY_COLLECTION];
+	if (!collection) return;
+	const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+	await collection.put(id, entry);
+	const all = await readHistory(ctx);
+	const stale = all.slice(HISTORY_LIMIT).map((e) => e.id);
+	if (stale.length) await collection.deleteMany(stale);
+}
+
+async function readBotOverrides(ctx: PluginContext): Promise<BotOverride[]> {
+	const collection = ctx.storage[BOT_OVERRIDES_COLLECTION];
+	if (!collection) return [];
+	const out: BotOverride[] = [];
+	let cursor: string | undefined;
+	for (let i = 0; i < 20; i++) {
+		const page = await collection.query({ limit: 100, ...(cursor ? { cursor } : {}) });
+		for (const item of page.items) out.push(item.data as BotOverride);
+		if (!page.hasMore || !page.cursor) break;
+		cursor = page.cursor;
+	}
+	return out;
+}
+
+/**
+ * The saved config, importing EmDash's robots.txt first when nothing is saved
+ * yet. compareAndSet(null) only creates when absent, so a concurrent import
+ * from the middleware (or another admin tab) wins cleanly.
+ */
+async function loadOrImport(ctx: PluginContext, database: string): Promise<RobotsConfig> {
+	const stored = await ctx.settings.get<Partial<RobotsConfig>>(CONFIG_SETTING);
+	if (stored) return normalizeConfig(stored);
+	const siteUrl = siteUrlOf(ctx);
+	const { text } = await emdashServed(database, siteUrl);
+	const { config } = importRobots(text, siteUrl || "https://example.com");
+	const result = await ctx.settings.compareAndSet(CONFIG_SETTING, null, config);
+	if (result.applied) {
+		invalidateRobotsCache();
+		await pushHistory(ctx, { at: new Date().toISOString(), label: "Imported from EmDash's robots.txt", config }).catch(() => undefined);
+		ctx.log.info("Robots: imported EmDash's robots.txt", { rules: config.rules.length, mode: config.importMode });
+		return config;
+	}
+	return normalizeConfig(await ctx.settings.get<Partial<RobotsConfig>>(CONFIG_SETTING));
+}
+
+async function persist(ctx: PluginContext, config: RobotsConfig, label: string, by: string | undefined) {
+	const siteUrl = siteUrlOf(ctx);
+	const problem = checkConfig(config, siteUrl || undefined);
+	if (problem) throw PluginRouteError.badRequest(problem);
+	const preview = generate(config, { siteUrl });
+	if (new TextEncoder().encode(preview).length > 500 * 1024) {
+		throw PluginRouteError.badRequest("That robots.txt would be over 500 KiB, the most Google reads. Remove some rules.");
+	}
+	await ctx.settings.set(CONFIG_SETTING, config);
+	invalidateRobotsCache();
+	await pushHistory(ctx, { at: new Date().toISOString(), by, label, config }).catch((error) => ctx.log.warn("Robots: history not saved", { error: String(error) }));
+	ctx.log.info("Robots.txt rules saved", { rules: config.rules.length, label });
+	return { config, preview, saved: true };
+}
+
+const botAction = z.discriminatedUnion("action", [
+	z.object({ action: z.literal("verify"), slug: z.string().min(1).max(120), sourceUrl: z.string().url().max(2000), note: z.string().max(500).optional() }),
+	z.object({ action: z.literal("unverify"), slug: z.string().min(1).max(120) }),
+	z.object({ action: z.literal("rename"), slug: z.string().min(1).max(120), name: z.string().trim().min(1).max(120) }),
+	z.object({
+		action: z.literal("save-custom"),
+		slug: z.string().max(120).optional(),
+		name: z.string().trim().min(1).max(120),
+		token: z.string().trim().min(1).max(100),
+		category: z.string().min(1).max(60),
+		operator: z.string().max(120).optional(),
+		sourceUrl: z.union([z.string().url().max(2000), z.literal("")]).optional(),
+		notes: z.string().max(500).optional(),
+	}),
+	z.object({ action: z.literal("delete"), slug: z.string().min(1).max(120) }),
+	z.object({ action: z.literal("reset"), slug: z.string().min(1).max(120) }),
+]);
 
 export function robotsModule(options: RobotsOptions) {
 	const database = options.database ?? "DB";
 
 	const routes = {
-		/** Saved rules, the generated file, and sync status. */
+		/** Saved rules (importing EmDash's file on first load), the served file, EmDash's original, history and sync status. */
 		"robots/get": {
 			permission: "plugins:manage" as const,
 			handler: async (ctx: PluginContext) => {
 				await requireFeature(ctx, "robots");
-				const stored = await ctx.settings.get<Partial<RobotsConfig>>(CONFIG_SETTING);
-				const config = normalizeConfig(stored);
+				const config = await loadOrImport(ctx, database);
 				const siteUrl = siteUrlOf(ctx);
 				const tokenSource = await radarTokenSource(ctx);
+				const emdash = await emdashServed(database, siteUrl);
+				let history = await readHistory(ctx).catch(() => []);
+				if (!history.length) {
+					// Rules imported by the middleware (or saved before 0.7.0) get a first version to restore to.
+					await pushHistory(ctx, { at: new Date().toISOString(), label: config.importedAt ? "Imported from EmDash's robots.txt" : "Rules before version history", config }).catch(() => undefined);
+					history = await readHistory(ctx).catch(() => []);
+				}
 				return {
 					config,
-					saved: stored !== null && stored !== undefined,
+					saved: true,
 					siteUrl,
 					preview: generate(config, { siteUrl }),
-					emdashRobotsTxt: await readEmdashRobots(database),
-					emdashNoticeDismissed: (await ctx.kv.get<boolean>(NOTICE_DISMISSED_KEY)) === true,
+					emdash,
+					history: history.map((h) => ({ id: h.id, at: h.data.at, by: h.data.by, label: h.data.label, rules: h.data.config.rules.length })),
 					presets: PRESETS,
+					sections: await siteSections(database),
 					radar: {
 						tokenSource,
 						tokenConfigured: Boolean(tokenSource),
@@ -93,23 +231,13 @@ export function robotsModule(options: RobotsOptions) {
 			},
 		},
 
-		/** Hide the "EmDash has its own robots.txt" notice for good. */
-		"robots/dismiss-notice": definePluginRoute({
-			permission: "plugins:manage",
-			methods: ["POST"],
-			request: { body: "none" },
-			handler: async (ctx) => {
-				await ctx.kv.set(NOTICE_DISMISSED_KEY, true);
-				return { dismissed: true };
-			},
-		}),
-
-		/** The crawler directory (bundled baseline + Radar overlay). */
+		/** The crawler directory (bundled baseline + Radar overlay + this site's verifications, renames and custom bots). */
 		"robots/bots": {
 			permission: "plugins:manage" as const,
 			handler: async (ctx: PluginContext) => {
 				await requireFeature(ctx, "robots");
-				return { bots: mergeDirectory(baselineBots(), await readOverlays(ctx)) };
+				const [overlays, overrides] = await Promise.all([readOverlays(ctx), readBotOverrides(ctx)]);
+				return { bots: applyOverrides(mergeDirectory(baselineBots(), overlays), overrides) };
 			},
 		},
 
@@ -119,22 +247,102 @@ export function robotsModule(options: RobotsOptions) {
 			request: { body: "json", maxBytes: 512 * 1024 },
 			handler: async (ctx) => {
 				await requireFeature(ctx, "robots");
-				const config = parseInput(configInput, ctx.input) as RobotsConfig;
-				try {
-					for (const rule of config.rules) validateRule(rule);
-				} catch (error) {
-					if (error instanceof RobotsValidationError) throw PluginRouteError.badRequest(error.message);
-					throw error;
-				}
+				const input = parseInput(z.object({ config: configInput, label: z.string().max(200).optional() }), ctx.input);
+				const config = normalizeConfig(input.config as RobotsConfig);
+				return persist(ctx, config, input.label?.trim() || "Saved", who(ctx));
+			},
+		}),
+
+		/** Restore a saved version (it becomes a new version, so restoring can be undone). */
+		"robots/restore": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, "robots");
+				const { id } = parseInput(z.object({ id: z.string().min(1).max(64) }), ctx.input);
+				const entry = (await ctx.storage[HISTORY_COLLECTION]?.get(id)) as HistoryEntry | null | undefined;
+				if (!entry) throw PluginRouteError.notFound("That version is no longer kept.");
+				const date = new Date(entry.at).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" });
+				return persist(ctx, normalizeConfig(entry.config), `Restored the version from ${date} UTC`, who(ctx));
+			},
+		}),
+
+		/** Start over from the robots.txt EmDash would serve now. */
+		"robots/reset": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, "robots");
 				const siteUrl = siteUrlOf(ctx);
-				const preview = generate(config, { siteUrl });
-				if (new TextEncoder().encode(preview).length > 500 * 1024) {
-					throw PluginRouteError.badRequest("That robots.txt would be over 500 KiB, the most Google reads. Remove some rules.");
+				const { text } = await emdashServed(database, siteUrl);
+				const { config } = importRobots(text, siteUrl || "https://example.com");
+				return persist(ctx, config, "Reset to EmDash's original", who(ctx));
+			},
+		}),
+
+		/** Verify, rename, add, edit or delete crawler directory entries for this site. */
+		"robots/bot": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, "robots");
+				const input = parseInput(botAction, ctx.input);
+				const collection = ctx.storage[BOT_OVERRIDES_COLLECTION];
+				if (!collection) throw PluginRouteError.badRequest("Plugin storage isn't available.");
+				const current = ((await collection.get(input.slug ?? "")) as BotOverride | null) ?? null;
+				const by = who(ctx);
+				const now = new Date().toISOString();
+				switch (input.action) {
+					case "verify":
+						await collection.put(input.slug, { ...(current ?? { slug: input.slug }), verified: { sourceUrl: input.sourceUrl, note: input.note?.trim() || undefined, at: now, by } });
+						break;
+					case "unverify":
+						if (current) await collection.put(input.slug, { ...current, verified: undefined });
+						break;
+					case "rename":
+						await collection.put(input.slug, { ...(current ?? { slug: input.slug }), name: input.name });
+						break;
+					case "save-custom": {
+						if (!isValidToken(input.token) || input.token === "*") {
+							throw PluginRouteError.badRequest("A robots.txt token uses only letters, digits, dot, underscore and dash (like ExampleBot).");
+						}
+						const slug = input.slug || customSlug(input.token);
+						const existing = ((await collection.get(slug)) as BotOverride | null) ?? null;
+						if (!input.slug && existing) throw PluginRouteError.badRequest(`You already added a bot with the token ${input.token}.`);
+						if (input.slug && existing && !existing.custom) throw PluginRouteError.badRequest("Only bots you added can be edited this way.");
+						const directory = mergeDirectory(baselineBots(), await readOverlays(ctx));
+						const clash = directory.find((b) => b.token.toLowerCase() === input.token.toLowerCase());
+						if (clash && !input.slug) throw PluginRouteError.badRequest(`${input.token} is already in the directory as ${clash.name}.`);
+						await collection.put(slug, {
+							...(existing ?? {}),
+							slug,
+							name: input.name,
+							custom: {
+								token: input.token,
+								category: input.category,
+								operator: input.operator?.trim() || undefined,
+								sourceUrl: input.sourceUrl || undefined,
+								notes: input.notes?.trim() || undefined,
+								createdAt: existing?.custom?.createdAt ?? now,
+								createdBy: existing?.custom?.createdBy ?? by,
+							},
+						} satisfies BotOverride);
+						break;
+					}
+					case "delete":
+						if (!current?.custom) throw PluginRouteError.badRequest("Only bots you added can be deleted.");
+						await collection.delete(input.slug);
+						break;
+					case "reset":
+						await collection.delete(input.slug);
+						break;
 				}
-				await ctx.settings.set(CONFIG_SETTING, config);
-				invalidateRobotsCache();
-				ctx.log.info("Robots.txt rules saved", { rules: config.rules.length });
-				return { config, preview, saved: true };
+				ctx.log.info("Robots: crawler directory changed", { action: input.action, slug: input.slug ?? "" });
+				const [overlays, overrides] = await Promise.all([readOverlays(ctx), readBotOverrides(ctx)]);
+				return { bots: applyOverrides(mergeDirectory(baselineBots(), overlays), overrides) };
 			},
 		}),
 
@@ -173,3 +381,4 @@ export function robotsModule(options: RobotsOptions) {
 
 	return { routes };
 }
+

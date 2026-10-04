@@ -261,9 +261,13 @@ export interface EvaluateOptions {
 }
 
 export function evaluate(body: string, userAgents: string[], url: string, options: EvaluateOptions = {}): Verdict {
+	return evaluateParsed(parse(body).directives, userAgents, url, options);
+}
+
+/** evaluate() over directives already returned by parse(), for callers that test many URLs against one file. */
+export function evaluateParsed(directives: Directive[], userAgents: string[], url: string, options: EvaluateOptions = {}): Verdict {
 	const rawPath = pathParamsQuery(url);
 	const path = options.encodePath ? normalizePath(rawPath) : rawPath;
-	const { directives } = parse(body);
 
 	let allowGlobal = NO_MATCH;
 	let allowSpecific = NO_MATCH;
