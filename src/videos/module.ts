@@ -870,7 +870,7 @@ export function videosModule(options: VideosOptions) {
 				const cutoff = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
 				const likes = (ctx.storage as Record<string, import("emdash").StorageCollection<unknown>>)[COLLECTIONS.likes];
 				for (let i = 0; i < 50; i++) {
-					const old = await likes.query({ where: { day: { lt: cutoff } }, limit: 100 });
+					const old = await likes.query({ where: { day: { lt: cutoff } }, limit: 90 });
 					if (!old.items.length) break;
 					await likes.deleteMany(old.items.map((x) => x.id));
 				}

@@ -3,6 +3,7 @@
  * metadata, play/like counters and the embed index (which entries embed
  * which videos).
  */
+import { STORAGE_IN_LIMIT, deleteManyBatched, getManyBatched } from "../core/storage.js";
 import type { PluginContext, StorageCollection } from "emdash";
 
 import { secret, workerEnv } from "../shared.js";
@@ -231,8 +232,8 @@ function fromLibrary(v: LibraryVideo): Partial<VideoMeta> {
 /** Write Stream's facts into the metadata docs that changed (one read, at most one batched write). */
 async function syncMeta(ctx: Ctx, items: LibraryVideo[]): Promise<void> {
 	const store = metaStore(ctx);
-	for (let i = 0; i < items.length; i += 100) {
-		const chunk = items.slice(i, i + 100);
+	for (let i = 0; i < items.length; i += STORAGE_IN_LIMIT) {
+		const chunk = items.slice(i, i + STORAGE_IN_LIMIT);
 		const existing = await store.getMany(chunk.map((v) => v.uid));
 		const changed: Array<{ id: string; data: VideoMeta }> = [];
 		for (const v of chunk) {
@@ -318,7 +319,7 @@ export async function refreshCaptions(ctx: Ctx, uid: string, api?: StreamClient 
 	const old = await store.query({ where: { uid }, limit: 50 });
 	const keep = new Set(docs.map((d) => `${uid}:${d.language}`));
 	const stale = old.items.map((i) => i.id).filter((id) => !keep.has(id));
-	if (stale.length) await store.deleteMany(stale);
+	if (stale.length) await deleteManyBatched(store, stale);
 	if (docs.length) await store.putMany(docs.map((d) => ({ id: `${uid}:${d.language}`, data: d })));
 	const preferred = docs.find((d) => d.language.toLowerCase().startsWith((ctx.site.locale || "en").slice(0, 2).toLowerCase())) ?? docs[0];
 	return patchMeta(ctx, uid, {
@@ -356,14 +357,14 @@ export async function bump(ctx: Ctx, uid: string, field: keyof Counts, by: 1 | -
 export async function countsFor(ctx: Ctx, uids: string[]): Promise<Map<string, Counts>> {
 	const out = new Map<string, Counts>();
 	const store = statsStore(ctx);
-	for (let i = 0; i < uids.length; i += 100) for (const [k, v] of await store.getMany(uids.slice(i, i + 100))) out.set(k, v);
+	for (const [k, v] of await getManyBatched(store, uids)) out.set(k, v);
 	return out;
 }
 
 export async function metaFor(ctx: Ctx, uids: string[]): Promise<Map<string, VideoMeta>> {
 	const out = new Map<string, VideoMeta>();
 	const store = metaStore(ctx);
-	for (let i = 0; i < uids.length; i += 100) for (const [k, v] of await store.getMany(uids.slice(i, i + 100))) out.set(k, v);
+	for (const [k, v] of await getManyBatched(store, uids)) out.set(k, v);
 	return out;
 }
 
