@@ -543,10 +543,49 @@ export function buildGraph(input: GraphInput): Node {
 			article.author = { "@type": "Person", name: page.articleMeta.author };
 		}
 		nodes.push(article);
+		// The Article carries the description and dates; the WebPage doesn't repeat them.
+		delete webpage.description;
+		delete webpage.datePublished;
+		delete webpage.dateModified;
 	}
 
 	nodes.push(website, publisher);
-	return { "@context": "https://schema.org", "@graph": dedupeById(nodes) };
+	return { "@context": "https://schema.org", "@graph": linkNestedEntities(dedupeById(nodes)) };
+}
+
+/**
+ * Replace nested copies of entities that already have their own node with a
+ * reference: same `@id`, or (for people and organizations) same `url`. E.g.
+ * the publisher's founder who is also the article's author becomes
+ * `{ "@id": <author> }` instead of a second Person.
+ */
+export function linkNestedEntities(nodes: Node[]): Node[] {
+	const byId = new Map<string, Node>();
+	const byUrl = new Map<string, string>();
+	const kind = (t: unknown) => (typeof t === "string" && /Person$/.test(t) ? "person" : typeof t === "string" && /Organization$|Corporation|Business|NGO|Group$/.test(t) ? "org" : null);
+	for (const n of nodes) {
+		const id = n["@id"];
+		if (typeof id !== "string") continue;
+		byId.set(id, n);
+		const k = kind(n["@type"]);
+		if (k && typeof n.url === "string") byUrl.set(`${k} ${n.url}`, id);
+	}
+	const visit = (value: unknown, top: boolean): unknown => {
+		if (Array.isArray(value)) return value.map((v) => visit(v, false));
+		if (!value || typeof value !== "object") return value;
+		const obj = value as Node;
+		if (!top) {
+			const id = typeof obj["@id"] === "string" ? obj["@id"] : null;
+			if (id && byId.has(id) && Object.keys(obj).length > 1) return { "@id": id };
+			const k = kind(obj["@type"]);
+			const match = k && typeof obj.url === "string" ? byUrl.get(`${k} ${obj.url}`) : undefined;
+			if (match) return { "@id": match };
+		}
+		const out: Node = {};
+		for (const [key, v] of Object.entries(obj)) out[key] = visit(v, false);
+		return out;
+	};
+	return nodes.map((n) => visit(n, true) as Node);
 }
 
 function dedupeById(nodes: Node[]): Node[] {
