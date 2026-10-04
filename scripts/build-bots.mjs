@@ -204,6 +204,11 @@ for (const group of byToken.values()) {
 	merged.push(best);
 }
 
+// What each preset bot is for (verified.json → purposes), so presets are built by purpose, not Radar category.
+for (const e of merged) {
+	const p = VERIFIED.purposes?.[e.slug];
+	if (p?.purpose) e.purpose = p.purpose;
+}
 const list = merged.sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
 writeFileSync(
 	OUT,

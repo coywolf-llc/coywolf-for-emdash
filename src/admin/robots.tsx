@@ -1,19 +1,22 @@
 /**
- * Robots.txt Rules admin page: named rules, a crawler picker backed by the
- * verified bot directory, a live preview of the generated file, and a URL
- * tester that runs Google's REP matcher (ported) against that preview.
+ * Robots.txt admin page: a plain-English summary of the whole file, then
+ * tabs for Rules (list, URL tester, what's being served), Bots (the crawler
+ * directory) and Settings & history. Rules are added and edited in a guided
+ * dialog (./robots-wizard.tsx); every change is checked in the browser and
+ * again on the server (including the self-check) before it's saved.
  */
-import { Badge, Banner, Button, Checkbox, Dialog, DropdownMenu, Input, InputArea, Loader, Select, Switch } from "@cloudflare/kumo";
-import { ArrowDown, ArrowsClockwise, ArrowUp, CheckCircle, DotsThree, PencilSimple, Plus, Robot, Trash, WarningCircle, X, XCircle } from "@phosphor-icons/react";
-import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
+import { Badge, Banner, Button, Checkbox, Dialog, DropdownMenu, Input, InputArea, Loader, Switch, Tabs } from "@cloudflare/kumo";
+import { CheckCircle, Copy, DotsThree, Info, PencilSimple, Plus, Robot, Sparkle, Trash, Warning, X, XCircle } from "@phosphor-icons/react";
 import * as React from "react";
 
-import { type BotEntry, CATEGORY_LABELS, categoryLabel } from "../robots/bots.js";
+import type { BotEntry } from "../robots/bots.js";
+import { describeRule, summarize } from "../robots/explain.js";
 import { evaluate } from "../robots/rep.js";
-import { type RobotsConfig, type RobotsRule, type RuleKind, directives, generate, isValidToken } from "../robots/rules.js";
-import { SecretField, SetupCard } from "./settings-ui.js";
-
-const API = "/_emdash/api/plugins/coywolf-pack/robots";
+import { type RobotsConfig, type RobotsRule, TEMPLATES, directives, resolveAgents } from "../robots/rules.js";
+import { type Finding, analyzeConfigChange, checkConfig } from "../robots/validate.js";
+import { BotsTab } from "./robots-bots.js";
+import { dateTimeFormat, errorText, get, newId, post, tokenIndex, useCopy } from "./robots-shared.js";
+import { RuleWizard } from "./robots-wizard.js";
 
 interface SyncState {
 	at: string;
@@ -25,315 +28,106 @@ interface SyncState {
 	error?: string;
 }
 
+interface HistoryItem {
+	id: string;
+	at: string;
+	by?: string;
+	label: string;
+	rules: number;
+}
+
 interface PageData {
 	config: RobotsConfig;
-	saved: boolean;
 	siteUrl: string;
-	emdashRobotsTxt: string | null;
-	emdashNoticeDismissed: boolean;
-	presets: Array<Omit<RobotsRule, "id" | "enabled">>;
+	preview: string;
+	emdash: { text: string; custom: boolean };
+	history: HistoryItem[];
+	sitemapNoteDismissed: boolean;
+	warnings: Finding[];
+	groupChanges: Array<{ ruleId: string; ruleName: string; group: string; added: string[]; removed: string[] }>;
+	sections: Array<{ label: string; path: string }>;
 	radar: { tokenConfigured: boolean; tokenSource: "settings" | "env" | null; state: SyncState | null; baselineDate: string };
 }
 
-const KIND_LABELS: Record<RuleKind, string> = {
-	entire_site: "The entire site",
-	folder: "A folder",
-	prefix: "Paths starting with",
-	single_page: "A single page or file",
-	exact_url: "An exact URL only",
-	filetype: "A file type anywhere",
-	filetype_in_folder: "A file type in a folder",
-	contains: "URLs containing text",
-	any_depth: "A folder at any depth",
-	query_any: "All URLs with a query string",
-	query_param: "A query parameter",
-	wildcard_prefix: "A prefix with a wildcard",
-	allow_exception: "Block a folder, allow one item in it",
-	custom: "Custom value",
-};
-const PATH_LABELS: Partial<Record<RuleKind, [string, string]>> = {
-	folder: ["Folder", "/private/"],
-	prefix: ["Path prefix", "/drafts"],
-	single_page: ["Path", "/thank-you/"],
-	exact_url: ["Exact path", "/search"],
-	filetype_in_folder: ["Folder", "/downloads/"],
-	contains: ["Text", "preview="],
-	any_depth: ["Folder name", "print"],
-	query_param: ["Parameter name", "utm_source"],
-	wildcard_prefix: ["Prefix", "/tag-"],
-	allow_exception: ["Folder to block", "/members/"],
-	custom: ["Value", "/*?replytocom="],
-};
-
-const errorText = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
-const newId = () => Math.random().toString(36).slice(2, 10);
-const dateFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" });
-
-async function post<T>(path: string, body: unknown): Promise<T> {
-	const response = await apiFetch(`${API}/${path}`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(body),
-	});
-	return parseApiResponse<T>(response, "The request failed");
+interface Confirm {
+	title: string;
+	body: string;
+	findings?: Finding[];
+	confirmLabel: string;
+	destructive?: boolean;
+	onConfirm: () => Promise<void>;
 }
 
-/** Token → entry; when several bots share a token, a verified entry wins. */
-function tokenIndex(bots: BotEntry[]): Map<string, BotEntry> {
-	const map = new Map<string, BotEntry>();
-	for (const b of bots) {
-		const key = b.token.toLowerCase();
-		const have = map.get(key);
-		if (!have || (have.status !== "verified" && b.status === "verified")) map.set(key, b);
-	}
-	return map;
-}
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-function UnverifiedBadge({ bot }: { bot: BotEntry }) {
-	if (bot.status === "verified") return null;
+function ConfirmDialog(props: { confirm: Confirm | null; onClose: () => void }) {
+	const [busy, setBusy] = React.useState(false);
+	const [error, setError] = React.useState<string>();
+	React.useEffect(() => setError(undefined), [props.confirm]);
+	const c = props.confirm;
+	if (!c) return null;
 	return (
-		<span title={bot.note ?? "This token hasn't been confirmed in the operator's documentation."}>
-			<Badge variant="warning">unverified</Badge>
-		</span>
-	);
-}
-
-/** Pick crawlers from the directory, filtered by category and search. */
-function BotPicker(props: { bots: BotEntry[]; selected: string[]; onChange: (agents: string[]) => void }) {
-	const [query, setQuery] = React.useState("");
-	const [category, setCategory] = React.useState("AI_CRAWLER");
-	const [custom, setCustom] = React.useState("");
-	const selected = new Set(props.selected.map((a) => a.toLowerCase()));
-	const toggle = (token: string, on: boolean) =>
-		props.onChange(on ? [...props.selected, token] : props.selected.filter((a) => a.toLowerCase() !== token.toLowerCase()));
-
-	const q = query.trim().toLowerCase();
-	const seen = new Set<string>();
-	const visible = props.bots.filter((b) => {
-		if (category !== "all" && b.category !== category) return false;
-		if (q && !`${b.name} ${b.token} ${b.operator}`.toLowerCase().includes(q)) return false;
-		const key = b.token.toLowerCase();
-		if (seen.has(key)) return false;
-		seen.add(key);
-		return true;
-	});
-	const categories = [...new Set(props.bots.map((b) => b.category))].sort((a, b) => categoryLabel(a).localeCompare(categoryLabel(b)));
-	const byToken = tokenIndex(props.bots);
-
-	return (
-		<fieldset className="space-y-3" style={{ minWidth: 0 }}>
-			<legend className="text-sm font-medium">Crawlers</legend>
-			<div className="flex flex-wrap gap-1" aria-live="polite">
-				{props.selected.length === 0 && <span className="text-sm text-kumo-subtle">None picked yet.</span>}
-				{props.selected.map((agent) => {
-					const bot = byToken.get(agent.toLowerCase());
-					return (
-						<button
-							key={agent}
-							type="button"
-							className="inline-flex items-center gap-1 rounded border border-kumo-line px-1.5 py-0.5 font-mono text-xs hover:bg-kumo-tint"
-							onClick={() => toggle(agent, false)}
-							aria-label={`Remove ${agent}`}
-							title={bot?.status === "unverified" ? (bot.note ?? "Unverified token") : bot?.name}
-						>
-							{agent === "*" ? "* (all crawlers)" : agent}
-							{bot?.status === "unverified" && <WarningCircle className="text-kumo-warning" aria-label="unverified" />}
-							<XCircle aria-hidden="true" />
-						</button>
-					);
-				})}
-			</div>
-			<Checkbox label="All crawlers (*)" checked={selected.has("*")} onCheckedChange={(on: boolean) => toggle("*", on)} />
-			<div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-				<div className="sm:w-56">
-					<Select
-						label="Category"
-						value={category}
-						onValueChange={(v: string | null) => setCategory(v ?? "all")}
-						items={[{ value: "all", label: "All categories" }, ...categories.map((c) => ({ value: c, label: CATEGORY_LABELS[c] ?? categoryLabel(c) }))]}
-					/>
-				</div>
-				<div className="flex-1">
-					<Input
-						label="Search"
-						placeholder="Name, token or operator"
-						value={query}
-						onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
-					/>
-				</div>
-			</div>
-			<div className="max-h-64 overflow-y-auto rounded border border-kumo-line" role="group" aria-label="Matching crawlers">
-				{visible.slice(0, 150).map((bot) => (
-					<label key={bot.slug} className="flex cursor-pointer items-start gap-2 border-b border-kumo-line px-3 py-2 text-sm last:border-0 hover:bg-kumo-tint/50">
-						<input
-							type="checkbox"
-							className="mt-1"
-							checked={selected.has(bot.token.toLowerCase())}
-							onChange={(e) => toggle(bot.token, e.target.checked)}
-						/>
-						<span className="min-w-0 flex-1">
-							<span className="flex flex-wrap items-center gap-1.5">
-								<span className="font-medium">{bot.name}</span>
-								<code className="text-xs">{bot.token}</code>
-								<UnverifiedBadge bot={bot} />
-								{bot.delisted && <Badge variant="outline">left Radar</Badge>}
-							</span>
-							<span className="block truncate text-xs text-kumo-subtle" title={bot.description}>
-								{bot.operator}
-								{bot.operator && bot.description ? " · " : ""}
-								{bot.description}
-							</span>
-						</span>
-					</label>
-				))}
-				{visible.length === 0 && <p className="px-3 py-4 text-center text-sm text-kumo-subtle">No crawlers match.</p>}
-				{visible.length > 150 && <p className="px-3 py-2 text-center text-xs text-kumo-subtle">Showing 150 of {visible.length}. Narrow the search.</p>}
-			</div>
-			<form
-				className="flex items-end gap-2"
-				onSubmit={(e) => {
-					e.preventDefault();
-					const token = custom.trim();
-					if (token && isValidToken(token) && !selected.has(token.toLowerCase())) toggle(token, true);
-					setCustom("");
-				}}
-			>
-				<div className="flex-1">
-					<Input
-						label="Add a token that isn't listed"
-						placeholder="ExampleBot"
-						value={custom}
-						onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCustom(e.target.value)}
-					/>
-				</div>
-				<Button type="submit" variant="secondary" disabled={!custom.trim() || !isValidToken(custom.trim())}>
-					Add
-				</Button>
-			</form>
-		</fieldset>
-	);
-}
-
-function RuleDialog(props: { rule: RobotsRule | null; bots: BotEntry[]; onClose: () => void; onDone: (rule: RobotsRule) => void }) {
-	const [draft, setDraft] = React.useState<RobotsRule | null>(props.rule);
-	React.useEffect(() => setDraft(props.rule), [props.rule]);
-	if (!draft) return null;
-	const set = (patch: Partial<RobotsRule>) => setDraft((d) => (d ? { ...d, ...patch } : d));
-	const pathField = PATH_LABELS[draft.kind];
-	const lines = directives(draft);
-	const problem = !draft.name.trim()
-		? "Give the rule a name."
-		: !draft.agents.length
-			? "Pick at least one crawler."
-			: pathField && !draft.path?.trim()
-				? `Enter the ${pathField[0].toLowerCase()}.`
-				: (draft.kind === "filetype" || draft.kind === "filetype_in_folder") && !draft.ext?.trim()
-					? "Enter a file extension."
-					: null;
-
-	return (
-		<Dialog.Root open={props.rule !== null} onOpenChange={(open) => !open && props.onClose()}>
-			<Dialog className="max-h-[90vh] overflow-y-auto p-6" size="xl">
-				<Dialog.Title className="text-lg font-semibold">{draft.name ? draft.name : "New rule"}</Dialog.Title>
-				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">
-					Each rule becomes its own group in robots.txt, with its name as a comment. Crawlers follow only the groups that name
-					them, and the most specific path wins.
-				</Dialog.Description>
-				<form
-					className="mt-4 space-y-4"
-					onSubmit={(e) => {
-						e.preventDefault();
-						if (!problem) props.onDone(draft);
-					}}
-				>
-					<Input label="Name" value={draft.name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ name: e.target.value })} required />
-					<Input
-						label="Description (optional)"
-						value={draft.description ?? ""}
-						onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ description: e.target.value })}
-					/>
-					<div className="grid gap-3 sm:grid-cols-2">
-						<Select
-							label="Applies to"
-							value={draft.kind}
-							onValueChange={(v: string | null) => set({ kind: (v ?? "entire_site") as RuleKind })}
-							items={Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }))}
-						/>
-						{draft.kind !== "allow_exception" && (
-							<Select
-								label="Action"
-								value={draft.directive}
-								onValueChange={(v: string | null) => set({ directive: v === "allow" ? "allow" : "disallow" })}
-								items={[
-									{ value: "disallow", label: "Block (Disallow)" },
-									{ value: "allow", label: "Allow" },
-								]}
-							/>
-						)}
+		<Dialog.Root open onOpenChange={(open) => !open && !busy && props.onClose()}>
+			<Dialog className="max-h-[90vh] overflow-y-auto p-6" size="lg">
+				<Dialog.Title className="text-lg font-semibold">{c.title}</Dialog.Title>
+				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">{c.body}</Dialog.Description>
+				{c.findings && c.findings.length > 0 && (
+					<ul className="mt-3 space-y-1.5">
+						{c.findings.map((f, i) => (
+							<li key={`${f.code}-${i}`} className="flex items-start gap-2 text-sm">
+								<Warning className="mt-0.5 shrink-0 text-kumo-warning" aria-hidden="true" />
+								<span>{f.message}</span>
+							</li>
+						))}
+					</ul>
+				)}
+				{error && (
+					<div className="mt-3">
+						<Banner variant="error" role="alert" description={error} />
 					</div>
-					{pathField && (
-						<Input
-							label={pathField[0]}
-							placeholder={pathField[1]}
-							value={draft.path ?? ""}
-							onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ path: e.target.value })}
-						/>
-					)}
-					{(draft.kind === "filetype" || draft.kind === "filetype_in_folder") && (
-						<Input label="File extension" placeholder="pdf" value={draft.ext ?? ""} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ ext: e.target.value })} />
-					)}
-					{draft.kind === "allow_exception" && (
-						<Input
-							label="Item to allow inside it"
-							placeholder="/members/welcome/"
-							value={draft.allow ?? ""}
-							onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ allow: e.target.value })}
-						/>
-					)}
-					{draft.kind === "single_page" && (
-						<Checkbox
-							label="Strict: match this path only, not longer paths that start with it"
-							checked={draft.strict ?? false}
-							onCheckedChange={(on: boolean) => set({ strict: on })}
-						/>
-					)}
-					<div className="rounded bg-kumo-tint/50 px-3 py-2">
-						<p className="text-xs text-kumo-subtle">Writes</p>
-						<pre className="font-mono text-xs">{lines.map((l) => `${l.directive}: ${l.value}`).join("\n")}</pre>
-					</div>
-					<BotPicker bots={props.bots} selected={draft.agents} onChange={(agents) => set({ agents })} />
-					{problem && <p className="text-sm text-kumo-subtle">{problem}</p>}
-					<div className="flex justify-end gap-2">
-						<Button type="button" variant="secondary" onClick={props.onClose}>
-							Cancel
-						</Button>
-						<Button type="submit" variant="primary" disabled={Boolean(problem)}>
-							Done
-						</Button>
-					</div>
-				</form>
+				)}
+				<div className="mt-5 flex justify-end gap-2">
+					<Button type="button" variant="secondary" disabled={busy} onClick={props.onClose}>
+						Cancel
+					</Button>
+					<Button
+						type="button"
+						variant={c.destructive ? "destructive" : "primary"}
+						disabled={busy}
+						onClick={async () => {
+							setBusy(true);
+							setError(undefined);
+							try {
+								await c.onConfirm();
+								props.onClose();
+							} catch (cause) {
+								setError(errorText(cause, "That didn't work"));
+							} finally {
+								setBusy(false);
+							}
+						}}
+					>
+						{busy ? "Working…" : c.confirmLabel}
+					</Button>
+				</div>
 			</Dialog>
 		</Dialog.Root>
 	);
 }
 
 function Tester(props: { robotsTxt: string; bots: BotEntry[]; siteUrl: string }) {
-	const [agent, setAgent] = React.useState("GPTBot");
+	const [agent, setAgent] = React.useState("Googlebot");
 	const [url, setUrl] = React.useState("/");
 	const tokens = React.useMemo(() => [...new Set(props.bots.map((b) => b.token))].sort((a, b) => a.localeCompare(b)), [props.bots]);
 	const token = agent.trim();
 	const verdict = token && url.trim() ? evaluate(props.robotsTxt, [token], url.trim(), { encodePath: true }) : null;
 	const lines = props.robotsTxt.split("\n");
-
 	return (
 		<section className="space-y-3 rounded-lg border p-4" aria-labelledby="robots-tester">
 			<h2 id="robots-tester" className="text-base font-semibold">
 				Can a crawler fetch a URL?
 			</h2>
-			<p className="text-sm text-kumo-subtle">
-				Tests the robots.txt above (including unsaved changes) the way Googlebot reads it: the crawler's own groups, else{" "}
-				<code>*</code>; longest match wins; Allow wins ties.
-			</p>
+			<p className="text-sm text-kumo-subtle">Tests the robots.txt being served, the way Google reads it.</p>
 			<div className="flex flex-col gap-2 sm:flex-row sm:items-end">
 				<div className="sm:w-56">
 					<Input label="Crawler token" list="cw-robots-tokens" value={agent} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAgent(e.target.value)} />
@@ -344,29 +138,20 @@ function Tester(props: { robotsTxt: string; bots: BotEntry[]; siteUrl: string })
 					</datalist>
 				</div>
 				<div className="flex-1">
-					<Input
-						label="URL or path"
-						placeholder={`${props.siteUrl || "https://example.com"}/some/page/`}
-						value={url}
-						onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUrl(e.target.value)}
-					/>
+					<Input label="URL or path" placeholder={`${props.siteUrl || "https://example.com"}/some/page/`} value={url} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUrl(e.target.value)} />
 				</div>
 			</div>
 			<div aria-live="polite" className="text-sm">
 				{verdict && (
 					<p className="flex items-start gap-2">
-						{verdict.allowed ? (
-							<CheckCircle className="mt-0.5 shrink-0 text-kumo-success" aria-hidden="true" />
-						) : (
-							<XCircle className="mt-0.5 shrink-0 text-kumo-danger" aria-hidden="true" />
-						)}
+						{verdict.allowed ? <CheckCircle className="mt-0.5 shrink-0 text-kumo-success" aria-hidden="true" /> : <XCircle className="mt-0.5 shrink-0 text-kumo-danger" aria-hidden="true" />}
 						<span>
 							<strong>{verdict.allowed ? "Allowed" : "Blocked"}</strong> for <code>{token}</code> at <code>{verdict.path}</code>.{" "}
 							{verdict.matchedDirective === "none"
 								? verdict.scope === "specific"
-									? `${token} has its own group(s) and none of their rules match, so it may fetch it.`
+									? `${token} has its own rules and none of them match, so it may fetch it.`
 									: "No rule matches, so it may fetch it."
-								: `Decided by line ${verdict.matchedLine}: ${lines[verdict.matchedLine - 1]?.trim()} (${verdict.scope === "specific" ? `${token}'s own group` : "the * group"}).`}
+								: `Decided by line ${verdict.matchedLine}: ${lines[verdict.matchedLine - 1]?.trim()} (${verdict.scope === "specific" ? `${token}'s own group` : "the rules for all crawlers"}).`}
 						</span>
 					</p>
 				)}
@@ -375,96 +160,370 @@ function Tester(props: { robotsTxt: string; bots: BotEntry[]; siteUrl: string })
 	);
 }
 
-type TokenSource = PageData["radar"]["tokenSource"];
-
-/** Save, replace or remove the Radar token here (a secret setting, stored encrypted). */
-function RadarTokenForm(props: { source: TokenSource; onChanged: (source: TokenSource, message: string) => void; onCancel?: () => void }) {
-	const [token, setToken] = React.useState("");
-	const [pending, setPending] = React.useState<"save" | "clear">();
-	const [error, setError] = React.useState<string>();
-	const send = async (body: { token?: string; clear?: boolean }) => {
-		setPending(body.clear ? "clear" : "save");
-		setError(undefined);
-		try {
-			const result = await post<{ tokenSource: TokenSource }>("radar-token", body);
-			setToken("");
-			props.onChanged(result.tokenSource, body.clear ? "Radar token removed." : "Radar token saved.");
-		} catch (cause) {
-			setError(errorText(cause, "Could not save the token"));
-		} finally {
-			setPending(undefined);
-		}
-	};
+function ServedFile(props: { text: string; emdash: PageData["emdash"]; config: RobotsConfig; siteUrl: string }) {
+	const [status, copy] = useCopy();
+	const rows = props.text.split("\n").length;
 	return (
-		<form
-			className="space-y-3"
-			onSubmit={(e) => {
-				e.preventDefault();
-				if (token.trim()) void send({ token: token.trim() });
-			}}
-		>
-			<div className="sm:max-w-md">
-				<SecretField
-					label="Cloudflare Radar API token"
-					saved={props.source === "settings"}
-					value={token}
-					onChange={setToken}
-					description="Create a Custom Token with Account → Radar → Read. Stored encrypted."
-					onClear={() => void send({ clear: true })}
-					clearing={pending === "clear"}
-					disabled={Boolean(pending)}
-				/>
-			</div>
-			{error && <Banner variant="error" role="alert" description={error} />}
-			<div className="flex gap-2">
-				<Button type="submit" variant="primary" disabled={Boolean(pending) || !token.trim()}>
-					{pending === "save" ? "Saving…" : "Save token"}
-				</Button>
-				{props.onCancel && (
-					<Button type="button" variant="secondary" disabled={Boolean(pending)} onClick={props.onCancel}>
-						Cancel
+		<section className="space-y-3" aria-labelledby="robots-served">
+			<div className="flex flex-wrap items-center justify-between gap-2">
+				<h2 id="robots-served" className="text-base font-semibold">
+					What's being served
+				</h2>
+				<div className="flex items-center gap-2">
+					<span className="text-xs text-kumo-subtle" role="status" aria-live="polite">
+						{status}
+					</span>
+					<Button variant="secondary" icon={<Copy />} onClick={() => copy(props.text)}>
+						Copy
 					</Button>
-				)}
+					{props.siteUrl && (
+						<a className="text-sm underline" href={`${props.siteUrl}/robots.txt`} target="_blank" rel="noreferrer noopener">
+							Open /robots.txt
+						</a>
+					)}
+				</div>
 			</div>
-		</form>
+			{props.config.importNotes && props.config.importNotes.length > 0 && (
+				<div className="rounded-lg border border-kumo-line bg-kumo-tint/30 p-3 text-sm">
+					<p className="font-medium">
+						{props.config.importedAt ? `Set up from EmDash's robots.txt on ${dateTimeFormat.format(new Date(props.config.importedAt))}` : "What's new"}
+					</p>
+					<ul className="mt-1 list-disc space-y-0.5 pl-5 text-kumo-subtle">
+						{props.config.importNotes.map((n) => (
+							<li key={n}>{n}</li>
+						))}
+					</ul>
+				</div>
+			)}
+			<textarea readOnly aria-label="robots.txt being served" className="w-full resize-none rounded-lg border bg-kumo-tint/40 p-3 font-mono text-xs" rows={rows} value={props.text} />
+			<p className="text-xs text-kumo-subtle">Turn the Robots.txt Rules feature off (on Plugins → Coywolf Pack) to serve EmDash's own robots.txt again. Your rules are kept for next time.</p>
+			<details className="rounded-lg border border-kumo-line px-3 py-2">
+				<summary className="cursor-pointer text-sm font-medium">EmDash's original robots.txt (for reference)</summary>
+				<p className="mt-2 text-xs text-kumo-subtle">
+					{props.emdash.custom ? "From EmDash's SEO settings." : "EmDash's built-in default."} This is what EmDash serves when this feature is off.
+				</p>
+				<pre className="mt-1 overflow-x-auto font-mono text-xs">{props.emdash.text}</pre>
+			</details>
+		</section>
+	);
+}
+
+/** "List the site's sitemap", up top, with a gentle dismissible note when it's off. */
+function SitemapOption(props: { config: RobotsConfig; siteUrl: string; busy: boolean; noteDismissed: boolean; onChange: (on: boolean) => void; onDismiss: () => void }) {
+	return (
+		<section className="space-y-2 rounded-lg border border-kumo-line p-4" aria-labelledby="robots-sitemap">
+			<h2 id="robots-sitemap" className="sr-only">
+				Sitemap
+			</h2>
+			<Checkbox
+				label={`List the site's sitemap (${props.siteUrl || "your site"}/sitemap.xml)`}
+				checked={props.config.includeSitemap}
+				disabled={props.busy}
+				onCheckedChange={(on: boolean) => props.onChange(on)}
+			/>
+			<p className="pl-6 text-xs text-kumo-subtle">A Sitemap line tells every search engine where your sitemap is. Turn it off if you'd rather submit sitemaps yourself, for example in Google Search Console.</p>
+			{!props.config.includeSitemap && !props.noteDismissed && (
+				<div className="flex items-start gap-2 rounded bg-kumo-tint/40 px-3 py-2 text-sm" role="note">
+					<Info className="mt-0.5 shrink-0 text-kumo-subtle" aria-hidden="true" />
+					<span className="flex-1">
+						Your sitemap isn't listed in robots.txt. That's fine if you submit it in Search Console; other search engines may find it more slowly.{" "}
+						<button type="button" className="font-medium underline" disabled={props.busy} onClick={() => props.onChange(true)}>
+							List it
+						</button>
+					</span>
+					<Button type="button" variant="ghost" shape="square" size="sm" aria-label="Don't show this note again" onClick={props.onDismiss}>
+						<X aria-hidden="true" />
+					</Button>
+				</div>
+			)}
+		</section>
+	);
+}
+
+/** Lines added automatically so crawlers can always read discovery files (/.well-known/, llms.txt…). */
+function AutomaticLines(props: { config: RobotsConfig }) {
+	const resolved = resolveAgents(props.config);
+	const byValue = new Map<string, string[]>();
+	for (const [k, entry] of resolved) {
+		for (const l of entry.lines.filter((x) => x.auto)) byValue.set(l.value, [...(byValue.get(l.value) ?? []), k === "*" ? "all other crawlers" : entry.token]);
+	}
+	if (!byValue.size) return null;
+	return (
+		<section className="space-y-2 rounded-lg border border-kumo-line p-4" aria-labelledby="robots-auto">
+			<h2 id="robots-auto" className="flex items-center gap-2 text-base font-semibold">
+				Automatic <Badge variant="secondary">{byValue.size}</Badge>
+			</h2>
+			<p className="text-sm text-kumo-subtle">
+				Added so crawlers you've blocked can still read your discovery files ({[...byValue.keys()].join(", ")}), which tell AI agents and other tools about your site
+				{props.config.automatic?.llms ? "; llms.txt is included because Discovery's llms.txt is on" : ""}. Change this under Settings and history.
+			</p>
+			<ul className="space-y-1 text-xs">
+				{[...byValue].map(([value, who]) => (
+					<li key={value}>
+						<code>Allow: {value}</code> <span className="text-kumo-subtle">for {who.length > 4 ? `${who.slice(0, 3).join(", ")} and ${who.length - 3} more` : who.join(", ")}</span>
+					</li>
+				))}
+			</ul>
+		</section>
+	);
+}
+
+function RulesList(props: {
+	config: RobotsConfig;
+	bots: BotEntry[];
+	busy: boolean;
+	onEdit: (rule: RobotsRule) => void;
+	onToggle: (rule: RobotsRule, on: boolean) => void;
+	onDelete: (rule: RobotsRule) => void;
+	onDuplicate: (rule: RobotsRule) => void;
+	onAdd: () => void;
+}) {
+	const byToken = tokenIndex(props.bots);
+	const nameOf = (t: string) => byToken.get(t.toLowerCase())?.name ?? t;
+	if (!props.config.rules.length) {
+		return (
+			<div className="rounded-lg border py-10 text-center text-kumo-subtle">
+				<Robot size={40} className="mx-auto mb-3 opacity-30" aria-hidden="true" />
+				<p className="text-base font-medium">No rules</p>
+				<p className="mt-1 text-sm">Every crawler can crawl everything{props.config.emdashLines ? " except EmDash's admin" : ""}.</p>
+				<div className="mt-3">
+					<Button variant="primary" icon={<Plus />} onClick={props.onAdd}>
+						Add a rule
+					</Button>
+				</div>
+			</div>
+		);
+	}
+	return (
+		<ul className="rounded-lg border">
+			{props.config.rules.map((rule) => {
+				const sentence = capital(describeRule(rule, nameOf));
+				const lines = (() => {
+					try {
+						return directives(rule);
+					} catch {
+						return [];
+					}
+				})();
+				const unverified = rule.agents.filter((a) => byToken.get(a.toLowerCase())?.status === "unverified");
+				return (
+					<li key={rule.id} className={`flex items-start gap-3 border-b px-4 py-3 text-sm last:border-0 ${rule.enabled ? "" : "opacity-60"}`}>
+						<Switch size="sm" aria-label={`${rule.name}: ${rule.enabled ? "on" : "off"}`} checked={rule.enabled} disabled={props.busy} onCheckedChange={(on) => props.onToggle(rule, on)} />
+						<div className="min-w-0 flex-1">
+							<div className="font-medium">{rule.name || sentence}</div>
+							{rule.name && rule.name !== sentence && <div className="text-xs">{sentence}</div>}
+							{rule.description && <div className="text-xs text-kumo-subtle">{rule.description}</div>}
+							<div className="mt-1 flex flex-wrap items-center gap-1">
+								<Badge variant={rule.directive === "allow" && rule.kind !== "allow_exception" ? "secondary" : "outline"}>{rule.directive === "allow" && rule.kind !== "allow_exception" ? "Allow" : "Block"}</Badge>
+								{rule.agents.includes("*") ? <Badge variant="secondary">all crawlers</Badge> : <Badge variant="secondary">{rule.agents.length} crawler{rule.agents.length === 1 ? "" : "s"}</Badge>}
+								{unverified.length > 0 && (
+									<span title={`Unverified tokens: ${unverified.join(", ")}`}>
+										<Badge variant="warning">{unverified.length} unverified</Badge>
+									</span>
+								)}
+								{!rule.enabled && <Badge variant="outline">off</Badge>}
+							</div>
+							<details className="mt-1">
+								<summary className="cursor-pointer text-xs text-kumo-subtle">robots.txt lines</summary>
+								<code className="block text-xs text-kumo-subtle">
+									{lines.map((d) => `${d.directive}: ${d.value}`).join(" · ")} — for {rule.agents.includes("*") ? "*" : rule.agents.slice(0, 6).join(", ")}
+									{rule.agents.length > 6 ? ` +${rule.agents.length - 6} more` : ""}
+								</code>
+							</details>
+						</div>
+						<DropdownMenu>
+							<DropdownMenu.Trigger render={<Button type="button" variant="ghost" shape="square" icon={<DotsThree aria-hidden="true" />} aria-label={`Actions for ${rule.name}`} />} />
+							<DropdownMenu.Content className="p-1">
+								<DropdownMenu.Item className="py-1 data-highlighted:bg-kumo-fill" icon={<PencilSimple className="me-1.5 size-3.5" aria-hidden="true" />} onClick={() => props.onEdit(rule)}>
+									Edit
+								</DropdownMenu.Item>
+								<DropdownMenu.Item className="py-1 data-highlighted:bg-kumo-fill" icon={<Plus className="me-1.5 size-3.5" aria-hidden="true" />} onClick={() => props.onDuplicate(rule)}>
+									Duplicate and edit
+								</DropdownMenu.Item>
+								<DropdownMenu.Separator className="my-0.5" />
+								<DropdownMenu.Item className="py-1 data-highlighted:bg-kumo-fill" icon={<Trash className="me-1.5 size-3.5" aria-hidden="true" />} onClick={() => props.onDelete(rule)}>
+									Delete
+								</DropdownMenu.Item>
+							</DropdownMenu.Content>
+						</DropdownMenu>
+					</li>
+				);
+			})}
+		</ul>
+	);
+}
+
+function SettingsTab(props: {
+	data: PageData;
+	config: RobotsConfig;
+	onSave: (config: RobotsConfig, label: string) => Promise<void>;
+	onRestore: (item: HistoryItem) => void;
+	onReset: () => void;
+}) {
+	const [draft, setDraft] = React.useState(props.config);
+	const [saving, setSaving] = React.useState(false);
+	const [error, setError] = React.useState<string>();
+	React.useEffect(() => setDraft(props.config), [props.config]);
+	const dirty = JSON.stringify(draft) !== JSON.stringify(props.config);
+	const update = (p: Partial<RobotsConfig>) => setDraft((d) => ({ ...d, ...p }));
+	const problem = dirty ? checkConfig(draft, props.data.siteUrl || undefined) : null;
+	const risks = dirty ? analyzeConfigChange(props.config, draft, props.data.siteUrl || undefined) : [];
+	const [ack, setAck] = React.useState(false);
+	React.useEffect(() => setAck(false), [draft]);
+
+	return (
+		<div className="space-y-6">
+			<section className="space-y-3" aria-labelledby="robots-settings">
+				<h2 id="robots-settings" className="text-base font-semibold">
+					Settings
+				</h2>
+				<Checkbox
+					label={`Keep EmDash's admin private (Disallow: /_emdash/ for every crawler)`}
+					checked={draft.emdashLines}
+					onCheckedChange={(on: boolean) => update({ emdashLines: on })}
+				/>
+				<Checkbox
+					label="Keep media crawlable (Allow: /_emdash/api/media/, so your images can appear in image search)"
+					checked={draft.allowMedia}
+					onCheckedChange={(on: boolean) => update({ allowMedia: on })}
+				/>
+				<Checkbox
+					label="Crawlers named in a rule also keep the rules for all crawlers (recommended)"
+					checked={draft.inheritGeneral}
+					onCheckedChange={(on: boolean) => update({ inheritGeneral: on })}
+				/>
+				<p className="-mt-2 pl-6 text-xs text-kumo-subtle">
+					In robots.txt, a crawler that's named anywhere ignores every rule for “all crawlers” (RFC 9309). With this on, Coywolf Pack copies those rules into its group, except where its own
+					rules say otherwise.
+				</p>
+				<Checkbox
+					label="Keep discovery files readable for every crawler (/.well-known/, and llms.txt while Discovery's llms.txt is on)"
+					checked={draft.discoveryAllowances}
+					onCheckedChange={(on: boolean) => update({ discoveryAllowances: on })}
+				/>
+				{draft.discoveryAllowances && (
+					<InputArea
+						label="More discovery paths to keep readable (one per line)"
+						rows={2}
+						placeholder="/agents.json"
+						value={draft.discoveryPaths.join("\n")}
+						onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => update({ discoveryPaths: e.target.value.split("\n") })}
+						className="font-mono text-xs"
+					/>
+				)}
+				<Checkbox label="Write rule names as comments" checked={draft.comments} onCheckedChange={(on: boolean) => update({ comments: on })} />
+				<InputArea
+					label="More sitemaps (one URL or path per line)"
+					rows={3}
+					value={draft.sitemaps.join("\n")}
+					onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => update({ sitemaps: e.target.value.split("\n") })}
+					className="font-mono text-xs"
+				/>
+				<InputArea
+					label="Extra lines (added as written, e.g. Content-Signal or Crawl-delay; for experts)"
+					rows={5}
+					value={draft.extra}
+					onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => update({ extra: e.target.value })}
+					className="font-mono text-xs"
+				/>
+				<div aria-live="polite" className="space-y-2">
+					{problem && <Banner variant="error" role="alert" description={problem} />}
+					{!problem && risks.length > 0 && (
+						<>
+							<ul className="space-y-1">
+								{risks.map((f, i) => (
+									<li key={`${f.code}-${i}`} className="flex items-start gap-2 text-sm">
+										<Warning className="mt-0.5 shrink-0 text-kumo-warning" aria-hidden="true" />
+										{f.message}
+									</li>
+								))}
+							</ul>
+							<Checkbox label="I understand. Save anyway." checked={ack} onCheckedChange={(on: boolean) => setAck(on)} />
+						</>
+					)}
+				</div>
+				{error && <Banner variant="error" role="alert" description={error} />}
+				<div className="flex gap-2">
+					<Button
+						variant="primary"
+						disabled={!dirty || Boolean(problem) || saving || (risks.length > 0 && !ack)}
+						onClick={async () => {
+							setSaving(true);
+							setError(undefined);
+							try {
+								await props.onSave(draft, "Changed settings");
+							} catch (cause) {
+								setError(errorText(cause, "Could not save"));
+							} finally {
+								setSaving(false);
+							}
+						}}
+					>
+						{saving ? "Saving…" : "Save settings"}
+					</Button>
+					{dirty && (
+						<Button variant="secondary" onClick={() => setDraft(props.config)}>
+							Discard changes
+						</Button>
+					)}
+				</div>
+			</section>
+
+			<section className="space-y-2" aria-labelledby="robots-history">
+				<div className="flex flex-wrap items-center justify-between gap-2">
+					<h2 id="robots-history" className="text-base font-semibold">
+						Version history
+					</h2>
+					<Button variant="secondary" onClick={props.onReset}>
+						Reset to EmDash's original
+					</Button>
+				</div>
+				<p className="text-sm text-kumo-subtle">The last 20 saved versions. Restoring one saves it as a new version, so you can always go back.</p>
+				{props.data.history.length === 0 ? (
+					<p className="text-sm text-kumo-subtle">No versions yet.</p>
+				) : (
+					<ul className="rounded-lg border">
+						{props.data.history.map((h, i) => (
+							<li key={h.id} className="flex flex-wrap items-center gap-3 border-b px-4 py-2 text-sm last:border-0">
+								<div className="min-w-0 flex-1">
+									<div className="font-medium">
+										{h.label} {i === 0 && <Badge variant="secondary">current</Badge>}
+									</div>
+									<div className="text-xs text-kumo-subtle">
+										{dateTimeFormat.format(new Date(h.at))}
+										{h.by ? ` · ${h.by}` : ""} · {h.rules} rule{h.rules === 1 ? "" : "s"}
+									</div>
+								</div>
+								{i > 0 && (
+									<Button variant="secondary" size="sm" onClick={() => props.onRestore(h)}>
+										Restore
+									</Button>
+								)}
+							</li>
+						))}
+					</ul>
+				)}
+			</section>
+		</div>
 	);
 }
 
 export function RobotsPage() {
 	const [data, setData] = React.useState<PageData>();
-	const [config, setConfig] = React.useState<RobotsConfig>();
 	const [bots, setBots] = React.useState<BotEntry[]>([]);
 	const [error, setError] = React.useState<string>();
 	const [notice, setNotice] = React.useState<string>();
-	const [editing, setEditing] = React.useState<{ rule: RobotsRule; index: number } | null>(null);
-	const [saving, setSaving] = React.useState(false);
-	const [dirty, setDirty] = React.useState(false);
-	const [syncing, setSyncing] = React.useState(false);
-	const [editingToken, setEditingToken] = React.useState(false);
-	/** The admin closed the EmDash robots.txt notice (saved server-side; see robots/dismiss-notice). */
-	const [noticeHidden, setNoticeHidden] = React.useState(false);
-	React.useEffect(() => {
-		if (data?.emdashNoticeDismissed) setNoticeHidden(true);
-	}, [data?.emdashNoticeDismissed]);
-	/** Token changes only touch the Radar status, so unsaved rule edits survive. */
-	const tokenChanged = (source: TokenSource, message: string) => {
-		setData((d) => (d ? { ...d, radar: { ...d.radar, tokenSource: source, tokenConfigured: Boolean(source) } } : d));
-		setEditingToken(false);
-		setError(undefined);
-		setNotice(message);
-	};
+	const [tab, setTab] = React.useState("rules");
+	const [busy, setBusy] = React.useState(false);
+	const [wizard, setWizard] = React.useState<{ rule: RobotsRule | null; id: string } | null>(null);
+	const [confirm, setConfirm] = React.useState<Confirm | null>(null);
 
 	const load = React.useCallback(async () => {
 		setError(undefined);
 		try {
-			const [page, directory] = await Promise.all([
-				parseApiResponse<PageData>(await apiFetch(`${API}/get`), "Could not load robots.txt rules"),
-				parseApiResponse<{ bots: BotEntry[] }>(await apiFetch(`${API}/bots`), "Could not load the crawler directory"),
-			]);
+			const [page, directory] = await Promise.all([get<PageData>("get", "Could not load robots.txt rules"), get<{ bots: BotEntry[] }>("bots", "Could not load the crawler directory")]);
 			setData(page);
-			setConfig(page.config);
 			setBots(directory.bots);
-			setDirty(false);
 		} catch (cause) {
 			setError(errorText(cause, "Could not load robots.txt rules"));
 		}
@@ -473,74 +532,62 @@ export function RobotsPage() {
 		void load();
 	}, [load]);
 
-	const update = (patch: Partial<RobotsConfig>) => {
-		setConfig((c) => (c ? { ...c, ...patch } : c));
-		setDirty(true);
-		setNotice(undefined);
-	};
-	const setRules = (rules: RobotsRule[]) => update({ rules });
+	const config = data?.config;
+	const summary = React.useMemo(() => (config && data ? summarize(config, data.siteUrl, bots) : []), [config, data, bots]);
 
-	const preview = React.useMemo(() => (config && data ? generate(config, { siteUrl: data.siteUrl }) : ""), [config, data]);
-
-	const save = async () => {
-		if (!config) return;
-		setSaving(true);
-		setError(undefined);
+	/** Save a whole config (the server re-checks it), then refresh history. */
+	const persist = async (next: RobotsConfig, label: string, message?: string) => {
+		setBusy(true);
 		try {
-			const result = await post<{ config: RobotsConfig }>("save", config);
-			setConfig(result.config);
-			setData((d) => (d ? { ...d, saved: true } : d));
-			setDirty(false);
-			setNotice("Saved. /robots.txt now serves these rules (other Worker instances pick them up within a minute).");
-		} catch (cause) {
-			setError(errorText(cause, "Could not save"));
+			const result = await post<{ config: RobotsConfig; preview: string; warnings: Finding[] }>("save", { config: next, label });
+			const page = await get<PageData>("get", "Could not reload");
+			setData({ ...page, config: result.config, preview: result.preview, warnings: result.warnings ?? [] });
+			setNotice(message ?? "Saved. /robots.txt now serves this version (other Worker instances pick it up within a minute).");
+			setError(undefined);
 		} finally {
-			setSaving(false);
+			setBusy(false);
 		}
 	};
-
-	const refresh = async () => {
-		setSyncing(true);
-		setError(undefined);
-		try {
-			const state = await post<SyncState>("refresh", {});
-			if (!state.ok) throw new Error(state.error ?? "Radar sync failed");
-			setNotice(`Crawler list refreshed from Cloudflare Radar: ${state.total} bots, ${state.added} new, ${state.updated} updated.`);
-			await load();
-		} catch (cause) {
-			const message = errorText(cause, "Radar sync failed");
-			setError(/turned off/i.test(message) ? "Turn on “Weekly crawler list from Cloudflare Radar” under Coywolf Pack → Features first." : message);
-		} finally {
-			setSyncing(false);
-		}
-	};
-
-	const addFromPreset = (preset?: Omit<RobotsRule, "id" | "enabled">) =>
-		setEditing({
-			rule: preset
-				? { ...preset, agents: [...preset.agents], id: newId(), enabled: true }
-				: { id: newId(), name: "", enabled: true, agents: ["*"], directive: "disallow", kind: "folder", path: "" },
-			index: -1,
-		});
-
-	const move = (index: number, by: number) => {
-		if (!config) return;
-		const rules = [...config.rules];
-		const [rule] = rules.splice(index, 1);
-		rules.splice(index + by, 0, rule);
-		setRules(rules);
-	};
-
-	const bySlugToken = React.useMemo(() => tokenIndex(bots), [bots]);
-	const unverifiedCount = bots.filter((b) => b.status === "unverified").length;
 
 	if (!data || !config) {
-		return error ? <Banner variant="error" role="alert" title="Something went wrong" description={error} /> : (
+		return error ? (
+			<Banner variant="error" role="alert" title="Something went wrong" description={error} />
+		) : (
 			<div className="py-12 text-center text-kumo-subtle">
 				<Loader />
 			</div>
 		);
 	}
+
+	const withRule = (rule: RobotsRule, patch?: Partial<RobotsConfig>): RobotsConfig => ({
+		...config,
+		...patch,
+		rules: config.rules.some((r) => r.id === rule.id) ? config.rules.map((r) => (r.id === rule.id ? rule : r)) : [...config.rules, rule],
+	});
+
+	const applyTemplate = (id: string) => {
+		const t = TEMPLATES.find((x) => x.id === id);
+		if (!t) return;
+		const next: RobotsConfig = { ...config, rules: t.rules(bots).map((r) => ({ ...r, id: newId() })) };
+		const problem = checkConfig(next, data.siteUrl || undefined);
+		setConfirm({
+			title: `Use “${t.name}”?`,
+			body: `${t.description} This replaces your ${config.rules.length} rule${config.rules.length === 1 ? "" : "s"}; the current version stays in Version history.${problem ? ` It can't be used: ${problem}` : ""}`,
+			findings: analyzeConfigChange(config, next, data.siteUrl || undefined),
+			confirmLabel: "Use this template",
+			onConfirm: async () => {
+				if (problem) throw new Error(problem);
+				await persist(next, `Template: ${t.name}`, `Applied “${t.name}”.`);
+			},
+		});
+	};
+
+	const addCustomBot = (token: string) => {
+		if (bots.some((b) => b.token.toLowerCase() === token.toLowerCase())) return;
+		void post<{ bots: BotEntry[] }>("bot", { action: "save-custom", name: token, token, category: "OTHER" })
+			.then((r) => setBots(r.bots))
+			.catch(() => undefined);
+	};
 
 	return (
 		<div className="space-y-6">
@@ -549,253 +596,217 @@ export function RobotsPage() {
 					<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Robots.txt</h1>
 					<div className="flex shrink-0 justify-end gap-2">
 						<DropdownMenu>
-							<DropdownMenu.Trigger render={<Button variant="secondary" icon={<Plus />}>New rule</Button>} />
-							<DropdownMenu.Content className="p-1">
-								{data.presets.map((preset) => (
-									<DropdownMenu.Item key={preset.name} className="py-1 data-highlighted:bg-kumo-fill" onClick={() => addFromPreset(preset)}>
-										{preset.name}
+							<DropdownMenu.Trigger render={<Button variant="secondary" icon={<Sparkle />}>Templates</Button>} />
+							<DropdownMenu.Content className="max-w-sm p-1">
+								{TEMPLATES.map((t) => (
+									<DropdownMenu.Item key={t.id} className="flex-col items-start py-1.5 data-highlighted:bg-kumo-fill" onClick={() => applyTemplate(t.id)}>
+										<span className="font-medium">{t.name}</span>
+										<span className="text-xs text-kumo-subtle">{t.description}</span>
 									</DropdownMenu.Item>
 								))}
-								<DropdownMenu.Separator className="my-0.5" />
-								<DropdownMenu.Item className="py-1 data-highlighted:bg-kumo-fill" onClick={() => addFromPreset()}>
-									Custom path rule
-								</DropdownMenu.Item>
 							</DropdownMenu.Content>
 						</DropdownMenu>
-						<Button variant="primary" disabled={saving || (!dirty && data.saved)} onClick={() => void save()}>
-							{saving ? "Saving…" : data.saved ? "Save" : "Save and serve"}
+						<Button variant="primary" icon={<Plus />} onClick={() => setWizard({ rule: null, id: newId() })}>
+							Add rule
 						</Button>
 					</div>
 					<p className="col-span-2 text-sm leading-5 text-pretty text-kumo-subtle">
-						Write robots.txt as named rules. EmDash's own lines stay in: its admin and API are blocked for every crawler, media
-						files stay crawlable, and the sitemap is listed. Turn this feature off to go back to EmDash's robots.txt.
+						Decide which crawlers can visit which parts of your site, in plain English. Every change is checked before it's saved, and the file below is what crawlers get.
 					</p>
 				</div>
 			</header>
 
-			<div aria-live="polite">
-				{notice && <Banner variant="default" role="status" title={notice} />}
-				{dirty && !notice && <p className="text-sm text-kumo-subtle">Unsaved changes.</p>}
-			</div>
-			{error && <Banner variant="error" role="alert" title="Something went wrong" description={error} />}
-			{!data.saved && (
+			<section aria-labelledby="robots-summary" className="rounded-lg border border-kumo-line p-4">
+				<h2 id="robots-summary" className="text-base font-semibold">
+					Rules summary
+				</h2>
+				<ul className="mt-2 space-y-1 text-sm">
+					{summary.map((s) => (
+						<li key={s.who} className="flex items-start gap-2">
+							{s.tone === "open" ? (
+								<CheckCircle className="mt-0.5 shrink-0 text-kumo-success" aria-hidden="true" />
+							) : s.tone === "closed" ? (
+								<XCircle className="mt-0.5 shrink-0 text-kumo-danger" aria-hidden="true" />
+							) : (
+								<Warning className="mt-0.5 shrink-0 text-kumo-warning" aria-hidden="true" />
+							)}
+							<span>
+								<strong>{s.who}</strong> {s.text}.
+							</span>
+						</li>
+					))}
+				</ul>
+				{config.emdashLines && <p className="mt-2 text-xs text-kumo-subtle">EmDash's admin and API always stay private.</p>}
+			</section>
+
+			{data.groupChanges.length > 0 && (
 				<Banner
 					variant="default"
-					title="Not serving yet"
-					description="EmDash's robots.txt is served until you save rules here."
-				/>
-			)}
-			{data.emdashRobotsTxt && !data.saved && !noticeHidden && (
-				<Banner
-					variant="alert"
-					title="EmDash has its own custom robots.txt"
-					action={
-						<Button
-							type="button"
-							variant="ghost"
-							shape="square"
-							size="sm"
-							aria-label="Close this notice for good"
-							onClick={() => {
-								setNoticeHidden(true);
-								void apiFetch(`${API}/dismiss-notice`, { method: "POST", headers: { "X-EmDash-Request": "1" } }).catch(() => undefined);
-							}}
-						>
-							<X aria-hidden="true" />
-						</Button>
-					}
+					title="Crawler presets were updated"
 					description={
 						<span>
-							Saved rules here replace it while this feature is on.{" "}
-							<button
-								type="button"
-								className="underline"
-								onClick={() =>
-									update({
-										extra: [config.extra.trim(), (data.emdashRobotsTxt ?? "").split("\n").filter((l) => !/^\s*sitemap\s*:/i.test(l)).join("\n").trim()]
-											.filter(Boolean)
-											.join("\n\n"),
-									})
-								}
-							>
-								Copy its lines into Extra lines
-							</button>
+							Presets now include only crawlers whose operators document that purpose, with verified tokens. Rules made from a preset were updated:{" "}
+							{data.groupChanges.map((c) => `“${c.ruleName}”: ${c.added.length ? `added ${c.added.join(", ")}` : ""}${c.added.length && c.removed.length ? "; " : ""}${c.removed.length ? `removed ${c.removed.join(", ")}` : ""}`).join(". ")}. The previous
+							version is in Version history.
 						</span>
 					}
 				/>
 			)}
-
-			<section className="space-y-2" aria-labelledby="robots-rules">
-				<h2 id="robots-rules" className="text-base font-semibold">
-					Rules
-				</h2>
-				{config.rules.length === 0 ? (
-					<div className="rounded-lg border py-10 text-center text-kumo-subtle">
-						<Robot size={40} className="mx-auto mb-3 opacity-30" aria-hidden="true" />
-						<p className="text-base font-medium">No rules yet</p>
-						<p className="mt-1 text-sm">Every crawler may fetch everything except EmDash's admin. Add a rule to change that.</p>
-					</div>
-				) : (
-					<div className="rounded-lg border">
-						{config.rules.map((rule, index) => (
-							<div key={rule.id} className={`flex items-start gap-3 border-b px-4 py-3 text-sm last:border-0 ${rule.enabled ? "" : "opacity-60"}`}>
-								<Switch
-									size="sm"
-									aria-label={`${rule.name}: ${rule.enabled ? "on" : "off"}`}
-									checked={rule.enabled}
-									onCheckedChange={(on) => setRules(config.rules.map((r, i) => (i === index ? { ...r, enabled: on } : r)))}
-								/>
-								<div className="min-w-0 flex-1">
-									<div className="font-medium">{rule.name}</div>
-									{rule.description && <div className="text-xs text-kumo-subtle">{rule.description}</div>}
-									<div className="mt-1 flex flex-wrap gap-1">
-										{rule.agents.slice(0, 8).map((a) => {
-											const bot = bySlugToken.get(a.toLowerCase());
-											return (
-												<Badge key={a} variant={bot?.status === "unverified" ? "warning" : "secondary"}>
-													{a === "*" ? "all crawlers" : a}
-												</Badge>
-											);
-										})}
-										{rule.agents.length > 8 && <Badge variant="outline">+{rule.agents.length - 8} more</Badge>}
-									</div>
-									<code className="mt-1 block text-xs text-kumo-subtle">
-										{directives(rule)
-											.map((d) => `${d.directive}: ${d.value}`)
-											.join(" · ")}
-									</code>
-								</div>
-								<DropdownMenu>
-									<DropdownMenu.Trigger
-										render={<Button type="button" variant="ghost" shape="square" icon={<DotsThree aria-hidden="true" />} aria-label={`Actions for ${rule.name}`} />}
-									/>
-									<DropdownMenu.Content className="p-1">
-										<DropdownMenu.Item className="py-1 data-highlighted:bg-kumo-fill" icon={<PencilSimple className="me-1.5 size-3.5" aria-hidden="true" />} onClick={() => setEditing({ rule, index })}>
-											Edit
-										</DropdownMenu.Item>
-										{index > 0 && (
-											<DropdownMenu.Item className="py-1 data-highlighted:bg-kumo-fill" icon={<ArrowUp className="me-1.5 size-3.5" aria-hidden="true" />} onClick={() => move(index, -1)}>
-												Move up
-											</DropdownMenu.Item>
-										)}
-										{index < config.rules.length - 1 && (
-											<DropdownMenu.Item className="py-1 data-highlighted:bg-kumo-fill" icon={<ArrowDown className="me-1.5 size-3.5" aria-hidden="true" />} onClick={() => move(index, 1)}>
-												Move down
-											</DropdownMenu.Item>
-										)}
-										<DropdownMenu.Separator className="my-0.5" />
-										<DropdownMenu.Item
-											className="py-1 data-highlighted:bg-kumo-fill"
-											icon={<Trash className="me-1.5 size-3.5" aria-hidden="true" />}
-											onClick={() => window.confirm(`Delete “${rule.name}”?`) && setRules(config.rules.filter((_, i) => i !== index))}
-										>
-											Delete
-										</DropdownMenu.Item>
-									</DropdownMenu.Content>
-								</DropdownMenu>
-							</div>
-						))}
-					</div>
-				)}
-			</section>
-
-			<section className="space-y-3" aria-labelledby="robots-options">
-				<h2 id="robots-options" className="text-base font-semibold">
-					Sitemaps and extras
-				</h2>
-				<Checkbox
-					label={`List EmDash's sitemap (${data.siteUrl || "your site"}/sitemap.xml)`}
-					checked={config.includeSitemap}
-					onCheckedChange={(on: boolean) => update({ includeSitemap: on })}
+			{data.warnings.length > 0 && (
+				<Banner
+					variant="alert"
+					title="Check your Extra lines"
+					description={
+						<ul className="list-disc pl-5">
+							{data.warnings.map((w, i) => (
+								<li key={`${w.code}-${i}`}>{w.message}</li>
+							))}
+						</ul>
+					}
 				/>
-				<Checkbox
-					label="Keep media crawlable (Allow: /_emdash/api/media/, so images appear in image search)"
-					checked={config.allowMedia}
-					onCheckedChange={(on: boolean) => update({ allowMedia: on })}
-				/>
-				<Checkbox label="Write rule names as comments" checked={config.comments} onCheckedChange={(on: boolean) => update({ comments: on })} />
-				<InputArea
-					label="More sitemaps (one URL or path per line)"
-					rows={3}
-					value={config.sitemaps.join("\n")}
-					onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => update({ sitemaps: e.target.value.split("\n") })}
-					className="font-mono text-xs"
-				/>
-				<InputArea
-					label="Extra lines (added as written, e.g. Content-Signal or Crawl-delay)"
-					rows={4}
-					value={config.extra}
-					onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => update({ extra: e.target.value })}
-					className="font-mono text-xs"
-				/>
-			</section>
+			)}
+			<div aria-live="polite">{notice && <Banner variant="default" role="status" title={notice} />}</div>
+			{error && <Banner variant="error" role="alert" title="Something went wrong" description={error} />}
 
-			<section className="space-y-2" aria-labelledby="robots-preview">
-				<h2 id="robots-preview" className="text-base font-semibold">
-					Preview
-				</h2>
-				<pre className="max-h-96 overflow-auto rounded-lg border bg-kumo-tint/40 p-3 font-mono text-xs">{preview}</pre>
-			</section>
-
-			<Tester robotsTxt={preview} bots={bots} siteUrl={data.siteUrl} />
-
-			<section className="space-y-2 rounded-lg border p-4" aria-labelledby="robots-directory">
-				<div className="flex flex-wrap items-start justify-between gap-2">
-					<h2 id="robots-directory" className="text-base font-semibold">
-						Crawler directory
-					</h2>
-					{data.radar.tokenConfigured && (
-						<div className="flex flex-wrap gap-2">
-							{data.radar.tokenSource === "settings" && !editingToken && (
-								<Button variant="ghost" onClick={() => setEditingToken(true)}>
-									Change token
-								</Button>
-							)}
-							<Button variant="secondary" icon={<ArrowsClockwise />} disabled={syncing} onClick={() => void refresh()}>
-								{syncing ? "Refreshing…" : "Refresh from Radar"}
-							</Button>
-						</div>
-					)}
-				</div>
-				<p className="text-sm text-kumo-subtle">
-					{bots.length} crawlers from Cloudflare Radar's bot directory and operators' documentation (bundled list from{" "}
-					{dateFormat.format(new Date(`${data.radar.baselineDate}T12:00:00Z`))}). {unverifiedCount} have a{" "}
-					<Badge variant="warning">unverified</Badge> token that the operator doesn't document; they still work as robots.txt tokens
-					if the crawler uses them.
-				</p>
-				{data.radar.tokenConfigured ? (
-					<>
-						<p className="text-sm text-kumo-subtle" aria-live="polite">
-							{data.radar.state
-								? data.radar.state.ok
-									? `Last Radar sync ${dateFormat.format(new Date(data.radar.state.at))}: ${data.radar.state.total} bots, ${data.radar.state.added} new.`
-									: `Last Radar sync failed ${dateFormat.format(new Date(data.radar.state.at))}: ${data.radar.state.error}`
-								: "Radar token set; no sync has run yet."}{" "}
-							{data.radar.tokenSource === "env" && "Using the RADAR_API_TOKEN Worker secret."} Turn on “Weekly crawler list from Cloudflare Radar” under
-							Features to refresh it every week.
-						</p>
-						{editingToken && <RadarTokenForm source={data.radar.tokenSource} onChanged={tokenChanged} onCancel={() => setEditingToken(false)} />}
-					</>
-				) : (
-					<SetupCard
-						title="Add a Cloudflare Radar API token to keep this list current"
-						description="Optional. With a token, Refresh from Radar updates the crawler list now, and the weekly sync (under Features) keeps it current. Or set the RADAR_API_TOKEN Worker secret."
-					>
-						<RadarTokenForm source={data.radar.tokenSource} onChanged={tokenChanged} />
-					</SetupCard>
-				)}
-			</section>
-
-			<RuleDialog
-				rule={editing?.rule ?? null}
-				bots={bots}
-				onClose={() => setEditing(null)}
-				onDone={(rule) => {
-					const index = editing?.index ?? -1;
-					setRules(index >= 0 ? config.rules.map((r, i) => (i === index ? rule : r)) : [...config.rules, rule]);
-					setEditing(null);
-				}}
+			<Tabs
+				value={tab}
+				onValueChange={setTab}
+				tabs={[
+					{ value: "rules", label: `Rules (${config.rules.length})` },
+					{ value: "bots", label: "Bots" },
+					{ value: "settings", label: "Settings and history" },
+				]}
 			/>
+
+			{tab === "rules" && (
+				<div className="space-y-6">
+					<SitemapOption
+						config={config}
+						siteUrl={data.siteUrl}
+						busy={busy}
+						noteDismissed={data.sitemapNoteDismissed}
+						onChange={(on) => void persist({ ...config, includeSitemap: on }, on ? "Listed the sitemap" : "Stopped listing the sitemap", on ? "The sitemap is listed in robots.txt." : "The sitemap is no longer listed.").catch((cause) => setError(errorText(cause, "Could not save")))}
+						onDismiss={() => {
+							setData((d) => (d ? { ...d, sitemapNoteDismissed: true } : d));
+							void post("dismiss-sitemap-note", {}).catch(() => undefined);
+						}}
+					/>
+					<section className="space-y-2" aria-labelledby="robots-rules">
+						<h2 id="robots-rules" className="sr-only">
+							Rules
+						</h2>
+						<RulesList
+							config={config}
+							bots={bots}
+							busy={busy}
+							onAdd={() => setWizard({ rule: null, id: newId() })}
+							onEdit={(rule) => setWizard({ rule, id: rule.id })}
+							onDuplicate={(rule) => setWizard({ rule: { ...rule, id: newId(), name: `${rule.name} (copy)` }, id: "" })}
+							onToggle={(rule, on) => {
+								const next = withRule({ ...rule, enabled: on });
+								void persist(next, `${on ? "Turned on" : "Turned off"}: ${rule.name}`, `“${rule.name}” is ${on ? "on" : "off"}.`).catch((cause) => setError(errorText(cause, "Could not save")));
+							}}
+							onDelete={(rule) =>
+								setConfirm({
+									title: `Delete “${rule.name}”?`,
+									body: "Crawlers stop following it as soon as it's deleted. You can restore it from Version history.",
+									findings: analyzeConfigChange(config, { ...config, rules: config.rules.filter((r) => r.id !== rule.id) }, data.siteUrl || undefined),
+									confirmLabel: "Delete rule",
+									destructive: true,
+									onConfirm: () => persist({ ...config, rules: config.rules.filter((r) => r.id !== rule.id) }, `Deleted: ${rule.name}`, `Deleted “${rule.name}”.`),
+								})
+							}
+						/>
+						{config.rules.length > 1 && (
+							<p className="text-xs text-kumo-subtle">
+								Order doesn't matter: crawlers follow the most specific matching line, whatever its position. Coywolf Pack writes the most specific lines first anyway, so older crawlers that read top to
+								bottom agree.
+							</p>
+						)}
+					</section>
+					<AutomaticLines config={config} />
+					<Tester robotsTxt={data.preview} bots={bots} siteUrl={data.siteUrl} />
+					<ServedFile text={data.preview} emdash={data.emdash} config={config} siteUrl={data.siteUrl} />
+				</div>
+			)}
+
+			{tab === "bots" && (
+				<BotsTab
+					bots={bots}
+					rules={config.rules}
+					radar={data.radar}
+					onBots={setBots}
+					onRadar={(r) => setData((d) => (d ? { ...d, radar: { ...d.radar, ...r } } : d))}
+					onReload={load}
+				/>
+			)}
+
+			{tab === "settings" && (
+				<SettingsTab
+					data={data}
+					config={config}
+					onSave={(next, label) => persist(next, label)}
+					onRestore={(item) =>
+						setConfirm({
+							title: "Restore this version?",
+							body: `“${item.label}” from ${dateTimeFormat.format(new Date(item.at))} (${item.rules} rule${item.rules === 1 ? "" : "s"}) replaces the current rules and settings. The current version stays in history.`,
+							confirmLabel: "Restore",
+							onConfirm: async () => {
+								setBusy(true);
+								try {
+									await post("restore", { id: item.id });
+									await load();
+									setNotice("Restored. /robots.txt now serves that version.");
+								} finally {
+									setBusy(false);
+								}
+							},
+						})
+					}
+					onReset={() =>
+						setConfirm({
+							title: "Reset to EmDash's original?",
+							body: "Replaces your rules with ones converted from EmDash's own robots.txt (shown under What's being served), plus the media rule. The current version stays in history.",
+							confirmLabel: "Reset",
+							destructive: true,
+							onConfirm: async () => {
+								await post("reset", {});
+								await load();
+								setNotice("Reset to EmDash's original robots.txt.");
+							},
+						})
+					}
+				/>
+			)}
+
+			{wizard && (
+				<RuleWizard
+					initial={wizard}
+					config={config}
+					bots={bots}
+					siteUrl={data.siteUrl}
+					sections={data.sections}
+					onClose={() => setWizard(null)}
+					onSave={async (rule, patch) => {
+						const isNew = !config.rules.some((r) => r.id === rule.id);
+						await persist(withRule(rule, patch), `${isNew ? "Added" : "Edited"}: ${rule.name}`, `${isNew ? "Added" : "Saved"} “${rule.name}”.`);
+						setWizard(null);
+					}}
+					onEditRule={(id) => {
+						const other = config.rules.find((r) => r.id === id);
+						setWizard(other ? { rule: other, id: other.id } : null);
+					}}
+					onMerge={async (id, agents) => {
+						const other = config.rules.find((r) => r.id === id);
+						if (!other) return;
+						const merged = { ...other, agents: [...new Set([...other.agents, ...agents])], group: undefined };
+						await persist(withRule(merged), `Edited: ${other.name}`, `Added the crawlers to “${other.name}”.`);
+						setWizard(null);
+					}}
+					onAddCustomBot={addCustomBot}
+				/>
+			)}
+			<ConfirmDialog confirm={confirm} onClose={() => setConfirm(null)} />
 		</div>
 	);
 }

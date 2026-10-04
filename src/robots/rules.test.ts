@@ -20,8 +20,9 @@ type RobotsRule = import("./rules.js").RobotsRule;
 type BotEntry = import("./bots.js").BotEntry;
 
 const site = { siteUrl: "https://example.com" };
+let nextId = 0;
 const rule = (r: Partial<RobotsRule>): RobotsRule => ({
-	id: "r",
+	id: `r${++nextId}`,
 	name: "Rule",
 	enabled: true,
 	agents: ["*"],
@@ -88,10 +89,13 @@ test("bots named in rules still get EmDash's admin block; fully blocked bots don
 	assert.equal(rep.oneAgentAllowed(txt, "bingbot", "/_emdash/api/content"), false);
 	assert.equal(rep.oneAgentAllowed(txt, "SomeOtherBot", "/drafts/x"), true);
 	assert.equal(rep.oneAgentAllowed(txt, "SomeOtherBot", "/_emdash/"), false);
-	assert.match(txt, /# Block AI training crawlers\nUser-agent: GPTBot\nUser-agent: CCBot\nDisallow: \/\n/);
-	const emdashGroup = txt.slice(txt.indexOf("# EmDash"));
-	assert.ok(!emdashGroup.includes("GPTBot"));
-	assert.ok(emdashGroup.includes("User-agent: Googlebot") && emdashGroup.includes("User-agent: bingbot"));
+	assert.match(txt, /# Block AI training crawlers; discovery files stay readable\nUser-agent: GPTBot\nUser-agent: CCBot\nAllow: \/\.well-known\/\nDisallow: \/\n/);
+	const gpt = txt.slice(txt.indexOf("User-agent: GPTBot"), txt.indexOf("\n\n", txt.indexOf("User-agent: GPTBot")));
+	assert.ok(!gpt.includes("/_emdash/"));
+	for (const bot of ["Googlebot", "bingbot"]) {
+		const g = txt.slice(txt.indexOf(`User-agent: ${bot}`));
+		assert.ok(g.slice(0, g.indexOf("\n\n")).includes("Disallow: /_emdash/"), bot);
+	}
 });
 
 test("blocking everyone keeps media closed too", () => {
@@ -203,7 +207,8 @@ test("whole-site blocks in any spelling drop the media Allow; /$ doesn't", () =>
 	for (const v of ["/*", "*"]) {
 		const txt = rules.generate(config([rule({ name: "Block", agents: ["GPTBot"], kind: "custom", path: v })]), site);
 		assert.equal(rep.oneAgentAllowed(txt, "GPTBot", "/_emdash/api/media/file/a.jpg"), false, v);
-		assert.ok(!txt.slice(txt.indexOf("# EmDash")).includes("GPTBot"), v);
+		const g = txt.slice(txt.indexOf("User-agent: GPTBot"));
+		assert.ok(!g.slice(0, g.indexOf("\n\n")).includes("/_emdash/"), v);
 	}
 	const home = rules.generate(config([rule({ name: "Home", agents: ["GPTBot"], kind: "custom", path: "/$" })]), site);
 	assert.equal(rep.oneAgentAllowed(home, "GPTBot", "/_emdash/api/media/file/a.jpg"), true);
@@ -228,7 +233,7 @@ test("line breaks can't inject directives", () => {
 	);
 	for (const line of txt.split("\n")) {
 		assert.ok(!/^Disallow: \/$/.test(line), `injected: ${line}`);
-		assert.ok(!/^User-agent: \*$/.test(line) || txt.includes("# EmDash"), line);
+		assert.ok(!/^User-agent: \*$/.test(line) || txt.includes("# EmDash admin"), line);
 	}
 	assert.ok(!txt.includes("\r"));
 	assert.equal(rep.oneAgentAllowed(txt, "Bingbot", "/post"), true);

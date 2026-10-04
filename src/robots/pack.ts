@@ -3,7 +3,7 @@ import type { PluginContext } from "emdash";
 import { registerFeatures } from "../core/features.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { serveRobots } from "./middleware.js";
-import { type RobotsOptions, robotsModule } from "./module.js";
+import { BOT_OVERRIDES_COLLECTION, HISTORY_COLLECTION, type RobotsOptions, robotsModule } from "./module.js";
 import { OVERLAY_COLLECTION, RADAR_HOST, syncRadar } from "./radar.js";
 
 const FEATURES = [
@@ -11,7 +11,7 @@ const FEATURES = [
 		id: "robots",
 		label: "Robots.txt Rules",
 		description:
-			"Serve robots.txt from named, plain-English rules: block AI training crawlers, allow search engines, custom path rules, with a URL tester. EmDash's admin, media and sitemap lines are kept.",
+			"Manage robots.txt with plain-English rules: block AI training crawlers, keep sections private, with live checks and a URL tester. Turning it on takes over EmDash's robots.txt with equivalent rules; turning it off gives it back.",
 		default: false,
 	},
 	{
@@ -46,7 +46,7 @@ export function robotsPack(options: RobotsOptions): PackModule {
 			},
 		],
 		adminPages: [{ path: "/robots", label: "Robots.txt", icon: "robot" }],
-		storage: { [OVERLAY_COLLECTION]: { indexes: [] } },
+		storage: { [OVERLAY_COLLECTION]: { indexes: [] }, [HISTORY_COLLECTION]: { indexes: [] }, [BOT_OVERRIDES_COLLECTION]: { indexes: [] } },
 		capabilities: ["network:request"],
 		allowedHosts: [RADAR_HOST],
 	};

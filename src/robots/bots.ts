@@ -13,8 +13,18 @@
  */
 
 export type BotStatus = "verified" | "unverified";
-/** How the token was confirmed: operator docs, the bot's published UA string, or derived from a pattern. */
-export type BotEvidence = "operator-docs" | "user-agent" | "heuristic" | "none";
+/** What a crawler is for, from the operator's documentation (src/robots/data/verified.json → purposes). */
+export type BotPurpose = "training" | "ai-search" | "ai-assistant" | "search-engine" | "seo" | "other";
+export const PURPOSE_LABELS: Record<BotPurpose, string> = {
+	training: "AI training",
+	"ai-search": "AI search",
+	"ai-assistant": "AI assistant (fetches for a user)",
+	"search-engine": "Search engine",
+	seo: "SEO tool",
+	other: "Other",
+};
+/** How the token was confirmed: operator docs, the bot's published UA string, derived from a pattern, or checked by an admin on this site. */
+export type BotEvidence = "operator-docs" | "user-agent" | "heuristic" | "none" | "manual";
 
 export interface BotEntry {
 	slug: string;
@@ -22,6 +32,8 @@ export interface BotEntry {
 	operator: string;
 	/** Radar category, e.g. AI_CRAWLER. */
 	category: string;
+	/** What it's for (set for preset bots and custom bots); presets use this, never the Radar category. */
+	purpose?: BotPurpose;
 	description: string;
 	/** The robots.txt product token (`User-agent:` value). */
 	token: string;
@@ -32,8 +44,12 @@ export interface BotEntry {
 	/** ISO date the token was last checked against `sourceUrl`. */
 	verifiedAt?: string;
 	note?: string;
-	/** "radar" (in Cloudflare's directory) or "curated" (operator-documented token Radar doesn't list). */
-	origin: "radar" | "curated";
+	/** "radar" (in Cloudflare's directory), "curated" (operator-documented token Radar doesn't list) or "custom" (added on this site). */
+	origin: "radar" | "curated" | "custom";
+	/** Who verified it on this site (admin overrides). */
+	verifiedBy?: string;
+	/** The name before an admin renamed it. */
+	originalName?: string;
 	/** Set when the bot was last seen in, or has left, the Radar directory (from the weekly sync). */
 	radarSeenAt?: string;
 	delisted?: boolean;
@@ -241,4 +257,65 @@ export function mergeRadar(baseline: BotEntry[], existing: BotOverlay[], radar: 
 	}
 
 	return { writes, added, updated, delisted, total: live.size };
+}
+
+/** An admin's change to one directory entry (or a bot they added), kept in plugin storage. */
+export interface BotOverride {
+	/** Directory slug, or "custom-<token>" for bots added on this site. */
+	slug: string;
+	name?: string;
+	verified?: { sourceUrl: string; note?: string; at: string; by?: string };
+	custom?: {
+		token: string;
+		category: string;
+		purpose?: BotPurpose;
+		operator?: string;
+		sourceUrl?: string;
+		notes?: string;
+		createdAt: string;
+		createdBy?: string;
+	};
+}
+
+export const customSlug = (token: string) => `custom-${token.toLowerCase().replace(/[^a-z0-9._-]/g, "-")}`;
+
+/** Directory (bundled + Radar) with this site's overrides and custom bots applied. */
+export function applyOverrides(directory: BotEntry[], overrides: BotOverride[]): BotEntry[] {
+	const bySlug = new Map(directory.map((b) => [b.slug, { ...b }]));
+	for (const o of overrides) {
+		if (o.custom) {
+			bySlug.set(o.slug, {
+				slug: o.slug,
+				name: o.name || o.custom.token,
+				operator: o.custom.operator ?? "",
+				category: o.custom.category || "OTHER",
+				...(o.custom.purpose ? { purpose: o.custom.purpose } : {}),
+				description: o.custom.notes ?? "",
+				token: o.custom.token,
+				status: o.verified ? "verified" : "unverified",
+				evidence: o.verified ? "manual" : "none",
+				sourceUrl: o.verified?.sourceUrl || o.custom.sourceUrl,
+				verifiedAt: o.verified?.at,
+				verifiedBy: o.verified?.by,
+				note: o.verified?.note ?? o.custom.notes,
+				origin: "custom",
+			});
+			continue;
+		}
+		const b = bySlug.get(o.slug);
+		if (!b) continue;
+		if (o.name && o.name !== b.name) {
+			b.originalName = b.name;
+			b.name = o.name;
+		}
+		if (o.verified) {
+			b.status = "verified";
+			b.evidence = "manual";
+			b.sourceUrl = o.verified.sourceUrl;
+			b.verifiedAt = o.verified.at;
+			b.verifiedBy = o.verified.by;
+			if (o.verified.note) b.note = o.verified.note;
+		}
+	}
+	return [...bySlug.values()].sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
 }

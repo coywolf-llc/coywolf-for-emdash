@@ -1,51 +1,231 @@
 {
 	"$comment": "Hand-verified robots.txt tokens and corrections, merged by scripts/build-bots.mjs. Add an entry here (with the operator's documentation URL and the date you checked it) to verify a token.",
 	"manual": {
-		"gptbot": { "token": "GPTBot", "sourceUrl": "https://developers.openai.com/api/docs/bots", "verifiedAt": "2026-10-03" },
-		"oai-searchbot": { "token": "OAI-SearchBot", "sourceUrl": "https://developers.openai.com/api/docs/bots", "verifiedAt": "2026-10-03" },
-		"chatgpt-user": { "token": "ChatGPT-User", "sourceUrl": "https://developers.openai.com/api/docs/bots", "verifiedAt": "2026-10-03" },
-		"oai-adsbot": { "token": "OAI-AdsBot", "sourceUrl": "https://developers.openai.com/api/docs/bots", "verifiedAt": "2026-10-03" },
-		"claude-anthropic": { "token": "ClaudeBot", "sourceUrl": "https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler", "verifiedAt": "2026-10-03" },
-		"claude-user": { "token": "Claude-User", "sourceUrl": "https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler", "verifiedAt": "2026-10-03" },
-		"claude-searchbot": { "token": "Claude-SearchBot", "sourceUrl": "https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler", "verifiedAt": "2026-10-03" },
-		"google": { "token": "Googlebot", "sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers", "verifiedAt": "2026-10-03" },
-		"googlebotimages": { "token": "Googlebot-Image", "sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers", "verifiedAt": "2026-10-03" },
-		"googlebotvideos": { "token": "Googlebot-Video", "sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers", "verifiedAt": "2026-10-03" },
-		"storebot-google": { "token": "Storebot-Google", "sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers", "verifiedAt": "2026-10-03" },
-		"google-inspection-tool": { "token": "Google-InspectionTool", "sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers", "verifiedAt": "2026-10-03" },
-		"google-other": { "token": "GoogleOther", "sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers", "verifiedAt": "2026-10-03" },
-		"google-cloudvertexbot": { "token": "Google-CloudVertexBot", "sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers", "verifiedAt": "2026-10-03" },
-		"google-extended": { "token": "Google-Extended", "sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers", "verifiedAt": "2026-10-03" },
-		"googlebot-news": { "token": "Googlebot-News", "sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers", "verifiedAt": "2026-10-03" },
-		"googleother-image": { "token": "GoogleOther-Image", "sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers", "verifiedAt": "2026-10-03" },
-		"googleother-video": { "token": "GoogleOther-Video", "sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers", "verifiedAt": "2026-10-03" },
-		"bing": { "token": "bingbot", "sourceUrl": "https://www.bing.com/webmasters/help/which-crawlers-does-bing-use-8c184ec0", "verifiedAt": "2026-10-03" },
-		"adidxbot": { "token": "adidxbot", "sourceUrl": "https://www.bing.com/webmasters/help/which-crawlers-does-bing-use-8c184ec0", "verifiedAt": "2026-10-03" },
-		"microsoftpreview": { "token": "MicrosoftPreview", "sourceUrl": "https://www.bing.com/webmasters/help/which-crawlers-does-bing-use-8c184ec0", "verifiedAt": "2026-10-03" },
-		"apple": { "token": "Applebot", "sourceUrl": "https://support.apple.com/en-us/119829", "verifiedAt": "2026-10-03" },
-		"applebot-extended": { "token": "Applebot-Extended", "sourceUrl": "https://support.apple.com/en-us/119829", "verifiedAt": "2026-10-03" },
-		"perplexitybot": { "token": "PerplexityBot", "sourceUrl": "https://docs.perplexity.ai/guides/bots", "verifiedAt": "2026-10-03" },
-		"perplexity-user": { "token": "Perplexity-User", "sourceUrl": "https://docs.perplexity.ai/guides/bots", "verifiedAt": "2026-10-03" },
-		"ccbot": { "token": "CCBot", "sourceUrl": "https://commoncrawl.org/ccbot", "verifiedAt": "2026-10-03" },
-		"amazon-bot": { "token": "Amazonbot", "sourceUrl": "https://developer.amazon.com/amazonbot", "verifiedAt": "2026-10-03" },
-		"amzn-searchbot": { "token": "Amzn-SearchBot", "sourceUrl": "https://developer.amazon.com/amazonbot", "verifiedAt": "2026-10-03" },
-		"amzn-user": { "token": "Amzn-User", "sourceUrl": "https://developer.amazon.com/amazonbot", "verifiedAt": "2026-10-03" },
-		"meta-externalagent": { "token": "meta-externalagent", "sourceUrl": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers", "verifiedAt": "2026-10-03" },
-		"meta-externalfetcher": { "token": "meta-externalfetcher", "sourceUrl": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers", "verifiedAt": "2026-10-03" },
-		"meta-externalads": { "token": "meta-externalads", "sourceUrl": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers", "verifiedAt": "2026-10-03" },
-		"meta-web-indexer": { "token": "meta-webindexer", "sourceUrl": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers", "verifiedAt": "2026-10-03" },
-		"facebook": { "token": "facebookexternalhit", "sourceUrl": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers", "verifiedAt": "2026-10-03" },
-		"duckassistbot": { "token": "DuckAssistBot", "sourceUrl": "https://duckduckgo.com/duckduckgo-help-pages/results/duckassistbot", "verifiedAt": "2026-10-03" },
-		"duckduckbot": { "token": "DuckDuckBot", "sourceUrl": "https://duckduckgo.com/duckduckgo-help-pages/results/duckduckbot", "verifiedAt": "2026-10-03" },
-		"yandex": { "token": "YandexBot", "sourceUrl": "https://yandex.com/support/webmaster/robot-workings/check-yandex-robots.html", "verifiedAt": "2026-10-03" },
-		"baidu": { "token": "Baiduspider", "sourceUrl": "https://help.baidu.com/question?prod_id=99&class=476&id=2996", "verifiedAt": "2026-10-03" },
-		"mistralai-user": { "token": "MistralAI-User", "sourceUrl": "https://docs.mistral.ai/robots", "verifiedAt": "2026-10-03" },
-		"mistralai-index": { "token": "MistralAI-Index", "sourceUrl": "https://docs.mistral.ai/robots", "verifiedAt": "2026-10-03" },
-		"mistralai-training": { "token": "MistralAI-Training", "sourceUrl": "https://docs.mistral.ai/robots", "verifiedAt": "2026-10-03" },
-		"webzio-extended": { "token": "Webzio-Extended", "sourceUrl": "https://webz.io/bot.html", "verifiedAt": "2026-10-03" },
-		"webzio": { "token": "Webzio", "sourceUrl": "https://webz.io/bot.html", "verifiedAt": "2026-10-03" },
-		"omgilibot": { "token": "Omgilibot", "sourceUrl": "https://webz.io/bot.html", "verifiedAt": "2026-10-03" },
-		"imagesiftbot": { "token": "ImagesiftBot", "sourceUrl": "https://www.imagesift.com/about", "verifiedAt": "2026-10-03" }
+		"gptbot": {
+			"token": "GPTBot",
+			"sourceUrl": "https://developers.openai.com/api/docs/bots",
+			"verifiedAt": "2026-10-03"
+		},
+		"oai-searchbot": {
+			"token": "OAI-SearchBot",
+			"sourceUrl": "https://developers.openai.com/api/docs/bots",
+			"verifiedAt": "2026-10-03"
+		},
+		"chatgpt-user": {
+			"token": "ChatGPT-User",
+			"sourceUrl": "https://developers.openai.com/api/docs/bots",
+			"verifiedAt": "2026-10-03"
+		},
+		"oai-adsbot": {
+			"token": "OAI-AdsBot",
+			"sourceUrl": "https://developers.openai.com/api/docs/bots",
+			"verifiedAt": "2026-10-03"
+		},
+		"claude-anthropic": {
+			"token": "ClaudeBot",
+			"sourceUrl": "https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler",
+			"verifiedAt": "2026-10-03"
+		},
+		"claude-user": {
+			"token": "Claude-User",
+			"sourceUrl": "https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler",
+			"verifiedAt": "2026-10-03"
+		},
+		"claude-searchbot": {
+			"token": "Claude-SearchBot",
+			"sourceUrl": "https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler",
+			"verifiedAt": "2026-10-03"
+		},
+		"google": {
+			"token": "Googlebot",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"googlebotimages": {
+			"token": "Googlebot-Image",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"googlebotvideos": {
+			"token": "Googlebot-Video",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"storebot-google": {
+			"token": "Storebot-Google",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"google-inspection-tool": {
+			"token": "Google-InspectionTool",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"google-other": {
+			"token": "GoogleOther",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"google-cloudvertexbot": {
+			"token": "Google-CloudVertexBot",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"google-extended": {
+			"token": "Google-Extended",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"googlebot-news": {
+			"token": "Googlebot-News",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"googleother-image": {
+			"token": "GoogleOther-Image",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"googleother-video": {
+			"token": "GoogleOther-Video",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"bing": {
+			"token": "bingbot",
+			"sourceUrl": "https://www.bing.com/webmasters/help/which-crawlers-does-bing-use-8c184ec0",
+			"verifiedAt": "2026-10-03"
+		},
+		"adidxbot": {
+			"token": "adidxbot",
+			"sourceUrl": "https://www.bing.com/webmasters/help/which-crawlers-does-bing-use-8c184ec0",
+			"verifiedAt": "2026-10-03"
+		},
+		"microsoftpreview": {
+			"token": "MicrosoftPreview",
+			"sourceUrl": "https://www.bing.com/webmasters/help/which-crawlers-does-bing-use-8c184ec0",
+			"verifiedAt": "2026-10-03"
+		},
+		"apple": {
+			"token": "Applebot",
+			"sourceUrl": "https://support.apple.com/en-us/119829",
+			"verifiedAt": "2026-10-03"
+		},
+		"applebot-extended": {
+			"token": "Applebot-Extended",
+			"sourceUrl": "https://support.apple.com/en-us/119829",
+			"verifiedAt": "2026-10-03"
+		},
+		"perplexitybot": {
+			"token": "PerplexityBot",
+			"sourceUrl": "https://docs.perplexity.ai/guides/bots",
+			"verifiedAt": "2026-10-03"
+		},
+		"perplexity-user": {
+			"token": "Perplexity-User",
+			"sourceUrl": "https://docs.perplexity.ai/guides/bots",
+			"verifiedAt": "2026-10-03"
+		},
+		"ccbot": {
+			"token": "CCBot",
+			"sourceUrl": "https://commoncrawl.org/ccbot",
+			"verifiedAt": "2026-10-03"
+		},
+		"amazon-bot": {
+			"token": "Amazonbot",
+			"sourceUrl": "https://developer.amazon.com/amazonbot",
+			"verifiedAt": "2026-10-03"
+		},
+		"amzn-searchbot": {
+			"token": "Amzn-SearchBot",
+			"sourceUrl": "https://developer.amazon.com/amazonbot",
+			"verifiedAt": "2026-10-03"
+		},
+		"amzn-user": {
+			"token": "Amzn-User",
+			"sourceUrl": "https://developer.amazon.com/amazonbot",
+			"verifiedAt": "2026-10-03"
+		},
+		"meta-externalagent": {
+			"token": "meta-externalagent",
+			"sourceUrl": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"meta-externalfetcher": {
+			"token": "meta-externalfetcher",
+			"sourceUrl": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"meta-externalads": {
+			"token": "meta-externalads",
+			"sourceUrl": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"meta-web-indexer": {
+			"token": "meta-webindexer",
+			"sourceUrl": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"facebook": {
+			"token": "facebookexternalhit",
+			"sourceUrl": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers",
+			"verifiedAt": "2026-10-03"
+		},
+		"duckassistbot": {
+			"token": "DuckAssistBot",
+			"sourceUrl": "https://duckduckgo.com/duckduckgo-help-pages/results/duckassistbot",
+			"verifiedAt": "2026-10-03"
+		},
+		"duckduckbot": {
+			"token": "DuckDuckBot",
+			"sourceUrl": "https://duckduckgo.com/duckduckgo-help-pages/results/duckduckbot",
+			"verifiedAt": "2026-10-03"
+		},
+		"yandex": {
+			"token": "YandexBot",
+			"sourceUrl": "https://yandex.com/support/webmaster/robot-workings/check-yandex-robots.html",
+			"verifiedAt": "2026-10-03"
+		},
+		"baidu": {
+			"token": "Baiduspider",
+			"sourceUrl": "https://help.baidu.com/question?prod_id=99&class=476&id=2996",
+			"verifiedAt": "2026-10-03"
+		},
+		"mistralai-user": {
+			"token": "MistralAI-User",
+			"sourceUrl": "https://docs.mistral.ai/robots",
+			"verifiedAt": "2026-10-03"
+		},
+		"mistralai-index": {
+			"token": "MistralAI-Index",
+			"sourceUrl": "https://docs.mistral.ai/robots",
+			"verifiedAt": "2026-10-03"
+		},
+		"mistralai-training": {
+			"token": "MistralAI-Training",
+			"sourceUrl": "https://docs.mistral.ai/robots",
+			"verifiedAt": "2026-10-03"
+		},
+		"webzio-extended": {
+			"token": "Webzio-Extended",
+			"sourceUrl": "https://webz.io/bot.html",
+			"verifiedAt": "2026-10-03"
+		},
+		"webzio": {
+			"token": "Webzio",
+			"sourceUrl": "https://webz.io/bot.html",
+			"verifiedAt": "2026-10-03"
+		},
+		"omgilibot": {
+			"token": "Omgilibot",
+			"sourceUrl": "https://webz.io/bot.html",
+			"verifiedAt": "2026-10-03"
+		},
+		"imagesiftbot": {
+			"token": "ImagesiftBot",
+			"sourceUrl": "https://www.imagesift.com/about",
+			"verifiedAt": "2026-10-03"
+		}
 	},
 	"userAgentVerified": {
 		"bytedance-toutiao": {
@@ -69,12 +249,334 @@
 		"perplexitybot": "AI_SEARCH"
 	},
 	"extra": [
-		{ "slug": "perplexity-user", "name": "Perplexity-User", "operator": "Perplexity AI", "category": "AI_ASSISTANT", "description": "Fetches pages when a Perplexity user asks a question about them." },
-		{ "slug": "amzn-user", "name": "Amzn-User", "operator": "Amazon", "category": "AI_ASSISTANT", "description": "Supports user actions such as answering Alexa queries." },
-		{ "slug": "mistralai-training", "name": "MistralAI-Training", "operator": "Mistral AI", "category": "AI_CRAWLER", "description": "Crawls web content to build datasets for training Mistral's generative AI models." },
-		{ "slug": "googlebot-news", "name": "Googlebot-News", "operator": "Google", "category": "SEARCH_ENGINE_CRAWLER", "description": "Crawls news articles for Google News." },
-		{ "slug": "googleother-image", "name": "GoogleOther-Image", "operator": "Google", "category": "OTHER", "description": "GoogleOther for images: one-off crawls by Google product teams." },
-		{ "slug": "googleother-video", "name": "GoogleOther-Video", "operator": "Google", "category": "OTHER", "description": "GoogleOther for video: one-off crawls by Google product teams." },
-		{ "slug": "webzio", "name": "Webzio", "operator": "Webz.io", "category": "AGGREGATOR", "description": "Webz.io's crawler that collects and structures web content." }
-	]
+		{
+			"slug": "perplexity-user",
+			"name": "Perplexity-User",
+			"operator": "Perplexity AI",
+			"category": "AI_ASSISTANT",
+			"description": "Fetches pages when a Perplexity user asks a question about them."
+		},
+		{
+			"slug": "amzn-user",
+			"name": "Amzn-User",
+			"operator": "Amazon",
+			"category": "AI_ASSISTANT",
+			"description": "Supports user actions such as answering Alexa queries."
+		},
+		{
+			"slug": "mistralai-training",
+			"name": "MistralAI-Training",
+			"operator": "Mistral AI",
+			"category": "AI_CRAWLER",
+			"description": "Crawls web content to build datasets for training Mistral's generative AI models."
+		},
+		{
+			"slug": "googlebot-news",
+			"name": "Googlebot-News",
+			"operator": "Google",
+			"category": "SEARCH_ENGINE_CRAWLER",
+			"description": "Crawls news articles for Google News."
+		},
+		{
+			"slug": "googleother-image",
+			"name": "GoogleOther-Image",
+			"operator": "Google",
+			"category": "OTHER",
+			"description": "GoogleOther for images: one-off crawls by Google product teams."
+		},
+		{
+			"slug": "googleother-video",
+			"name": "GoogleOther-Video",
+			"operator": "Google",
+			"category": "OTHER",
+			"description": "GoogleOther for video: one-off crawls by Google product teams."
+		},
+		{
+			"slug": "webzio",
+			"name": "Webzio",
+			"operator": "Webz.io",
+			"category": "AGGREGATOR",
+			"description": "Webz.io's crawler that collects and structures web content."
+		}
+	],
+	"purposes": {
+		"$comment": "What each preset bot is for, from the operator's documentation. Presets (src/robots/rules.ts CRAWLER_GROUPS) are built only from bots with a matching purpose and a verified token.",
+		"gptbot": {
+			"purpose": "training",
+			"sourceUrl": "https://developers.openai.com/api/docs/bots",
+			"note": "OpenAI: GPTBot crawls content that may be used to train generative AI models.",
+			"checkedAt": "2026-10-04"
+		},
+		"claude-anthropic": {
+			"purpose": "training",
+			"sourceUrl": "https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler",
+			"note": "Anthropic: ClaudeBot collects web content that could contribute to model training.",
+			"checkedAt": "2026-10-04"
+		},
+		"google-extended": {
+			"purpose": "training",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"note": "Google: Google-Extended controls whether content is used to train and ground Gemini models; it doesn't affect Search.",
+			"checkedAt": "2026-10-04"
+		},
+		"applebot-extended": {
+			"purpose": "training",
+			"sourceUrl": "https://support.apple.com/en-us/119829",
+			"note": "Apple: Applebot-Extended controls use of content to train Apple's foundation models.",
+			"checkedAt": "2026-10-04"
+		},
+		"ccbot": {
+			"purpose": "training",
+			"sourceUrl": "https://commoncrawl.org/ccbot",
+			"note": "Common Crawl's open web archive is a primary source of LLM training data.",
+			"checkedAt": "2026-10-04"
+		},
+		"meta-externalagent": {
+			"purpose": "training",
+			"sourceUrl": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers",
+			"note": "Meta: crawls for use cases such as training AI models.",
+			"checkedAt": "2026-10-04"
+		},
+		"bytedance-toutiao": {
+			"purpose": "training",
+			"sourceUrl": "https://zhanzhang.toutiao.com/docs/intro/26899",
+			"note": "ByteDance's crawler; widely documented as collecting data for its LLMs (Doubao).",
+			"checkedAt": "2026-10-04"
+		},
+		"amazon-bot": {
+			"purpose": "training",
+			"sourceUrl": "https://developer.amazon.com/amazonbot",
+			"note": "Amazon: Amazonbot content “may be used to train Amazon AI models”.",
+			"checkedAt": "2026-10-04"
+		},
+		"mistralai-training": {
+			"purpose": "training",
+			"sourceUrl": "https://docs.mistral.ai/robots",
+			"note": "Mistral: builds datasets for training its models.",
+			"checkedAt": "2026-10-04"
+		},
+		"webzio-extended": {
+			"purpose": "training",
+			"sourceUrl": "https://webz.io/bot.html",
+			"note": "Webz.io: Webzio-Extended governs whether content may be used for AI/ML training.",
+			"checkedAt": "2026-10-04"
+		},
+		"imagesiftbot": {
+			"purpose": "other",
+			"sourceUrl": "https://www.imagesift.com/about",
+			"note": "ImageSift: indexes images for its search and retrieval products; no training use documented.",
+			"checkedAt": "2026-10-04"
+		},
+		"diffbot": {
+			"purpose": "other",
+			"sourceUrl": "https://www.diffbot.com/docs/crawl/faq/robots-txt",
+			"note": "Diffbot: “does not crawl pages for training generative AI foundation models.”",
+			"checkedAt": "2026-10-04"
+		},
+		"omgilibot": {
+			"purpose": "other",
+			"sourceUrl": "https://webz.io/bot.html",
+			"note": "Webz.io's legacy data crawler; Webz.io's AI-training token is Webzio-Extended.",
+			"checkedAt": "2026-10-04"
+		},
+		"timpibot": {
+			"purpose": "search-engine",
+			"sourceUrl": "https://timpi.io",
+			"note": "Timpi's decentralized search engine index; no operator robots.txt documentation found. Left out of the search-engine preset until Timpi documents its token.",
+			"checkedAt": "2026-10-04",
+			"inPresets": false
+		},
+		"img2dataset": {
+			"purpose": "other",
+			"sourceUrl": "https://github.com/rom1504/img2dataset",
+			"note": "A dataset download tool, not a crawler with an operator; it doesn't read robots.txt.",
+			"checkedAt": "2026-10-04"
+		},
+		"anthropic-ai": {
+			"purpose": "other",
+			"sourceUrl": "https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler",
+			"note": "Legacy token; not in Anthropic's current documentation.",
+			"checkedAt": "2026-10-04"
+		},
+		"google-other": {
+			"purpose": "other",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"note": "Google: generic crawler for one-off product-team fetches; not Search, not Gemini training.",
+			"checkedAt": "2026-10-04"
+		},
+		"google": {
+			"purpose": "search-engine",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"note": "Google Search.",
+			"checkedAt": "2026-10-04"
+		},
+		"googlebotimages": {
+			"purpose": "search-engine",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"note": "Google Images.",
+			"checkedAt": "2026-10-04"
+		},
+		"googlebotvideos": {
+			"purpose": "search-engine",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"note": "Google Video search.",
+			"checkedAt": "2026-10-04"
+		},
+		"googlebot-news": {
+			"purpose": "search-engine",
+			"sourceUrl": "https://developers.google.com/crawling/docs/crawlers-fetchers/google-common-crawlers",
+			"note": "Google News.",
+			"checkedAt": "2026-10-04"
+		},
+		"bing": {
+			"purpose": "search-engine",
+			"sourceUrl": "https://www.bing.com/webmasters/help/which-crawlers-does-bing-use-8c184ec0",
+			"note": "Bing search.",
+			"checkedAt": "2026-10-04"
+		},
+		"apple": {
+			"purpose": "search-engine",
+			"sourceUrl": "https://support.apple.com/en-us/119829",
+			"note": "Applebot powers Spotlight, Siri and Safari search.",
+			"checkedAt": "2026-10-04"
+		},
+		"duckduckbot": {
+			"purpose": "search-engine",
+			"sourceUrl": "https://duckduckgo.com/duckduckgo-help-pages/results/duckduckbot",
+			"note": "DuckDuckGo search.",
+			"checkedAt": "2026-10-04"
+		},
+		"yandex": {
+			"purpose": "search-engine",
+			"sourceUrl": "https://yandex.com/support/webmaster/robot-workings/check-yandex-robots.html",
+			"note": "Yandex search.",
+			"checkedAt": "2026-10-04"
+		},
+		"baidu": {
+			"purpose": "search-engine",
+			"sourceUrl": "https://help.baidu.com/question?prod_id=99&class=476&id=2996",
+			"note": "Baidu search.",
+			"checkedAt": "2026-10-04"
+		},
+		"petalbot": {
+			"purpose": "search-engine",
+			"sourceUrl": "https://webmaster.petalsearch.com/site/petalbot",
+			"note": "Huawei Petal Search.",
+			"checkedAt": "2026-10-04"
+		},
+		"oai-searchbot": {
+			"purpose": "ai-search",
+			"sourceUrl": "https://developers.openai.com/api/docs/bots",
+			"note": "ChatGPT search results; not used for training.",
+			"checkedAt": "2026-10-04"
+		},
+		"claude-searchbot": {
+			"purpose": "ai-search",
+			"sourceUrl": "https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler",
+			"note": "Improves Claude's search results.",
+			"checkedAt": "2026-10-04"
+		},
+		"perplexitybot": {
+			"purpose": "ai-search",
+			"sourceUrl": "https://docs.perplexity.ai/guides/bots",
+			"note": "Perplexity search index; not used for training.",
+			"checkedAt": "2026-10-04"
+		},
+		"amzn-searchbot": {
+			"purpose": "ai-search",
+			"sourceUrl": "https://developer.amazon.com/amazonbot",
+			"note": "Amazon search experiences (Alexa, Rufus); not used for training.",
+			"checkedAt": "2026-10-04"
+		},
+		"mistralai-index": {
+			"purpose": "ai-search",
+			"sourceUrl": "https://docs.mistral.ai/robots",
+			"note": "Mistral's search index for Le Chat.",
+			"checkedAt": "2026-10-04"
+		},
+		"chatgpt-user": {
+			"purpose": "ai-assistant",
+			"sourceUrl": "https://developers.openai.com/api/docs/bots",
+			"note": "Fetches pages when ChatGPT users ask.",
+			"checkedAt": "2026-10-04"
+		},
+		"claude-user": {
+			"purpose": "ai-assistant",
+			"sourceUrl": "https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler",
+			"note": "Fetches pages when Claude users ask.",
+			"checkedAt": "2026-10-04"
+		},
+		"perplexity-user": {
+			"purpose": "ai-assistant",
+			"sourceUrl": "https://docs.perplexity.ai/guides/bots",
+			"note": "Fetches pages when Perplexity users ask.",
+			"checkedAt": "2026-10-04"
+		},
+		"meta-externalfetcher": {
+			"purpose": "ai-assistant",
+			"sourceUrl": "https://developers.facebook.com/documentation/sharing/webmasters/web-crawlers",
+			"note": "Fetches links on behalf of Meta AI users.",
+			"checkedAt": "2026-10-04"
+		},
+		"mistralai-user": {
+			"purpose": "ai-assistant",
+			"sourceUrl": "https://docs.mistral.ai/robots",
+			"note": "Fetches pages when Le Chat users ask.",
+			"checkedAt": "2026-10-04"
+		},
+		"duckassistbot": {
+			"purpose": "ai-assistant",
+			"sourceUrl": "https://duckduckgo.com/duckduckgo-help-pages/results/duckassistbot",
+			"note": "DuckDuckGo's AI-assisted answers.",
+			"checkedAt": "2026-10-04"
+		},
+		"amzn-user": {
+			"purpose": "ai-assistant",
+			"sourceUrl": "https://developer.amazon.com/amazonbot",
+			"note": "Fetches pages for Alexa user requests.",
+			"checkedAt": "2026-10-04"
+		},
+		"ahrefsbot": {
+			"purpose": "seo",
+			"sourceUrl": "https://ahrefs.com/robot",
+			"note": "Ahrefs backlink index.",
+			"checkedAt": "2026-10-04"
+		},
+		"semrush-bl": {
+			"purpose": "seo",
+			"sourceUrl": "https://www.semrush.com/bot/",
+			"note": "Semrush backlink index.",
+			"checkedAt": "2026-10-04"
+		},
+		"mj12bot": {
+			"purpose": "seo",
+			"sourceUrl": "https://majestic.com/",
+			"note": "Majestic backlink index.",
+			"checkedAt": "2026-10-04"
+		},
+		"dotbot": {
+			"purpose": "seo",
+			"sourceUrl": "https://moz.com/link-explorer",
+			"note": "Moz link index.",
+			"checkedAt": "2026-10-04"
+		},
+		"blexbot": {
+			"purpose": "seo",
+			"sourceUrl": "http://webmeup.com/",
+			"note": "WebMeUp backlink index.",
+			"checkedAt": "2026-10-04"
+		},
+		"dataforseo-bot": {
+			"purpose": "seo",
+			"sourceUrl": "https://dataforseo.com/dataforseo-bot",
+			"note": "DataForSEO.",
+			"checkedAt": "2026-10-04"
+		},
+		"babbar-barkrowler": {
+			"purpose": "seo",
+			"sourceUrl": "https://babbar.tech/crawler",
+			"note": "Babbar SEO index.",
+			"checkedAt": "2026-10-04"
+		}
+	}
 }
