@@ -1,6 +1,6 @@
 /**
- * Content Blocks markup and CSS, shared by the Astro components
- * (src/astro/contentBlocks) and the live previews on the Content Blocks admin
+ * Custom Blocks markup and CSS, shared by the Astro components
+ * (src/astro/customBlocks) and the live previews on the Custom Blocks admin
  * page, so the preview is exactly what the site prints. Block fields are
  * cleaned here (normalize*), then rendered with renderRich for their text.
  *
@@ -13,6 +13,8 @@ export const BLOCK_TYPES = {
 	details: "coywolf-details",
 	disclosure: "coywolf-disclosure",
 	quote: "coywolf-quote",
+	testimonial: "coywolf-testimonial",
+	podcast: "coywolf-podcast",
 } as const;
 
 const str = (v: unknown, max = 500_000) => (typeof v === "string" ? v.slice(0, max) : typeof v === "number" ? String(v) : "");
@@ -184,15 +186,160 @@ export function renderQuoteHtml(q: Quote): string {
 	}</figure>`;
 }
 
+// ── Testimonial ──────────────────────────────────────────────────
+
+export interface Testimonial {
+	/** Rich text: what the person said. */
+	quote: string;
+	/** Plain text. */
+	name: string;
+	/** Plain text: role, company, … */
+	title: string;
+	/** Headshot URL (http(s) or site-relative), or empty. */
+	photo: string;
+	/** Link for the name (e.g. a social profile), or empty. */
+	nameUrl: string;
+	/** Link for the title (e.g. the company's site), or empty. */
+	titleUrl: string;
+}
+
+/** An http(s) or site-relative URL, else "". */
+export function linkUrl(value: unknown): string {
+	const raw = typeof value === "string" ? value.trim() : value && typeof value === "object" && "url" in value ? String((value as { url: unknown }).url ?? "").trim() : "";
+	if (!raw) return "";
+	const safe = safeUrl(raw);
+	return safe && (/^https?:\/\/[^\s]+$/i.test(safe) || /^\/(?!\/)\S*$/.test(safe)) ? safe : "";
+}
+
+export function normalizeTestimonial(node: Record<string, unknown>): Testimonial {
+	return {
+		quote: str(node.quote),
+		name: str(node.name, 200).trim(),
+		title: str(node.title, 300).trim(),
+		photo: linkUrl(node.photo),
+		nameUrl: linkUrl(node.nameUrl),
+		titleUrl: linkUrl(node.titleUrl),
+	};
+}
+
+/**
+ * `<figure><blockquote>…</blockquote><figcaption>photo, name, title</figcaption></figure>`.
+ * The photo's alt is empty: the name right after it says who it is. No
+ * schema: testimonials a site picks about itself aren't eligible for review
+ * rich results.
+ */
+export function renderTestimonialHtml(t: Testimonial): string {
+	const body = renderRich(t.quote);
+	if (!body) return "";
+	const link = (url: string, text: string) => (url ? `<a href="${escapeHtml(url)}">${text}</a>` : text);
+	const photo = t.photo ? `<img class="cw-testimonial__photo" src="${escapeHtml(t.photo)}" alt="" width="64" height="64" loading="lazy" decoding="async">` : "";
+	const who =
+		t.name || t.title
+			? `<span class="cw-testimonial__who">${t.name ? `<span class="cw-testimonial__name">${link(t.nameUrl, escapeHtml(t.name))}</span>` : ""}${
+					t.title ? `<span class="cw-testimonial__title">${link(t.titleUrl, escapeHtml(t.title))}</span>` : ""
+				}</span>`
+			: "";
+	return `<figure class="cw-testimonial"><blockquote class="cw-testimonial__quote">${body}</blockquote>${
+		photo || who ? `<figcaption class="cw-testimonial__person">${photo}${who}</figcaption>` : ""
+	}</figure>`;
+}
+
+// ── Podcast links ────────────────────────────────────────────────
+
+export const PODCAST_SERVICES = [
+	["apple", "Apple Podcasts"],
+	["spotify", "Spotify"],
+	["youtube", "YouTube"],
+	["amazon", "Amazon Music"],
+	["overcast", "Overcast"],
+	["pocketCasts", "Pocket Casts"],
+	["rss", "RSS feed"],
+] as const;
+export type PodcastService = (typeof PODCAST_SERVICES)[number][0];
+export type PodcastLinks = Record<PodcastService, string>;
+export const PODCAST_HEADING_TAGS = ["h2", "h3", "h4", "p"] as const;
+export type PodcastHeadingTag = (typeof PODCAST_HEADING_TAGS)[number];
+
+export interface PodcastSettings {
+	/** Plain text. */
+	heading: string;
+	/** "p": bold text. */
+	headingTag: PodcastHeadingTag;
+	showIcons: boolean;
+	links: PodcastLinks;
+}
+
+const noLinks = (): PodcastLinks => Object.fromEntries(PODCAST_SERVICES.map(([id]) => [id, ""])) as PodcastLinks;
+
+export const DEFAULT_PODCAST: PodcastSettings = { heading: "Subscribe to the podcast", headingTag: "h2", showIcons: true, links: noLinks() };
+
+function podcastLinks(value: unknown): PodcastLinks {
+	const v = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+	const links = noLinks();
+	for (const [id] of PODCAST_SERVICES) links[id] = linkUrl(v[id]);
+	return links;
+}
+
+export function normalizePodcastSettings(value: unknown): PodcastSettings {
+	const v = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+	return {
+		heading: str(v.heading, 200).trim() || DEFAULT_PODCAST.heading,
+		headingTag: pick(v.headingTag, PODCAST_HEADING_TAGS, DEFAULT_PODCAST.headingTag),
+		showIcons: v.showIcons === undefined ? DEFAULT_PODCAST.showIcons : truthy(v.showIcons),
+		links: podcastLinks(v.links),
+	};
+}
+
+export interface Podcast {
+	/** "site": the links on the Custom Blocks page; "block": this block's own. */
+	source: "site" | "block";
+	/** Plain text; empty = the site's heading. */
+	heading: string;
+	links: PodcastLinks;
+}
+
+export function normalizePodcast(node: Record<string, unknown>): Podcast {
+	return { source: pick(node.source, ["site", "block"] as const, "site"), heading: str(node.heading, 200).trim(), links: podcastLinks(node) };
+}
+
+const svg = (body: string) =>
+	`<svg class="cw-podcast__icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${body}</svg>`;
+
+/** Simple line icons drawn for the pack (not the services' logos), with the service's name always next to them. */
+export const PODCAST_ICONS: Record<PodcastService, string> = {
+	apple: svg('<circle cx="12" cy="10" r="2.2" fill="currentColor" stroke="none"/><path d="M12 14v7"/><path d="M8.2 15.6a5.6 5.6 0 1 1 7.6 0"/><path d="M5.6 18.6a9.2 9.2 0 1 1 12.8 0"/>'),
+	spotify: svg('<circle cx="12" cy="12" r="9.5"/><path d="M7 9.6c3.4-1 6.9-.7 10 1"/><path d="M7.6 12.9c2.9-.8 5.7-.5 8.2.8"/><path d="M8.2 16c2.3-.6 4.4-.4 6.4.6"/>'),
+	youtube: svg('<rect x="2.5" y="5.5" width="19" height="13" rx="4"/><path d="M10 9.3v5.4l4.6-2.7z" fill="currentColor"/>'),
+	amazon: svg('<path d="M9 17V5.5l10-2V15"/><circle cx="6.5" cy="17" r="2.5"/><circle cx="16.5" cy="15" r="2.5"/>'),
+	overcast: svg('<circle cx="12" cy="12" r="9.5"/><circle cx="12" cy="11" r="1.4" fill="currentColor" stroke="none"/><path d="M12 13l-2.4 6.6M12 13l2.4 6.6"/><path d="M9.2 8.2a4 4 0 0 0 0 5.6M14.8 8.2a4 4 0 0 1 0 5.6"/>'),
+	pocketCasts: svg('<circle cx="12" cy="12" r="9.5"/><path d="M12 17.5a5.5 5.5 0 1 1 5.5-5.5"/><path d="M12 14.5a2.5 2.5 0 1 1 2.5-2.5"/>'),
+	rss: svg('<circle cx="5.5" cy="18.5" r="1.6" fill="currentColor" stroke="none"/><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/>'),
+};
+
+/** A labelled `<section>` with a heading and a list of links, each named by its service. Empty when there are no links. */
+export function renderPodcastHtml(p: Podcast, s: PodcastSettings, id: string): string {
+	const links = p.source === "block" ? p.links : s.links;
+	const items = PODCAST_SERVICES.filter(([svc]) => links[svc]).map(
+		([svc, label]) =>
+			`<li><a class="cw-podcast__link cw-podcast__link--${svc}" href="${escapeHtml(links[svc])}"${svc === "rss" ? ' type="application/rss+xml"' : ""}>${
+				s.showIcons ? PODCAST_ICONS[svc] : ""
+			}<span>${escapeHtml(label)}</span></a></li>`,
+	);
+	if (!items.length) return "";
+	const tag = s.headingTag;
+	const heading = escapeHtml(p.heading || s.heading || DEFAULT_PODCAST.heading);
+	return `<section class="cw-podcast" aria-labelledby="${escapeHtml(id)}"><${tag} class="cw-podcast__title" id="${escapeHtml(id)}">${heading}</${tag}><ul class="cw-podcast__links" role="list">${items.join("")}</ul></section>`;
+}
+
 // ── CSS ──────────────────────────────────────────────────────────
 
 /**
- * One stylesheet for all four blocks, printed once per page before the first
+ * One stylesheet for all the blocks, printed once per page before the first
  * one. Theme-agnostic: colors are mixed from the text color (currentColor), so
  * the blocks follow the theme's light or dark text; each variant adds a hue
  * through a custom property a site can override (--cw-note-accent, …).
  */
-export const CONTENT_BLOCKS_CSS = `.cw-note,.cw-details,.cw-disclosure,.cw-quote{box-sizing:border-box;margin-block:1.5em}
+export const CUSTOM_BLOCKS_CSS = `.cw-note,.cw-details,.cw-disclosure,.cw-quote,.cw-testimonial,.cw-podcast{box-sizing:border-box;margin-block:1.5em}
 .cw-note{--cw-note-accent:#2f6fde;--cw-note-mix:9%;padding:1em 1.25em;border:1px solid color-mix(in srgb,var(--cw-note-accent) 35%,transparent);border-inline-start:4px solid var(--cw-note-accent);border-radius:.5em;background:color-mix(in srgb,var(--cw-note-accent) var(--cw-note-mix),transparent)}
 .cw-note--editor{--cw-note-accent:#8a6a00}
 .cw-note--tip{--cw-note-accent:#1f8a4c}
@@ -216,9 +363,38 @@ export const CONTENT_BLOCKS_CSS = `.cw-note,.cw-details,.cw-disclosure,.cw-quote
 .cw-quote .cw-quote__text>:last-child{margin-bottom:0}
 .cw-quote .cw-quote__caption{margin:.6em 0 0 1.5em;font-size:.9em;color:color-mix(in srgb,currentColor 72%,transparent)}
 .cw-quote .cw-quote__caption::before{content:"— "}
-.cw-quote .cw-quote__caption cite{font-style:normal}`;
+.cw-quote .cw-quote__caption cite{font-style:normal}
+.cw-testimonial{margin-inline:0;text-align:start}
+.cw-testimonial .cw-testimonial__quote{position:relative;margin:0 0 1.4em;padding:1em 1.25em;border:0;border-radius:.75em;background:color-mix(in srgb,currentColor 6%,transparent);font-size:1.05em}
+.cw-testimonial .cw-testimonial__quote::after{content:"";position:absolute;top:100%;left:1.75em;width:1.1em;height:.7em;background:inherit;clip-path:polygon(0 0,100% 0,0 100%)}
+.cw-testimonial .cw-testimonial__quote>:first-child{margin-top:0}
+.cw-testimonial .cw-testimonial__quote>:last-child{margin-bottom:0}
+.cw-testimonial .cw-testimonial__quote>:first-child::before{content:"\\201C";content:"\\201C"/""}
+.cw-testimonial .cw-testimonial__quote>:last-child::after{content:"\\201D";content:"\\201D"/""}
+.cw-testimonial .cw-testimonial__person{display:flex;align-items:center;gap:.75em;margin:0 0 0 1em;font-size:.9em;line-height:1.35}
+.cw-testimonial .cw-testimonial__photo{flex:none;width:3.5em;height:3.5em;margin:0;border-radius:50%;object-fit:cover;background:color-mix(in srgb,currentColor 12%,transparent)}
+.cw-testimonial .cw-testimonial__name{display:block;font-weight:700;text-transform:uppercase;letter-spacing:.02em}
+.cw-testimonial .cw-testimonial__title{display:block;color:color-mix(in srgb,currentColor 72%,transparent)}
+.cw-testimonial .cw-testimonial__person a{color:inherit;text-decoration-thickness:1px;text-underline-offset:.15em}
+.cw-podcast .cw-podcast__title{margin:0 0 .6em;font-weight:700}
+.cw-podcast p.cw-podcast__title{font-size:1em}
+.cw-podcast .cw-podcast__links{display:flex;flex-wrap:wrap;gap:.5em;margin:0;padding:0;list-style:none}
+.cw-podcast .cw-podcast__links li{margin:0;padding:0}
+.cw-podcast .cw-podcast__link{display:inline-flex;align-items:center;gap:.45em;padding:.4em .9em;border:1px solid color-mix(in srgb,currentColor 25%,transparent);border-radius:999px;color:inherit;font-size:.95em;line-height:1.3;text-decoration:none}
+.cw-podcast .cw-podcast__link:hover{background:color-mix(in srgb,currentColor 7%,transparent)}
+.cw-podcast .cw-podcast__link:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+.cw-podcast .cw-podcast__icon{flex:none;width:1.15em;height:1.15em}`;
 
 // ── Samples for the admin preview ────────────────────────────────
+
+export const SAMPLE_TESTIMONIAL: Testimonial = {
+	quote: "Clear, practical and always worth the read. I learn something new every time.",
+	name: "Alex Rivera",
+	title: "Head of Content, Example Co.",
+	photo: "",
+	nameUrl: "https://example.com/alex/",
+	titleUrl: "",
+};
 
 export const SAMPLE_NOTE: Note = {
 	variant: "note",

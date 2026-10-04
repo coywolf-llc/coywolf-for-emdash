@@ -53,14 +53,16 @@ function normalizeDefaults(value: unknown): ImportDefaults {
 async function convertOptions(ctx: PluginContext): Promise<ConvertOptions> {
 	const d = normalizeDefaults(await ctx.settings.get(DEFAULTS_SETTING));
 	const features = await ctxFeatures(ctx);
-	// Content Blocks that are off aren't converted to: their markers stay HTML until the block is turned on.
-	const contentBlocks = {
-		note: isOn(features, "contentBlocks.note"),
-		details: isOn(features, "contentBlocks.details"),
-		disclosure: isOn(features, "contentBlocks.disclosure"),
-		quote: isOn(features, "contentBlocks.quote"),
+	// Custom Blocks that are off aren't converted to: their markers stay HTML until the block is turned on.
+	const customBlocks = {
+		note: isOn(features, "customBlocks.note"),
+		details: isOn(features, "customBlocks.details"),
+		disclosure: isOn(features, "customBlocks.disclosure"),
+		quote: isOn(features, "customBlocks.quote"),
+		testimonial: isOn(features, "customBlocks.testimonial"),
+		podcast: isOn(features, "customBlocks.podcast"),
 	};
-	return { videoDefaults: d.video, fileDefaults: d.files, contentBlocks };
+	return { videoDefaults: d.video, fileDefaults: d.files, customBlocks };
 }
 
 // ── Video facts ──────────────────────────────────────────────────

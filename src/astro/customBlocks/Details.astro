@@ -1,0 +1,8 @@
+---
+/** Portable Text `coywolf-details` block (Custom Blocks module). */
+import CustomBlock from "./CustomBlock.astro";
+
+const { node } = Astro.props as { node: Record<string, unknown> };
+---
+
+<CustomBlock kind="details" node={node} />

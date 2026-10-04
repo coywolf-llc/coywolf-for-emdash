@@ -3,7 +3,7 @@ import type { PluginAdminExports } from "emdash";
 import { AiPage } from "./ai.js";
 import { BackupStatusWidget, BackupsPage } from "./backups.js";
 import { CodeBlocksPage } from "./codeBlocks.js";
-import { ContentBlocksPage } from "./contentBlocks.js";
+import { CustomBlocksPage } from "./customBlocks.js";
 import { DiscoveryPage } from "./discovery.js";
 import { FeaturesPage } from "./features.js";
 import { HeadingsPage } from "./headings.js";
@@ -34,7 +34,9 @@ export const pages: PluginAdminExports["pages"] = {
 	"/videos": VideosPage,
 	"/robots": RobotsPage,
 	"/reviews": ReviewsPage,
-	"/content-blocks": ContentBlocksPage,
+	"/custom-blocks": CustomBlocksPage,
+	// Called Content Blocks until 0.12.0: old bookmarks still open the page.
+	"/content-blocks": CustomBlocksPage,
 	"/wordpress-import": WpImportPage,
 };
 
