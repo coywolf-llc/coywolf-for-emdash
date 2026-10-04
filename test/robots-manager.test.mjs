@@ -68,7 +68,7 @@ test("allow a folder anywhere while AI training bots are blocked: their group ge
 	const txt = gen(c);
 	const group = txt.slice(txt.indexOf("User-agent: GPTBot"));
 	const lines = group.slice(0, group.indexOf("\n\n")).split("\n").filter((l) => !l.startsWith("User-agent"));
-	assert.deepEqual(lines, ["Allow: /*/docs/", "Allow: /docs/", "Disallow: /"]);
+	assert.deepEqual(lines, ["Allow: /.well-known/", "Allow: /*/docs/", "Allow: /docs/", "Disallow: /"]);
 	for (const bot of AI) {
 		assert.equal(allowed(txt, bot, "/docs/a"), true, bot);
 		assert.equal(allowed(txt, bot, "/en/docs/a"), true, bot);
@@ -180,10 +180,13 @@ for (const [label, text] of IMPORTS) {
 	});
 }
 
-test("import: EmDash default becomes no rules, admin lines, sitemap, media opened (and says so)", () => {
+test("import: EmDash default keeps its explicit Allow: /, admin lines, sitemap, media opened (and says so)", () => {
 	const r = imp.importRobots(imp.emdashDefaultRobots(SITE), SITE);
 	assert.equal(r.mode, "rules");
-	assert.equal(r.config.rules.length, 0);
+	assert.equal(r.config.rules.length, 1);
+	assert.deepEqual(rules.directives(r.config.rules[0]).map((l) => `${l.directive}: ${l.value}`), ["Allow: /"]);
+	assert.deepEqual(r.config.rules[0].agents, ["*"]);
+	assert.ok(imp.equivalent(imp.emdashDefaultRobots(SITE), gen(r.config), agentsFor(imp.emdashDefaultRobots(SITE))));
 	assert.equal(r.config.emdashLines, true);
 	assert.equal(r.config.includeSitemap, true);
 	assert.equal(r.config.allowMedia, true);
@@ -510,4 +513,61 @@ test("match examples come from the real matcher", () => {
 	assert.ok(ex1.misses.every((p) => !rep.matchRaw("/recipes/", p)));
 	const r2 = guided.draftToRule({ ...guided.blankDraft("e"), area: "section", section: "/m/", except: ["/m/free/"] }, [], SITE);
 	assert.ok(guided.matchExamples(r2).misses.some((p) => p.startsWith("/m/free/")));
+});
+
+/* ---------------- automatic discovery allowances ---------------- */
+
+test("automaticFrom reads the llms switch; no sitemap or IndexNow lines are added", () => {
+	assert.deepEqual(rules.automaticFrom({ "discovery.llms": true, "discovery.newsSitemap": true, "videos.sitemap": true }), { llms: true });
+	const txt = gen(cfg([], { automatic: rules.automaticFrom({ "discovery.newsSitemap": true, "videos.sitemap": true }) }));
+	assert.ok(!txt.includes("news-sitemap") && !txt.includes("video-sitemap"));
+});
+
+test("discovery files stay readable for crawlers blocked from the whole site", () => {
+	const automatic = rules.automaticFrom({ "discovery.llms": true });
+	const c = cfg([blockAi(), rule({ name: "Private", kind: "folder", path: "/private/" })], { automatic, discoveryPaths: ["/agents.json"] });
+	const txt = gen(c);
+	for (const bot of ["GPTBot", "CCBot"]) {
+		for (const p of ["/llms.txt", "/llms-full.txt", "/.well-known/security.txt", "/.well-known/ai-plugin.json", "/agents.json"]) assert.equal(allowed(txt, bot, p), true, `${bot} ${p}`);
+		assert.equal(allowed(txt, bot, "/a-post/"), false, bot);
+		assert.equal(allowed(txt, bot, "/a-post/index.html.md"), false, bot);
+		assert.equal(allowed(txt, bot, "/_emdash/api/media/f/a.jpg"), false, bot);
+	}
+	// Nothing is added where nothing blocks the files.
+	const star = txt.slice(txt.indexOf("User-agent: *"));
+	assert.ok(!star.slice(0, star.indexOf("\n\n")).includes("well-known"));
+	assert.equal(allowed(txt, "Googlebot", "/private/x"), false);
+	assert.equal(val.selfCheck(c, SITE).ok, true);
+	// llms.txt only while Discovery's llms.txt is on; /.well-known/ always.
+	const noLlms = gen({ ...c, automatic: rules.automaticFrom({}) });
+	assert.equal(allowed(noLlms, "GPTBot", "/llms.txt"), false);
+	assert.equal(allowed(noLlms, "GPTBot", "/.well-known/security.txt"), true);
+	// Allowance off: nothing.
+	const off = gen({ ...c, discoveryAllowances: false });
+	assert.equal(allowed(off, "GPTBot", "/llms.txt"), false);
+	assert.equal(allowed(off, "GPTBot", "/.well-known/security.txt"), false);
+});
+
+test("a rule that blocks a discovery file is warned about and doesn't take effect", () => {
+	const automatic = rules.automaticFrom({ "discovery.llms": true });
+	const txt = gen(cfg([rule({ name: "Closed" })], { automatic }));
+	assert.equal(allowed(txt, "AnyBot", "/llms.txt"), true);
+	assert.equal(allowed(txt, "AnyBot", "/x/"), false);
+	assert.equal(sev(findings(cfg([], { automatic }), rule({ kind: "single_page", path: "/llms.txt" })), "discovery-path"), "warning");
+	assert.equal(sev(findings(cfg([]), rule({ kind: "folder", path: "/.well-known/" })), "discovery-path"), "warning");
+	assert.ok(!codes(findings(cfg([]), rule({ kind: "single_page", path: "/llms.txt" }))).includes("discovery-path"));
+	assert.ok(!codes(findings(cfg([], { discoveryAllowances: false }), rule({ kind: "folder", path: "/.well-known/" }))).includes("discovery-path"));
+});
+
+test("self-check catches Extra lines that block a discovery file", () => {
+	const c = cfg([rule({ name: "GPT out", agents: ["GPTBot"] })], { extra: "User-agent: GPTBot\nDisallow: /.well-known/$" });
+	const r = val.selfCheck(c, SITE);
+	assert.equal(r.ok, false);
+	assert.equal(r.failures[0].ruleName, "Discovery files");
+});
+
+test("saved includeSitemap:false (production) is respected; missing defaults on", () => {
+	assert.equal(rules.normalizeConfig({ rules: [], includeSitemap: false, sitemaps: [], allowMedia: true, comments: true, extra: "" }).includeSitemap, false);
+	assert.equal(rules.normalizeConfig({ rules: [] }).includeSitemap, true);
+	assert.equal(imp.importRobots(imp.emdashDefaultRobots(SITE), SITE).config.includeSitemap, true);
 });

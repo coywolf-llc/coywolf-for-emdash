@@ -8,19 +8,21 @@ import type { PluginContext } from "emdash";
 import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
-import { requireFeature } from "../core/features.js";
+import { ctxFeatures, requireFeature } from "../core/features.js";
 import { parseInput, workerEnv } from "../shared.js";
 import { type BotOverride, applyOverrides, customSlug, mergeDirectory } from "./bots.js";
 import { BASELINE_DATE, baselineBots } from "./directory.js";
 import { emdashRobots, importRobots } from "./importer.js";
 import { CONFIG_SETTING, invalidateRobotsCache, readEmdashCustomRobots } from "./middleware.js";
 import { RADAR_TOKEN_SETTING, SYNC_STATE_KEY, type SyncState, radarTokenSource, readOverlays, syncRadar } from "./radar.js";
-import { PRESETS, RULE_KINDS, type RobotsConfig, generate, isValidToken, normalizeConfig } from "./rules.js";
+import { PRESETS, RULE_KINDS, type RobotsConfig, automaticFrom, generate, isValidToken, normalizeConfig } from "./rules.js";
 import { checkConfig } from "./validate.js";
 
 export const HISTORY_COLLECTION = "robots_history";
 export const BOT_OVERRIDES_COLLECTION = "robots_bot_overrides";
 const HISTORY_LIMIT = 20;
+/** KV flag: the admin closed the "your sitemap isn't listed" note. */
+const SITEMAP_NOTE_KEY = "robots:sitemapNoteDismissed";
 
 export interface RobotsOptions {
 	/** D1 binding of the site database. Default "DB". */
@@ -67,6 +69,8 @@ const configInput = z.object({
 	extra: z.string().max(20_000),
 	inheritGeneral: z.boolean(),
 	emdashLines: z.boolean(),
+	discoveryAllowances: z.boolean().optional(),
+	discoveryPaths: z.array(oneLine(500)).max(50).optional(),
 	importedAt: z.string().max(40).optional(),
 	importMode: z.enum(["rules", "verbatim"]).optional(),
 	importNotes: z.array(z.string().max(500)).max(10).optional(),
@@ -162,17 +166,19 @@ async function loadOrImport(ctx: PluginContext, database: string): Promise<Robot
 
 async function persist(ctx: PluginContext, config: RobotsConfig, label: string, by: string | undefined) {
 	const siteUrl = siteUrlOf(ctx);
-	const problem = checkConfig(config, siteUrl || undefined);
+	const { automatic: _ignored, ...stored } = config;
+	const live: RobotsConfig = { ...stored, automatic: automaticFrom(await ctxFeatures(ctx)) };
+	const problem = checkConfig(live, siteUrl || undefined);
 	if (problem) throw PluginRouteError.badRequest(problem);
-	const preview = generate(config, { siteUrl });
+	const preview = generate(live, { siteUrl });
 	if (new TextEncoder().encode(preview).length > 500 * 1024) {
 		throw PluginRouteError.badRequest("That robots.txt would be over 500 KiB, the most Google reads. Remove some rules.");
 	}
-	await ctx.settings.set(CONFIG_SETTING, config);
+	await ctx.settings.set(CONFIG_SETTING, stored);
 	invalidateRobotsCache();
-	await pushHistory(ctx, { at: new Date().toISOString(), by, label, config }).catch((error) => ctx.log.warn("Robots: history not saved", { error: String(error) }));
+	await pushHistory(ctx, { at: new Date().toISOString(), by, label, config: stored }).catch((error) => ctx.log.warn("Robots: history not saved", { error: String(error) }));
 	ctx.log.info("Robots.txt rules saved", { rules: config.rules.length, label });
-	return { config, preview, saved: true };
+	return { config: live, preview, saved: true };
 }
 
 const botAction = z.discriminatedUnion("action", [
@@ -202,7 +208,7 @@ export function robotsModule(options: RobotsOptions) {
 			permission: "plugins:manage" as const,
 			handler: async (ctx: PluginContext) => {
 				await requireFeature(ctx, "robots");
-				const config = await loadOrImport(ctx, database);
+				const config: RobotsConfig = { ...(await loadOrImport(ctx, database)), automatic: automaticFrom(await ctxFeatures(ctx)) };
 				const siteUrl = siteUrlOf(ctx);
 				const tokenSource = await radarTokenSource(ctx);
 				const emdash = await emdashServed(database, siteUrl);
@@ -219,6 +225,7 @@ export function robotsModule(options: RobotsOptions) {
 					preview: generate(config, { siteUrl }),
 					emdash,
 					history: history.map((h) => ({ id: h.id, at: h.data.at, by: h.data.by, label: h.data.label, rules: h.data.config.rules.length })),
+					sitemapNoteDismissed: (await ctx.kv.get<boolean>(SITEMAP_NOTE_KEY)) === true,
 					presets: PRESETS,
 					sections: await siteSections(database),
 					radar: {
@@ -230,6 +237,17 @@ export function robotsModule(options: RobotsOptions) {
 				};
 			},
 		},
+
+		/** Close the "your sitemap isn't listed" note for good. */
+		"robots/dismiss-sitemap-note": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await ctx.kv.set(SITEMAP_NOTE_KEY, true);
+				return { dismissed: true };
+			},
+		}),
 
 		/** The crawler directory (bundled baseline + Radar overlay + this site's verifications, renames and custom bots). */
 		"robots/bots": {

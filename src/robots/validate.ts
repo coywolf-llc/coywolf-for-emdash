@@ -10,18 +10,20 @@
  * Verdicts come from the real matcher (./rep.ts) on the generated text, so
  * the checks see exactly what crawlers will see.
  */
-import { type Directive, evaluateParsed, parse } from "./rep.js";
+import { type Directive, evaluateParsed, matchRaw, parse } from "./rep.js";
 import { describeRule, listPhrase } from "./explain.js";
 import {
 	CRAWLER_GROUPS,
 	type DirectoryBot,
 	EMDASH_ADMIN_PATH,
 	EMDASH_MEDIA_PATH,
+	discoveryPathsFor,
 	MAX_VALUE_LENGTH,
 	PROBE_AGENT,
 	type RobotsConfig,
 	type RobotsRule,
 	RobotsValidationError,
+	blocksWholeSite,
 	decide,
 	directives,
 	generate,
@@ -285,6 +287,21 @@ export function analyzeRule(config: RobotsConfig, draft: RobotsRule, options: { 
 		}
 	}
 
+	// Discovery files stay readable; a rule aimed at one has no effect while the allowance is on.
+	if (!intended) {
+		const hit = discoveryPathsFor(config).filter((path) => {
+			const probe = samplePaths(path)[0] ?? path;
+			return draftLines.some((d) => d.directive === "Disallow" && !blocksWholeSite(d.value) && matchRaw(d.value, probe));
+		});
+		if (hit.length) {
+			findings.push({
+				code: "discovery-path",
+				severity: "warning",
+				message: `${listPhrase(hit)} ${hit.length === 1 ? "is a discovery file" : "are discovery files"} that Coywolf Pack keeps readable for every crawler, so this rule won't block ${hit.length === 1 ? "it" : "them"}. To block ${hit.length === 1 ? "it" : "them"}, turn off “Keep discovery files readable” in Settings and history.`,
+			});
+		}
+	}
+
 	findings.push(...riskFindings(vb, va, [...new Set([...agents, ...SEARCH_ENGINES, PROBE_AGENT])]));
 
 	if (options.bots) {
@@ -432,6 +449,27 @@ export function selfCheck(config: RobotsConfig, siteUrl = SITE.siteUrl, limit = 
 					actual: v.allowed(agent, p),
 					decidedBy: "",
 					reason: `This rule is only for ${listPhrase(rule.agents)}, but it changes what ${agent === PROBE_AGENT ? "other crawlers" : agent} may fetch on ${p}.`,
+				});
+				break;
+			}
+		}
+	}
+	// Automatic lines (Discovery): every crawler that got one must really be able to fetch that file.
+	for (const [k, entry] of resolved) {
+		if (failures.length >= limit) break;
+		const agent = k === "*" ? PROBE_AGENT : entry.token;
+		for (const l of entry.lines.filter((x) => x.auto)) {
+			const p = samplePaths(l.value)[0];
+			if (p && !v.allowed(agent, p)) {
+				failures.push({
+					ruleId: "",
+					ruleName: "Discovery files",
+					agent: k === "*" ? "*" : entry.token,
+					path: p,
+					expected: true,
+					actual: false,
+					decidedBy: (lines[v.line(agent, p).matchedLine - 1] ?? "").trim(),
+					reason: `${k === "*" ? "Crawlers" : entry.token} should be able to read ${p} because it's a discovery file, but the file blocks it${config.extra.trim() ? "; check Extra lines" : ""}.`,
 				});
 				break;
 			}

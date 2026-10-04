@@ -89,7 +89,7 @@ test("bots named in rules still get EmDash's admin block; fully blocked bots don
 	assert.equal(rep.oneAgentAllowed(txt, "bingbot", "/_emdash/api/content"), false);
 	assert.equal(rep.oneAgentAllowed(txt, "SomeOtherBot", "/drafts/x"), true);
 	assert.equal(rep.oneAgentAllowed(txt, "SomeOtherBot", "/_emdash/"), false);
-	assert.match(txt, /# Block AI training crawlers\nUser-agent: GPTBot\nUser-agent: CCBot\nDisallow: \/\n/);
+	assert.match(txt, /# Block AI training crawlers; discovery files stay readable\nUser-agent: GPTBot\nUser-agent: CCBot\nAllow: \/\.well-known\/\nDisallow: \/\n/);
 	const gpt = txt.slice(txt.indexOf("User-agent: GPTBot"), txt.indexOf("\n\n", txt.indexOf("User-agent: GPTBot")));
 	assert.ok(!gpt.includes("/_emdash/"));
 	for (const bot of ["Googlebot", "bingbot"]) {

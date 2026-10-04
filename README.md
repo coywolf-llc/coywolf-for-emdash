@@ -643,16 +643,22 @@ Turning the feature on takes over seamlessly. The first `/robots.txt` request or
 1. **What do you want to do?** Keep crawlers out, or let crawlers in.
 2. **Which part of your site?** Everything · A section (with “also wherever this folder name appears deeper”) · One page (with “only this exact address”) · A kind of file (PDF, Word, spreadsheets, images, ZIP, video… or other extensions, optionally only inside a section) · Links with tracking or extra parameters (utm_…, ref, fbclid, gclid, session IDs, sort and filters, site search, any `?`, or one you name) · Advanced pattern. Paste any address from your site: it's trimmed to its path, encoded, and read (“We read this as the /recipes/ section”), with a one-click switch when another choice fits better. Your collections' sections are offered as chips. A live box shows addresses the rule **will match** and nearby ones it **won't**, from the real matcher.
 3. **Which crawlers?** Everyone · Search engines · AI training · AI search and assistants · SEO tools (each the documented tokens plus verified directory bots in that category) · Pick specific bots (search, categories with tick-all, verified badges, or a token that isn't listed).
-4. **Review**: consequences first (“Search engines can fetch this section. 51 AI training crawlers can't.”), **Except…** for allowed items inside a blocked area, the name and note (prefilled), **Try a URL**, the exact lines under **Show robots.txt lines**, and the checks.
+4. **Review**: consequences first (“Search engines can fetch this section. 44 AI training crawlers can't.”), **Except…** for allowed items inside a blocked area, the name and note (prefilled), **Try a URL**, the exact lines under **Show robots.txt lines**, and the checks.
 
 ### Checks
 
 Every change is checked in the browser as you type and again on the server before saving. Errors block saving; warnings need “I understand, add it anyway”.
 
 - **Errors**: invalid crawler tokens, line breaks, control characters or `#` in a value, patterns not starting with `/` or `*`, values over 2,083 characters, bad extensions or parameter names, an exact duplicate of another rule, the same crawlers both allowed and blocked on the same path, and a failed self-check.
-- **Warnings**: an Allow that nothing blocks, a block already covered by a wider block (naming it), a rule for everyone that named crawlers won't follow (with “Also apply it to these crawlers”), naming a crawler that then ignores the rules for all crawlers (RFC 9309 group selection; with the setting off, offers to turn it on), search engines blocked from your pages, CSS/JavaScript/images that renderers need, the media library, the sitemap, opening EmDash's admin, and blocks that the “Keep media crawlable” setting overrides.
+- **Warnings**: a block on a discovery file that's kept readable, an Allow that nothing blocks, a block already covered by a wider block (naming it), a rule for everyone that named crawlers won't follow (with “Also apply it to these crawlers”), naming a crawler that then ignores the rules for all crawlers (RFC 9309 group selection; with the setting off, offers to turn it on), search engines blocked from your pages, CSS/JavaScript/images that renderers need, the media library, the sitemap, opening EmDash's admin, and blocks that the “Keep media crawlable” setting overrides.
 - **Notes**: an Allow inside a block (valid; explained), where a more specific rule still decides, a partial duplicate (with **Merge**), unknown or unverified tokens, and case-sensitive paths.
 - **Self-check**: after generating the file, every rule's crawlers are tested on addresses the rule targets, and the parsed file must give the verdict the rules say; crawlers the rule doesn't name must get the same verdict with and without it. A failure names the rule, crawler, address and deciding line.
+
+### Automatic lines and the sitemap
+
+**Discovery files stay readable.** Any crawler that your rules would block from `/.well-known/` (security.txt, ai-plugin.json and future machine-discovery manifests), from `/llms.txt` and `/llms-full.txt` while Discovery's llms.txt feature is on, or from discovery paths you add, gets an `Allow` line for them. The Rules tab lists these as **Automatic** lines with the reason. Turn the allowance off, or add paths, under **Settings and history**. Feature switches are read when the file is generated (middleware and admin preview), the self-check confirms each allowance, and a rule that targets a discovery file gets a warning.
+
+**List the site's sitemap** sits at the top of the Rules tab. It's on for new and imported setups. A saved choice to turn it off is kept (for example when you submit sitemaps in Search Console), with a small note you can dismiss.
 
 ### How the file is written
 
@@ -664,7 +670,7 @@ Feature switches: **Robots.txt Rules** (`robots`) and **Weekly crawler list from
 
 ### Setup
 
-Uses the same `coywolfPack()` middleware as Redirects, and the `DB` binding. A static `public/robots.txt` in the site would be served by Workers static assets before the Worker runs, so remove it. Rules are read at most once a minute per Worker isolate; history and bot changes live in plugin storage (`robots_history`, `robots_bot_overrides`); the response is cached for an hour (`Cache-Control: public, max-age=3600`).
+Uses the same `coywolfPack()` middleware as Redirects, and the `DB` binding. A static `public/robots.txt` in the site would be served by Workers static assets before the Worker runs, so remove it. Rules are read at most once a minute per Worker isolate; history and bot changes live in plugin storage (`robots_history`, `robots_bot_overrides`), the dismissed sitemap note in KV; the response is cached for an hour (`Cache-Control: public, max-age=3600`).
 
 ### The crawler directory
 

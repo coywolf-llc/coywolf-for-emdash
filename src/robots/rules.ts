@@ -92,6 +92,36 @@ export interface RobotsConfig {
 	importMode?: "rules" | "verbatim";
 	/** What the import did, in plain English (shown with "What's being served"). */
 	importNotes?: string[];
+	/** Keep discovery files (/.well-known/, llms.txt, and `discoveryPaths`) reachable for every crawler. */
+	discoveryAllowances: boolean;
+	/** More discovery paths to keep reachable (site-relative). */
+	discoveryPaths: string[];
+	/**
+	 * Not stored: what other modules' features add, filled in at generation
+	 * time from the feature switches (see automaticFrom).
+	 */
+	automatic?: AutomaticInfo;
+}
+
+export interface AutomaticInfo {
+	/** discovery.llms is on (Discovery serves /llms.txt). */
+	llms: boolean;
+}
+
+/** Machine-discovery locations kept reachable by default (RFC 8615 well-known URIs cover security.txt, ai-plugin.json and future manifests). */
+export const WELL_KNOWN_PATH = "/.well-known/";
+export const LLMS_PATHS = ["/llms.txt", "/llms-full.txt"];
+
+/** What the pack's other features add to robots.txt, from the feature switches. */
+export function automaticFrom(features: Record<string, boolean | undefined>): AutomaticInfo {
+	return { llms: Boolean(features["discovery.llms"]) };
+}
+
+/** The discovery paths every crawler keeps (empty when the allowance is off). */
+export function discoveryPathsFor(config: Pick<RobotsConfig, "discoveryAllowances" | "discoveryPaths" | "automatic">): string[] {
+	if (!config.discoveryAllowances) return [];
+	const own = (config.discoveryPaths ?? []).map((p) => encodeValue(clean(p))).filter((p) => p.startsWith("/") && p.length > 1);
+	return [...new Set([WELL_KNOWN_PATH, ...(config.automatic?.llms ? LLMS_PATHS : []), ...own])];
 }
 
 export const CONFIG_VERSION = 2;
@@ -106,6 +136,8 @@ export const DEFAULT_CONFIG: RobotsConfig = {
 	extra: "",
 	inheritGeneral: true,
 	emdashLines: true,
+	discoveryAllowances: true,
+	discoveryPaths: [],
 };
 
 export const EMDASH_ADMIN_PATH = "/_emdash/";
@@ -346,6 +378,8 @@ export interface ResolvedLine extends DirectiveLine {
 	system?: boolean;
 	/** Copied from the rules for all crawlers. */
 	inherited?: boolean;
+	/** Added because another feature is on (Discovery's llms.txt and Markdown). */
+	auto?: boolean;
 }
 
 export interface ResolvedGroup {
@@ -448,6 +482,14 @@ export function resolveAgents(config: RobotsConfig): Map<string, { token: string
 		if (config.allowMedia && (config.emdashLines || mediaBlocked)) addLine(entry.lines, { directive: "Allow", value: EMDASH_MEDIA_PATH }, null, { system: true });
 		if (config.emdashLines) addLine(entry.lines, { directive: "Disallow", value: EMDASH_ADMIN_PATH }, null, { system: true });
 	}
+	// Discovery files: any crawler that would be blocked from one gets an Allow for it.
+	const discovery = discoveryPathsFor(config);
+	for (const entry of out.values()) {
+		for (const value of discovery) {
+			const probe = samplePaths(value)[0] ?? value;
+			if (!decide(entry.lines, probe).allowed) addLine(entry.lines, { directive: "Allow", value }, null, { system: true, auto: true });
+		}
+	}
 	return out;
 }
 
@@ -503,7 +545,8 @@ export function generate(config: RobotsConfig, options: GenerateOptions): string
 		if (config.comments) {
 			const labels = uniq(group.lines.filter((l) => !l.inherited).flatMap((l) => l.ruleIds.map((id) => names.get(id) ?? "")).filter(Boolean));
 			if (group.lines.some((l) => l.inherited)) labels.push("rules for all crawlers");
-			if (group.lines.some((l) => l.system)) labels.push(config.allowMedia ? "EmDash admin and API (media stays crawlable)" : "EmDash admin and API");
+			if (group.lines.some((l) => l.auto)) labels.push("discovery files stay readable");
+			if (group.lines.some((l) => l.system && !l.auto)) labels.push(config.allowMedia ? "EmDash admin and API (media stays crawlable)" : "EmDash admin and API");
 			if (labels.length) out.push(`# ${labels.join("; ")}`);
 		}
 		for (const agent of group.agents) out.push(`User-agent: ${agent}`);
@@ -568,6 +611,8 @@ export function normalizeConfig(input: Partial<RobotsConfig> | null | undefined)
 		extra: typeof input?.extra === "string" ? input.extra : "",
 		inheritGeneral: typeof input?.inheritGeneral === "boolean" ? input.inheritGeneral : true,
 		emdashLines: typeof input?.emdashLines === "boolean" ? input.emdashLines : true,
+		discoveryAllowances: typeof input?.discoveryAllowances === "boolean" ? input.discoveryAllowances : true,
+		discoveryPaths: Array.isArray(input?.discoveryPaths) ? input.discoveryPaths.filter((p) => typeof p === "string") : [],
 		...(input?.importedAt ? { importedAt: input.importedAt } : {}),
 		...(input?.importMode ? { importMode: input.importMode } : {}),
 		...(Array.isArray(input?.importNotes) ? { importNotes: input.importNotes.filter((n) => typeof n === "string") } : {}),

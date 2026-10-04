@@ -8,9 +8,9 @@
  * the robots.txt EmDash was serving into equivalent rules and saves them
  * with an insert-if-absent, so concurrent first requests can't import twice.
  */
-import { PLUGIN_ID } from "../core/features.js";
+import { PLUGIN_ID, siteFeatures } from "../core/features.js";
 import { emdashRobots, importRobots } from "./importer.js";
-import { type RobotsConfig, generate, normalizeConfig } from "./rules.js";
+import { type RobotsConfig, automaticFrom, generate, normalizeConfig } from "./rules.js";
 
 export const CONFIG_SETTING = "robots.config";
 export const CONFIG_OPTION = `plugin:${PLUGIN_ID}:settings:${CONFIG_SETTING}`;
@@ -97,7 +97,9 @@ export async function serveRobots(url: URL, method: string, env: Record<string, 
 	}
 	if (!cache.config) return undefined;
 
-	const body = generate(cache.config, { siteUrl: siteOrigin(cache.siteUrl, url) });
+	// Discovery and Videos add lines (llms.txt/Markdown allowances, their sitemaps) while their features are on.
+	const automatic = automaticFrom(await siteFeatures(database).catch(() => ({})));
+	const body = generate({ ...cache.config, automatic }, { siteUrl: siteOrigin(cache.siteUrl, url) });
 	return new Response(method === "HEAD" ? null : body, {
 		status: 200,
 		headers: {

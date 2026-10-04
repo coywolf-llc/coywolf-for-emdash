@@ -6,13 +6,13 @@
  * again on the server (including the self-check) before it's saved.
  */
 import { Badge, Banner, Button, Checkbox, Dialog, DropdownMenu, Input, InputArea, Loader, Switch, Tabs } from "@cloudflare/kumo";
-import { CheckCircle, Copy, DotsThree, PencilSimple, Plus, Robot, Sparkle, Trash, Warning, XCircle } from "@phosphor-icons/react";
+import { CheckCircle, Copy, DotsThree, Info, PencilSimple, Plus, Robot, Sparkle, Trash, Warning, X, XCircle } from "@phosphor-icons/react";
 import * as React from "react";
 
 import type { BotEntry } from "../robots/bots.js";
 import { describeRule, summarize } from "../robots/explain.js";
 import { evaluate } from "../robots/rep.js";
-import { type RobotsConfig, type RobotsRule, TEMPLATES, directives, generate } from "../robots/rules.js";
+import { type RobotsConfig, type RobotsRule, TEMPLATES, directives, resolveAgents } from "../robots/rules.js";
 import { type Finding, analyzeConfigChange, checkConfig } from "../robots/validate.js";
 import { BotsTab } from "./robots-bots.js";
 import { dateTimeFormat, errorText, get, newId, post, tokenIndex, useCopy } from "./robots-shared.js";
@@ -42,6 +42,7 @@ interface PageData {
 	preview: string;
 	emdash: { text: string; custom: boolean };
 	history: HistoryItem[];
+	sitemapNoteDismissed: boolean;
 	sections: Array<{ label: string; path: string }>;
 	radar: { tokenConfigured: boolean; tokenSource: "settings" | "env" | null; state: SyncState | null; baselineDate: string };
 }
@@ -205,6 +206,66 @@ function ServedFile(props: { text: string; emdash: PageData["emdash"]; config: R
 	);
 }
 
+/** "List the site's sitemap", up top, with a gentle dismissible note when it's off. */
+function SitemapOption(props: { config: RobotsConfig; siteUrl: string; busy: boolean; noteDismissed: boolean; onChange: (on: boolean) => void; onDismiss: () => void }) {
+	return (
+		<section className="space-y-2 rounded-lg border border-kumo-line p-4" aria-labelledby="robots-sitemap">
+			<h2 id="robots-sitemap" className="sr-only">
+				Sitemap
+			</h2>
+			<Checkbox
+				label={`List the site's sitemap (${props.siteUrl || "your site"}/sitemap.xml)`}
+				checked={props.config.includeSitemap}
+				disabled={props.busy}
+				onCheckedChange={(on: boolean) => props.onChange(on)}
+			/>
+			<p className="pl-6 text-xs text-kumo-subtle">A Sitemap line tells every search engine where your sitemap is. Turn it off if you'd rather submit sitemaps yourself, for example in Google Search Console.</p>
+			{!props.config.includeSitemap && !props.noteDismissed && (
+				<div className="flex items-start gap-2 rounded bg-kumo-tint/40 px-3 py-2 text-sm" role="note">
+					<Info className="mt-0.5 shrink-0 text-kumo-subtle" aria-hidden="true" />
+					<span className="flex-1">
+						Your sitemap isn't listed in robots.txt. That's fine if you submit it in Search Console; other search engines may find it more slowly.{" "}
+						<button type="button" className="font-medium underline" disabled={props.busy} onClick={() => props.onChange(true)}>
+							List it
+						</button>
+					</span>
+					<Button type="button" variant="ghost" shape="square" size="sm" aria-label="Don't show this note again" onClick={props.onDismiss}>
+						<X aria-hidden="true" />
+					</Button>
+				</div>
+			)}
+		</section>
+	);
+}
+
+/** Lines added automatically so crawlers can always read discovery files (/.well-known/, llms.txt…). */
+function AutomaticLines(props: { config: RobotsConfig }) {
+	const resolved = resolveAgents(props.config);
+	const byValue = new Map<string, string[]>();
+	for (const [k, entry] of resolved) {
+		for (const l of entry.lines.filter((x) => x.auto)) byValue.set(l.value, [...(byValue.get(l.value) ?? []), k === "*" ? "all other crawlers" : entry.token]);
+	}
+	if (!byValue.size) return null;
+	return (
+		<section className="space-y-2 rounded-lg border border-kumo-line p-4" aria-labelledby="robots-auto">
+			<h2 id="robots-auto" className="flex items-center gap-2 text-base font-semibold">
+				Automatic <Badge variant="secondary">{byValue.size}</Badge>
+			</h2>
+			<p className="text-sm text-kumo-subtle">
+				Added so crawlers you've blocked can still read your discovery files ({[...byValue.keys()].join(", ")}), which tell AI agents and other tools about your site
+				{props.config.automatic?.llms ? "; llms.txt is included because Discovery's llms.txt is on" : ""}. Change this under Settings and history.
+			</p>
+			<ul className="space-y-1 text-xs">
+				{[...byValue].map(([value, who]) => (
+					<li key={value}>
+						<code>Allow: {value}</code> <span className="text-kumo-subtle">for {who.length > 4 ? `${who.slice(0, 3).join(", ")} and ${who.length - 3} more` : who.join(", ")}</span>
+					</li>
+				))}
+			</ul>
+		</section>
+	);
+}
+
 function RulesList(props: {
 	config: RobotsConfig;
 	bots: BotEntry[];
@@ -333,7 +394,21 @@ function SettingsTab(props: {
 					In robots.txt, a crawler that's named anywhere ignores every rule for “all crawlers” (RFC 9309). With this on, Coywolf Pack copies those rules into its group, except where its own
 					rules say otherwise.
 				</p>
-				<Checkbox label="List EmDash's sitemap" checked={draft.includeSitemap} onCheckedChange={(on: boolean) => update({ includeSitemap: on })} />
+				<Checkbox
+					label="Keep discovery files readable for every crawler (/.well-known/, and llms.txt while Discovery's llms.txt is on)"
+					checked={draft.discoveryAllowances}
+					onCheckedChange={(on: boolean) => update({ discoveryAllowances: on })}
+				/>
+				{draft.discoveryAllowances && (
+					<InputArea
+						label="More discovery paths to keep readable (one per line)"
+						rows={2}
+						placeholder="/agents.json"
+						value={draft.discoveryPaths.join("\n")}
+						onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => update({ discoveryPaths: e.target.value.split("\n") })}
+						className="font-mono text-xs"
+					/>
+				)}
 				<Checkbox label="Write rule names as comments" checked={draft.comments} onCheckedChange={(on: boolean) => update({ comments: on })} />
 				<InputArea
 					label="More sitemaps (one URL or path per line)"
@@ -577,6 +652,17 @@ export function RobotsPage() {
 
 			{tab === "rules" && (
 				<div className="space-y-6">
+					<SitemapOption
+						config={config}
+						siteUrl={data.siteUrl}
+						busy={busy}
+						noteDismissed={data.sitemapNoteDismissed}
+						onChange={(on) => void persist({ ...config, includeSitemap: on }, on ? "Listed the sitemap" : "Stopped listing the sitemap", on ? "The sitemap is listed in robots.txt." : "The sitemap is no longer listed.").catch((cause) => setError(errorText(cause, "Could not save")))}
+						onDismiss={() => {
+							setData((d) => (d ? { ...d, sitemapNoteDismissed: true } : d));
+							void post("dismiss-sitemap-note", {}).catch(() => undefined);
+						}}
+					/>
 					<section className="space-y-2" aria-labelledby="robots-rules">
 						<h2 id="robots-rules" className="sr-only">
 							Rules
@@ -610,6 +696,7 @@ export function RobotsPage() {
 							</p>
 						)}
 					</section>
+					<AutomaticLines config={config} />
 					<Tester robotsTxt={data.preview} bots={bots} siteUrl={data.siteUrl} />
 					<ServedFile text={data.preview} emdash={data.emdash} config={config} siteUrl={data.siteUrl} />
 				</div>

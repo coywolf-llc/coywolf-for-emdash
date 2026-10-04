@@ -18,6 +18,7 @@ import {
 	EMDASH_MEDIA_PATH,
 	PROBE_AGENT,
 	type RobotsConfig,
+	WELL_KNOWN_PATH,
 	type RobotsRule,
 	type RuleKind,
 	directives,
@@ -142,7 +143,8 @@ export function equivalent(original: string, generated: string, agents: string[]
 		}
 	}
 	for (const p of paths) {
-		if (p.startsWith(EMDASH_MEDIA_PATH)) continue;
+		// Opened on purpose: media, and discovery files (see discoveryPathsFor).
+		if (p.startsWith(EMDASH_MEDIA_PATH) || p.startsWith(WELL_KNOWN_PATH) || p.startsWith("/llms")) continue;
 		for (const agent of agents) {
 			if (evaluateParsed(a, [agent], p).allowed !== evaluateParsed(b, [agent], p).allowed) return false;
 		}
@@ -174,8 +176,8 @@ export function importRobots(original: string, siteUrl: string, now = new Date()
 			if (g.other.length) extra.push([...g.uaLines, ...g.other].join("\n"));
 			// Google: Allow wins ties, so a value both allowed and blocked is allowed.
 			const lines = g.rules.filter((r) => r.value !== "" && !(r.directive === "Disallow" && g.rules.some((o) => o.directive === "Allow" && o.value === r.value)));
-			const hasRootBlock = lines.some((l) => l.directive === "Disallow" && (l.value === "/" || l.value === "*" || l.value === "/*"));
-			let effective = lines.filter((l) => !(l.directive === "Allow" && l.value === "/" && !hasRootBlock));
+			// Explicit lines (including EmDash's harmless `Allow: /`) are kept as rules.
+			let effective = lines;
 			if (emdashLines && named.includes("*")) {
 				effective = effective.filter((l) => !(l.directive === "Disallow" && l.value === EMDASH_ADMIN_PATH) && !(l.directive === "Allow" && l.value === EMDASH_MEDIA_PATH));
 			}
@@ -213,7 +215,14 @@ export function importRobots(original: string, siteUrl: string, now = new Date()
 	};
 
 	const notes: string[] = [];
-	const mediaNote = mediaAlreadyOpen ? [] : ["We added one improvement: images and files in your media library can now be crawled, so they can appear in image search."];
+	const discoveryBlocked = agents.some((a) => !evaluateParsed(parse(original).directives, [a], `${WELL_KNOWN_PATH}security.txt`).allowed);
+	const mediaNote = [
+		...(discoveryBlocked ? ["Discovery files under /.well-known/ (and llms.txt, when Discovery is on) stay readable for every crawler, so AI agents and tools can find them."] : []),
+		...mediaNoteOnly(),
+	];
+	function mediaNoteOnly(): string[] {
+		return mediaAlreadyOpen ? [] : ["We added one improvement: images and files in your media library can now be crawled, so they can appear in image search."];
+	}
 	for (const [inherit, emdash] of [
 		[true, true],
 		[false, true],
@@ -225,7 +234,7 @@ export function importRobots(original: string, siteUrl: string, now = new Date()
 		notes.push(
 			config.rules.length
 				? `We turned EmDash's robots.txt into ${config.rules.length} rule${config.rules.length === 1 ? "" : "s"}. Crawlers see exactly the same rules as before.`
-				: "EmDash's robots.txt had no rules of its own beyond keeping its admin private, so there's nothing to convert. Crawlers see exactly the same rules as before.",
+				: "EmDash's robots.txt had no rules of its own beyond keeping its admin private. Crawlers see exactly the same rules as before.",
 			...mediaNote,
 		);
 		if (!emdash) notes.push("EmDash's admin wasn't blocked for every crawler in the old file, so we kept it that way. Turn on “Keep EmDash's admin private” in Settings to block it.");
