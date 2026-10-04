@@ -12,6 +12,7 @@ One plugin with [Coywolf](https://coywolf.com)'s features for [EmDash](https://e
 | **Search** | Settings page for EmDash's full-text search, a search box with as-you-type suggestions and an OR fallback, and rate limiting |
 | **Discovery** | IndexNow pings, a Google News sitemap, and llms.txt with Markdown versions of entries |
 | **Link Manager** | Every link in your content with its HTTP status, where it's used, and bulk replace, unlink, and ignore |
+| **Videos** | Cloudflare Stream library and uploads, the Coywolf Video block, VideoObject schema, a video sitemap, plays and likes, captions |
 
 More modules will follow as Coywolf's WordPress plugins move to EmDash.
 
@@ -482,6 +483,44 @@ No bindings or secrets, but EmDash needs to know the site URL (**Settings → Ge
 - Workers limit subrequests per invocation (50 on Free, 1,000 on Paid), and database calls count. A checked link takes 1–2 requests plus 1 per redirect, and 1 database write; keep **subrequests per check run** under your plan's limit, leaving room for other scheduled jobs. Scans run in steps of about 200 database statements (60 seconds) every 5 minutes, or faster while the Link Manager page is open; admin actions stop at about 150 statements or 25 seconds and continue on the next call.
 - Links are stored in plugin storage (`links_urls`, `links_refs`) in the site's D1 database, so backups include them. The list pages through indexed queries; search matches the start of a URL (when it starts with `http` or `/`) or of a domain. Status counts are cached for up to a minute (10 minutes in the dashboard widget).
 - Regular-expression ignore rules are limited to 200 characters, and patterns that can take exponential time (repeated groups containing a quantifier or alternation, backreferences) are refused.
+## Videos
+
+The Coywolf Video Manager for EmDash, on Cloudflare Stream.
+
+- **Coywolf Video block** (slash menu → Media): pick a video from your Stream library, then set a title, description, poster (a frame time or an image), start time, controls/autoplay/loop/muted/preload, full or maximum width, and whether to show the title, description, plays, a like button and the upload date. The **Loop like a GIF** style plays muted, autoplaying and looping with no controls. Server-rendered: the Stream player in a `<figure>`, lazy-loaded, sized by the video's aspect ratio so nothing shifts.
+- **Admin** (**Plugins → Coywolf Pack → Videos**): the library with thumbnails, length, upload date, plays, likes and the number of entries each video is used in; search; edit name, description, poster, allowed origins and MP4 downloads; captions; and uploads that go straight from the browser to Stream (tus for files over 200 MB), so they never pass through the Worker.
+- **Embed index**: saving, publishing, unpublishing, restoring or deleting an entry records which videos it embeds (any Portable Text field, at any depth). **Rebuild embed index** scans existing content. WordPress `cloudflare-stream` marker blocks (as imported to wellbeing.io) are indexed too, for usage counts and the sitemap.
+
+| Feature | Default | What it adds |
+| --- | --- | --- |
+| `videos` | off | The module: library, uploads, block, index |
+| `videos.schema` | off | A VideoObject JSON-LD script per embedded video (`page:metadata`, one script per video, never `primary`): name, description, 1200px thumbnail, ISO 8601 duration, upload date, embed URL, the MP4 as `contentUrl` when downloads are on, view and like counts when plays and likes are on, and caption tracks plus a transcript (up to 10,000 characters) when captions are on |
+| `videos.sitemap` | off | A Google video sitemap at `/coywolf-video-sitemap.xml` for published entries (cached 10 minutes; rebuilt when content changes) |
+| `videos.engagement` | off | Plays (counted once per browser session after 2 seconds of playback, not for autoplaying videos) and likes (one per visitor per day, using a daily-salted hash of IP and user agent; no cookies, nothing personal stored) |
+| `videos.captions` | off | Upload WebVTT, generate captions with Stream, delete; ready tracks are copied to the site and served at `/coywolf-video-captions/<id>/<lang>.vtt` |
+| `videos.webhook` | off | A Stream webhook (HMAC-verified) that refreshes a video's details as soon as Stream finishes processing it; **Subscribe** on the Videos page |
+
+### Setup
+
+1. Create an API token with **Account → Stream → Edit**.
+2. Under **Plugins → Coywolf Pack → Settings**, enter the account ID and the token (a secret setting, which needs EmDash's `EMDASH_ENCRYPTION_KEY`). Or set `CF_ACCOUNT_ID` and the `CF_STREAM_TOKEN` Worker secret, the same variables EmDash's `cloudflareStream()` media provider reads. Optional settings: the customer subdomain (`customer-….cloudflarestream.com`, learned from the library if empty), and the player accent and background colors.
+3. Turn on **Videos** (and any sub-features) under **Plugins → Coywolf Pack → Features**, open the **Videos** page, and click **Test connection**. Then **Rebuild embed index** once.
+4. For the sitemap and caption files, add `coywolfPack()` to the site middleware (see Redirects), and list the sitemap in `robots.txt`:
+
+   ```text
+   Sitemap: https://example.com/coywolf-video-sitemap.xml
+   ```
+
+Option: `videos: { maxUploadDurationSeconds: 3600 }` (the longest upload Stream accepts; Stream reserves that much quota while an upload is in progress). `videos: false` leaves the module out.
+
+Use the block from theme code too: `import { CoywolfVideo } from "@coywolf/emdash/astro"` and `<CoywolfVideo node={{ uid, preset: "gif" }} />`. It also accepts the WordPress marker attributes (`id`, `host`, `aspect`, `name`, `description`, `seconds`), which default to the GIF style, so it can replace a theme's own Stream component. Those marker blocks don't get schema from this module, because a theme rendering them usually emits its own.
+
+### Limits
+
+- Stream lists up to 1,000 videos per call; the library is cached for 5 minutes (plugin KV and isolate memory). **Refresh** reloads it.
+- Page views make no Stream API calls: player sizes, names and counts come from the site's own copy, filled when the library loads, when an entry with a new video is saved, and by the webhook.
+- Plays aren't counted for autoplaying videos (including the GIF style), so muted previews don't inflate them. Visitors who block `embed.cloudflarestream.com` (the player SDK, loaded only where plays are counted) aren't counted.
+- Signed URLs (`requireSignedURLs`) aren't supported.
 
 ## Development
 
@@ -489,6 +528,7 @@ No bindings or secrets, but EmDash needs to know the site URL (**Settings → Ge
 npx tsc --noEmit -p .        # typecheck
 node --test test/*.test.mjs  # unit tests (Node 22.15+; runs the TypeScript sources directly)
 ```
+
 ## License
 
 MIT

@@ -11,6 +11,7 @@ import { LinksPage, LinksWidget } from "./links.js";
 import { RedirectsPage } from "./redirects.js";
 import { SchemaPage } from "./schema.js";
 import { SearchPage } from "./search.js";
+import { VideosPage } from "./videos.js";
 
 export const pages: PluginAdminExports["pages"] = {
 	"/features": FeaturesPage,
@@ -24,6 +25,7 @@ export const pages: PluginAdminExports["pages"] = {
 	"/ai": AiPage,
 	"/discovery": DiscoveryPage,
 	"/links": LinksPage,
+	"/videos": VideosPage,
 };
 
 export const widgets: PluginAdminExports["widgets"] = {

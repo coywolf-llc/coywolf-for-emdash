@@ -1,0 +1,800 @@
+/**
+ * Videos module: Cloudflare Stream library, the coywolf-video block's data,
+ * VideoObject schema, the embed index, the video sitemap, plays/likes,
+ * captions and the Stream webhook.
+ */
+import { PluginRouteError, definePluginRoute } from "emdash";
+import type { PageMetadataContribution, PageMetadataEvent } from "emdash";
+import { z } from "zod";
+
+import { ctxFeatures, isOn, requireFeature } from "../core/features.js";
+import { parseInput } from "../shared.js";
+import {
+	type SitemapEntry,
+	type VideoRef,
+	buildVideoObject,
+	buildVideoSitemap,
+	findVideoBlocks,
+	iframeUrl,
+	indexSource,
+	isImageUrl,
+	RecentKeys,
+	isUid,
+	posterUrl,
+	sha256Hex,
+	MAX_CAPTION_BYTES,
+	utf8Bytes,
+	verifyWebhookSignature,
+	watchUrl,
+} from "./lib.js";
+import {
+	COLLECTIONS,
+	type Counts,
+	type Ctx,
+	type EmbedEntry,
+	SETTINGS,
+	SITEMAP_KEY,
+	allEmbeds,
+	bump,
+	captionStore,
+	client,
+	countsFor,
+	embedKey,
+	embedStore,
+	invalidateEmbeds,
+	invalidateLibrary,
+	invalidateSitemap,
+	library,
+	metaFor,
+	metaStore,
+	patchMeta,
+	publicConfig,
+	refreshCaptions,
+	refreshDownload,
+	refreshVideo,
+	statsStore,
+} from "./store.js";
+import { StreamError } from "./stream.js";
+
+export interface VideosOptions {
+	/** Longest upload Stream should accept, in seconds (reserves quota while uploading). Default 3600. */
+	maxUploadDurationSeconds?: number;
+}
+
+export const F = {
+	main: "videos",
+	schema: "videos.schema",
+	sitemap: "videos.sitemap",
+	engagement: "videos.engagement",
+	captions: "videos.captions",
+	webhook: "videos.webhook",
+} as const;
+
+export const TASKS = { captions: "videos-captions-refresh", likes: "videos-likes-prune", downloads: "videos-downloads-refresh" } as const;
+
+const uidSchema = z.string().regex(/^[0-9a-f]{32}$/, "Not a Stream video ID.");
+const langSchema = z.string().regex(/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/, "Use a language code such as en or pt-BR.");
+
+/** Turn Stream API failures into readable admin errors. */
+async function stream<T>(fn: () => Promise<T>): Promise<T> {
+	try {
+		return await fn();
+	} catch (error) {
+		if (error instanceof StreamError) throw PluginRouteError.badRequest(`Cloudflare Stream: ${error.message}`);
+		throw error;
+	}
+}
+
+async function requireClient(ctx: Ctx) {
+	const api = await client(ctx);
+	if (!api) throw PluginRouteError.badRequest("Add your Cloudflare account ID and Stream API token in the plugin settings first.");
+	return api;
+}
+
+// ── Embed index ──────────────────────────────────────────────────
+
+/**
+ * Index one entry. Hook events can carry draft-hydrated data under the live
+ * status, so hooks re-read the live row; `isLive` is for rows that already
+ * came from the database (reindex).
+ */
+async function indexEntry(ctx: Ctx, collection: string, content: Record<string, unknown>, fetchMissing = true, isLive = false): Promise<number> {
+	const id = typeof content.id === "string" ? content.id : null;
+	if (!id) return 0;
+	let live: Record<string, unknown> | null = isLive ? content : null;
+	if (!isLive && ctx.content) {
+		live = ((await ctx.content.get(collection, id)) as unknown as Record<string, unknown> | null) ?? null;
+		if (!live) {
+			await unindexEntry(ctx, collection, id);
+			return 0;
+		}
+	}
+	const item = indexSource(content, live);
+	if (!item) return 0;
+	const data = item.data as Record<string, unknown>;
+	const videos = findVideoBlocks(data);
+	const store = embedStore(ctx);
+	const key = embedKey(collection, id);
+	const prev = await store.get(key);
+	if (!videos.length) {
+		if (prev) {
+			await store.delete(key);
+			invalidateEmbeds();
+			await invalidateSitemap(ctx);
+		}
+		return 0;
+	}
+	const status = typeof item.status === "string" ? item.status : "draft";
+	const url = status === "published" ? ((await ctx.content?.getPublicUrl?.(collection, id)) ?? null) : null;
+	const entry: EmbedEntry = {
+		collection,
+		entryId: id,
+		slug: typeof item.slug === "string" ? item.slug : null,
+		status,
+		title: typeof data.title === "string" ? data.title : typeof data.name === "string" ? data.name : null,
+		url,
+		publishedAt: typeof item.publishedAt === "string" ? item.publishedAt : null,
+		updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : null,
+		uids: videos.map((v) => v.uid),
+		videos,
+	};
+	await store.put(key, entry);
+	invalidateEmbeds();
+	await invalidateSitemap(ctx);
+	if (fetchMissing) {
+		const known = await metaFor(ctx, entry.uids);
+		const api = await client(ctx);
+		for (const uid of entry.uids.filter((u) => !known.has(u)).slice(0, 5)) {
+			try {
+				await refreshVideo(ctx, uid, api);
+			} catch (error) {
+				ctx.log.warn("Videos: could not read video from Stream", { uid, error: String(error) });
+			}
+		}
+	}
+	return videos.length;
+}
+
+async function unindexEntry(ctx: Ctx, collection: string, id: string): Promise<void> {
+	if (await embedStore(ctx).delete(embedKey(collection, id))) {
+		invalidateEmbeds();
+		await invalidateSitemap(ctx);
+	}
+}
+
+/** uid → entries that embed it. */
+function usage(entries: EmbedEntry[]): Map<string, Array<{ title: string | null; url: string | null; collection: string; status: string }>> {
+	const map = new Map<string, Array<{ title: string | null; url: string | null; collection: string; status: string }>>();
+	for (const e of entries) {
+		for (const uid of e.uids) {
+			const list = map.get(uid) ?? [];
+			list.push({ title: e.title, url: e.url, collection: e.collection, status: e.status });
+			map.set(uid, list);
+		}
+	}
+	return map;
+}
+
+// ── Schema ───────────────────────────────────────────────────────
+
+async function pageMetadata(event: PageMetadataEvent, ctx: Ctx): Promise<PageMetadataContribution[] | null> {
+	const page = event.page;
+	if (!page.content) return null;
+	const entry = await embedStore(ctx).get(embedKey(page.content.collection, page.content.id));
+	// Legacy WordPress markers are rendered (with their own schema) by the theme.
+	const refs = (entry?.videos ?? []).filter((v) => !v.legacy);
+	if (!refs.length) return null;
+	const features = await ctxFeatures(ctx);
+	const engagement = isOn(features, F.engagement);
+	const uids = refs.map((r) => r.uid);
+	const [meta, counts, cfg] = await Promise.all([metaFor(ctx, uids), engagement ? countsFor(ctx, uids) : Promise.resolve(new Map<string, Counts>()), publicConfig(ctx)]);
+	const siteUrl = page.siteUrl || ctx.site.url || new URL(page.url).origin;
+	return refs.map((ref) => ({
+		kind: "jsonld" as const,
+		id: `coywolf-video-${ref.uid}`,
+		graph: buildVideoObject({
+			ref,
+			video: meta.get(ref.uid),
+			host: cfg.host,
+			siteUrl,
+			page: { title: page.pageTitle ?? page.title, description: page.description, publishedTime: page.articleMeta?.publishedTime },
+			counts: engagement ? (counts.get(ref.uid) ?? { plays: 0, likes: 0 }) : undefined,
+			likesEnabled: engagement,
+			captionsEnabled: isOn(features, F.captions),
+		}),
+	}));
+}
+
+// ── Sitemap ──────────────────────────────────────────────────────
+
+const SITEMAP_TTL = 10 * 60_000;
+
+async function sitemapXml(ctx: Ctx, origin: string): Promise<string> {
+	const cached = await ctx.kv.get<{ xml: string; at: number }>(SITEMAP_KEY);
+	if (cached && Date.now() - cached.at < SITEMAP_TTL) return cached.xml;
+	const features = await ctxFeatures(ctx);
+	const entries = (await allEmbeds(ctx)).filter((e) => e.status === "published" && e.url);
+	const uids = [...new Set(entries.flatMap((e) => e.uids))];
+	const [meta, counts, cfg] = await Promise.all([
+		metaFor(ctx, uids),
+		isOn(features, F.engagement) ? countsFor(ctx, uids) : Promise.resolve(new Map<string, Counts>()),
+		publicConfig(ctx),
+	]);
+	const out: SitemapEntry[] = entries
+		.sort((a, b) => (a.url ?? "").localeCompare(b.url ?? ""))
+		.map((e) => ({
+			loc: new URL(e.url as string, origin).href,
+			videos: e.videos.map((ref: VideoRef) => {
+				const v = meta.get(ref.uid);
+				return {
+					thumbnail: posterUrl(cfg.host, ref.uid, ref, v, undefined, origin),
+					title: ref.title ?? v?.name ?? e.title ?? "Video",
+					description: ref.caption ?? v?.description ?? e.title ?? ref.title ?? v?.name ?? "Video",
+					contentLoc: v?.downloadUrl,
+					playerLoc: iframeUrl(cfg.host, ref.uid),
+					duration: v?.duration,
+					viewCount: counts.get(ref.uid)?.plays,
+					publicationDate: v?.created ?? e.publishedAt ?? undefined,
+				};
+			}),
+		}));
+	const xml = buildVideoSitemap(out.map((e) => ({ ...e, videos: e.videos.map((v) => ({ ...v, description: v.description.replace(/<[^>]*>/g, "") })) })));
+	await ctx.kv.set(SITEMAP_KEY, { xml, at: Date.now() });
+	return xml;
+}
+
+// ── Plays and likes ──────────────────────────────────────────────
+
+const SALT_KEY = "state:videos:likeSalt";
+let saltMemo: { day: string; salt: string } | null = null;
+
+async function dailySalt(ctx: Ctx): Promise<{ day: string; salt: string }> {
+	const day = new Date().toISOString().slice(0, 10);
+	if (saltMemo?.day === day) return saltMemo;
+	let stored = await ctx.kv.get<{ day: string; salt: string }>(SALT_KEY);
+	if (stored?.day !== day) {
+		const bytes = crypto.getRandomValues(new Uint8Array(24));
+		const fresh = { day, salt: [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("") };
+		const prev = await ctx.kv.getVersioned<{ day: string; salt: string }>(SALT_KEY);
+		const res = await ctx.kv.compareAndSet(SALT_KEY, prev?.revision ?? null, fresh);
+		stored = res.applied ? fresh : ((await ctx.kv.get<{ day: string; salt: string }>(SALT_KEY)) ?? fresh);
+	}
+	saltMemo = stored;
+	return stored;
+}
+
+/** A per-day pseudonymous visitor id: the IP and user agent never leave this function. */
+async function visitorHash(ctx: Ctx & { requestMeta: { ip: string | null; userAgent: string | null } }): Promise<{ hash: string; day: string }> {
+	const { day, salt } = await dailySalt(ctx);
+	return { hash: await sha256Hex(`${ctx.requestMeta.ip ?? ""}|${ctx.requestMeta.userAgent ?? ""}|${salt}`), day };
+}
+
+/** Plays already counted by this isolate (visitor+video → time), so reloads don't inflate counts. */
+const recentPlays = new RecentKeys(5000, 30 * 60_000);
+const seenRecently = (key: string) => recentPlays.seen(key);
+
+// ── Routes ───────────────────────────────────────────────────────
+
+const updateInput = z.object({
+	uid: uidSchema,
+	name: z.string().max(200).optional(),
+	description: z.string().max(5000).optional(),
+	posterTime: z.number().min(0).max(86_400).nullable().optional(),
+	posterImage: z
+		.string()
+		.max(2000)
+		.refine((v) => v === "" || isImageUrl(v.trim()), "The poster image must be an http(s) URL or a site path starting with /.")
+		.nullable()
+		.optional(),
+	allowedOrigins: z.array(z.string().max(253)).max(50).optional(),
+	downloads: z.boolean().optional(),
+});
+
+export function videosModule(options: VideosOptions) {
+	const maxDuration = Math.min(21_600, Math.max(60, options.maxUploadDurationSeconds ?? 3600));
+
+	const routes = {
+		// ── Admin ───────────────────────────────────────────────
+
+		"videos/status": {
+			permission: "media:upload" as const,
+			handler: async (ctx: Ctx) => {
+				await requireFeature(ctx, F.main);
+				const [api, features, cfg, webhookSecret] = await Promise.all([client(ctx), ctxFeatures(ctx), publicConfig(ctx), ctx.settings.get<string>(SETTINGS.webhookSecret)]);
+				return {
+					configured: api !== null,
+					host: cfg.host,
+					features: Object.fromEntries(Object.entries(F).map(([k, id]) => [k, isOn(features, id)])),
+					webhook: { subscribed: Boolean(webhookSecret), url: ctx.url("/_emdash/api/plugins/coywolf-pack/videos/webhook") },
+					sitemapUrl: ctx.url("/coywolf-video-sitemap.xml"),
+				};
+			},
+		},
+
+		"videos/test": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.main);
+				const api = await requireClient(ctx);
+				const videos = await stream(() => api.list(1));
+				return { ok: true, message: `Connected to Cloudflare Stream${videos.length ? "" : " (the library is empty)"}.` };
+			},
+		}),
+
+		"videos/list": definePluginRoute({
+			permission: "media:upload",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.main);
+				const { refresh } = parseInput(z.object({ refresh: z.boolean().optional() }), ctx.input ?? {});
+				if (!(await client(ctx))) return { configured: false, items: [] };
+				const items = await stream(() => library(ctx, refresh === true));
+				const uids = items.map((v) => v.uid);
+				const [features, meta, entries, cfg] = await Promise.all([ctxFeatures(ctx), metaFor(ctx, uids), allEmbeds(ctx), publicConfig(ctx)]);
+				const counts = isOn(features, F.engagement) ? await countsFor(ctx, uids) : new Map<string, Counts>();
+				const used = usage(entries);
+				return {
+					configured: true,
+					items: items.map((v) => {
+						const m = meta.get(v.uid);
+						return {
+							...v,
+							meta: undefined,
+							description: m?.description ?? "",
+							thumbnail: posterUrl(cfg.host, v.uid, {}, m ?? {}, 320, ctx.site.url || new URL(ctx.request.url).origin),
+							plays: counts.get(v.uid)?.plays ?? 0,
+							likes: counts.get(v.uid)?.likes ?? 0,
+							usedIn: used.get(v.uid) ?? [],
+							captions: m?.captions ?? [],
+						};
+					}),
+				};
+			},
+		}),
+
+		/** Options for the block's video picker ({ items: [{ id, name }] }, newest first). */
+		"videos/options": definePluginRoute({
+			permission: "content:edit_own",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.main);
+				if (!(await client(ctx))) return { items: [] };
+				const items = await stream(() => library(ctx));
+				const clock = (s: number) => (s > 0 ? ` (${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")})` : "");
+				return { items: items.map((v) => ({ id: v.uid, name: `${v.name}${clock(v.duration)}${v.ready ? "" : " · processing"}` })) };
+			},
+		}),
+
+		"videos/detail": definePluginRoute({
+			permission: "media:upload",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.main);
+				const { uid } = parseInput(z.object({ uid: uidSchema }), ctx.input);
+				const api = await requireClient(ctx);
+				const meta = await stream(() => refreshVideo(ctx, uid, api));
+				let download: { status?: string; url?: string; percent?: number } | null = null;
+				try {
+					const d = (await api.getDownloads(uid))?.default;
+					download = d ? { status: d.status, url: d.url, percent: d.percentComplete } : null;
+					if (d?.status === "ready" && d.url && meta?.downloadUrl !== d.url) await patchMeta(ctx, uid, { downloadUrl: d.url, downloadStatus: "ready" });
+				} catch {
+					download = null;
+				}
+				return { meta, download };
+			},
+		}),
+
+		"videos/update": definePluginRoute({
+			permission: "media:edit_any",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.main);
+				const input = parseInput(updateInput, ctx.input);
+				const api = await requireClient(ctx);
+				const fields: Record<string, unknown> = {};
+				if (input.name !== undefined || input.allowedOrigins !== undefined) {
+					const current = await stream(() => api.get(input.uid));
+					if (input.name !== undefined) fields.meta = { ...(current.meta ?? {}), name: input.name.trim() || input.uid };
+					if (input.allowedOrigins !== undefined) fields.allowedOrigins = input.allowedOrigins.map((o) => o.trim()).filter(Boolean);
+					await stream(() => api.update(input.uid, fields));
+				}
+				const patch: Record<string, unknown> = {};
+				if (input.description !== undefined) patch.description = input.description.trim();
+				if (input.posterTime !== undefined) patch.posterTime = input.posterTime ?? undefined;
+				if (input.posterImage !== undefined) patch.posterImage = input.posterImage?.trim() || undefined;
+				let download: { status?: string; url?: string } | null = null;
+				if (input.downloads === true) {
+					const d = (await stream(() => api.createDownload(input.uid)))?.default;
+					download = d ? { status: d.status, url: d.url } : null;
+					patch.downloadStatus = d?.status;
+					patch.downloadUrl = d?.status === "ready" ? d.url : undefined;
+				} else if (input.downloads === false) {
+					await stream(() => api.deleteDownload(input.uid));
+					patch.downloadStatus = undefined;
+					patch.downloadUrl = undefined;
+				}
+				await patchMeta(ctx, input.uid, patch);
+				const meta = await stream(() => refreshVideo(ctx, input.uid, api));
+				await invalidateLibrary(ctx);
+				await invalidateSitemap(ctx);
+				ctx.log.info("Video updated", { uid: input.uid });
+				return { meta, download };
+			},
+		}),
+
+		/** A one-time URL the browser uploads to directly (basic POST up to 200 MB, tus beyond). */
+		"videos/upload": definePluginRoute({
+			permission: "media:upload",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.main);
+				const { name, size } = parseInput(z.object({ name: z.string().min(1).max(200), size: z.number().int().positive() }), ctx.input);
+				const api = await requireClient(ctx);
+				await invalidateLibrary(ctx);
+				if (size <= 200 * 1024 * 1024) {
+					const r = await stream(() => api.directUpload({ maxDurationSeconds: maxDuration, name }));
+					return { method: "basic", uploadURL: r.uploadURL, uid: r.uid };
+				}
+				const r = await stream(() => api.tusUpload({ length: size, maxDurationSeconds: maxDuration, name }));
+				return { method: "tus", uploadURL: r.uploadURL, uid: r.uid };
+			},
+		}),
+
+		/** Rebuild the embed index from all content, one page per call (the admin loops until done). */
+		"videos/reindex": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.main);
+				const { state } = parseInput(z.object({ state: z.object({ collections: z.array(z.string()), index: z.number().int(), cursor: z.string().nullable(), cleanup: z.number().int().optional() }).nullish() }), ctx.input ?? {});
+				if (!ctx.content || !ctx.schema) throw PluginRouteError.internal("Content access is unavailable.");
+				const collections = state?.collections ?? (await ctx.schema.listCollections()).map((c) => c.slug);
+				let index = state?.index ?? 0;
+				let cursor = state?.cursor ?? null;
+				let scanned = 0;
+				let found = 0;
+				const started = Date.now();
+				while (index < collections.length && Date.now() - started < 10_000) {
+					const page = await ctx.content.list(collections[index], { limit: 50, ...(cursor ? { cursor } : {}) });
+					for (const item of page.items) {
+						scanned++;
+						found += await indexEntry(ctx, collections[index], item as unknown as Record<string, unknown>, false, true);
+					}
+					if (page.hasMore && page.cursor) cursor = page.cursor;
+					else {
+						index++;
+						cursor = null;
+					}
+				}
+				if (index < collections.length) {
+					return { done: false, scanned, found, removed: 0, state: { collections, index, cursor }, progress: `${Math.min(index + 1, collections.length)} of ${collections.length} collections` };
+				}
+				// Then drop index rows whose entries no longer exist.
+				invalidateEmbeds();
+				const entries = await allEmbeds(ctx);
+				let at = state?.cleanup ?? 0;
+				let removed = 0;
+				while (at < entries.length && Date.now() - started < 10_000) {
+					const e = entries[at++];
+					if (!(await ctx.content.get(e.collection, e.entryId))) {
+						await embedStore(ctx).delete(embedKey(e.collection, e.entryId));
+						removed++;
+					}
+				}
+				if (removed) {
+					invalidateEmbeds();
+					await invalidateSitemap(ctx);
+				}
+				const done = at >= entries.length;
+				return { done, scanned, found, removed, state: done ? null : { collections, index, cursor, cleanup: at }, progress: "checking for deleted entries" };
+			},
+		}),
+
+		"videos/captions/list": definePluginRoute({
+			permission: "media:upload",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.captions);
+				const { uid } = parseInput(z.object({ uid: uidSchema }), ctx.input);
+				const api = await requireClient(ctx);
+				return { captions: await stream(() => api.listCaptions(uid)) };
+			},
+		}),
+
+		"videos/captions/upload": definePluginRoute({
+			permission: "media:edit_any",
+			methods: ["POST"],
+			request: { body: "json", maxBytes: 2 * 1024 * 1024 },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.captions);
+				const { uid, lang, vtt } = parseInput(z.object({ uid: uidSchema, lang: langSchema, vtt: z.string().min(8).max(MAX_CAPTION_BYTES) }), ctx.input);
+				if (utf8Bytes(vtt) > MAX_CAPTION_BYTES) throw PluginRouteError.badRequest("Caption files must be under 1.5 MB.");
+				if (!/^﻿?WEBVTT/.test(vtt)) throw PluginRouteError.badRequest("That isn't a WebVTT file (it must start with WEBVTT).");
+				const api = await requireClient(ctx);
+				await stream(() => api.uploadCaption(uid, lang, vtt));
+				await stream(() => refreshCaptions(ctx, uid, api));
+				return { captions: await stream(() => api.listCaptions(uid)) };
+			},
+		}),
+
+		"videos/captions/generate": definePluginRoute({
+			permission: "media:edit_any",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.captions);
+				const { uid, lang } = parseInput(z.object({ uid: uidSchema, lang: langSchema }), ctx.input);
+				const api = await requireClient(ctx);
+				await stream(() => api.generateCaption(uid, lang));
+				await patchMeta(ctx, uid, { captionsPending: true });
+				return { captions: await stream(() => api.listCaptions(uid)) };
+			},
+		}),
+
+		"videos/captions/delete": definePluginRoute({
+			permission: "media:edit_any",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.captions);
+				const { uid, lang } = parseInput(z.object({ uid: uidSchema, lang: langSchema }), ctx.input);
+				const api = await requireClient(ctx);
+				await stream(() => api.deleteCaption(uid, lang));
+				await stream(() => refreshCaptions(ctx, uid, api));
+				return { captions: await stream(() => api.listCaptions(uid)) };
+			},
+		}),
+
+		/** Copy the current tracks into the site (for schema and the public caption files). */
+		"videos/captions/refresh": definePluginRoute({
+			permission: "media:edit_any",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.captions);
+				const { uid } = parseInput(z.object({ uid: uidSchema }), ctx.input);
+				const meta = await stream(() => refreshCaptions(ctx, uid));
+				return { meta };
+			},
+		}),
+
+		"videos/webhook/subscribe": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.webhook);
+				const api = await requireClient(ctx);
+				const url = ctx.url("/_emdash/api/plugins/coywolf-pack/videos/webhook");
+				if (!url.startsWith("https://")) throw PluginRouteError.badRequest(`Stream only calls HTTPS URLs; this site's URL is ${url}.`);
+				const result = await stream(() => api.setWebhook(url));
+				if (!result?.secret) throw PluginRouteError.internal("Stream didn't return a signing secret.");
+				try {
+					await ctx.settings.set(SETTINGS.webhookSecret, result.secret);
+				} catch {
+					await stream(() => api.deleteWebhook());
+					throw PluginRouteError.badRequest("Couldn't store the webhook secret. Secret plugin settings need the EMDASH_ENCRYPTION_KEY Worker secret.");
+				}
+				ctx.log.info("Stream webhook subscribed", { url });
+				return { subscribed: true, url };
+			},
+		}),
+
+		"videos/webhook/unsubscribe": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.webhook);
+				const api = await requireClient(ctx);
+				await stream(() => api.deleteWebhook());
+				await ctx.settings.delete(SETTINGS.webhookSecret);
+				return { subscribed: false };
+			},
+		}),
+
+		// ── Public ──────────────────────────────────────────────
+
+		/** Render data for one block (called in-process by the Astro component). */
+		"videos/embed": definePluginRoute({
+			public: true,
+			methods: ["POST"],
+			request: { body: "json", maxBytes: 1024 },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.main);
+				const { uid } = parseInput(z.object({ uid: uidSchema }), ctx.input);
+				// Only videos embedded in indexed content get metadata (no probing the library by ID).
+				const embedded = (await allEmbeds(ctx)).some((e) => e.uids.includes(uid));
+				const [features, cfg, meta] = await Promise.all([ctxFeatures(ctx), publicConfig(ctx), embedded ? metaStore(ctx).get(uid) : Promise.resolve(null)]);
+				const engagement = isOn(features, F.engagement);
+				const counts = engagement ? ((await statsStore(ctx).get(uid)) ?? { plays: 0, likes: 0 }) : null;
+				return {
+					...cfg,
+					engagement,
+					video: meta
+						? {
+								name: meta.name ?? null,
+								description: meta.description ?? null,
+								duration: meta.duration ?? 0,
+								created: meta.created ?? null,
+								width: meta.width ?? 0,
+								height: meta.height ?? 0,
+								posterTime: meta.posterTime ?? null,
+								posterImage: meta.posterImage ?? null,
+							}
+						: null,
+					counts,
+					watchUrl: watchUrl(cfg.host, uid),
+				};
+			},
+		}),
+
+		"videos/sitemap": definePluginRoute({
+			public: true,
+			methods: ["POST"],
+			request: { body: "json", maxBytes: 1024 },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.sitemap);
+				return { xml: await sitemapXml(ctx, ctx.site.url || new URL(ctx.request.url).origin) };
+			},
+		}),
+
+		"videos/caption": definePluginRoute({
+			public: true,
+			methods: ["POST"],
+			request: { body: "json", maxBytes: 1024 },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.captions);
+				const { uid, lang } = parseInput(z.object({ uid: uidSchema, lang: langSchema }), ctx.input);
+				const doc = await captionStore(ctx).get(`${uid}:${lang}`);
+				if (!doc) throw PluginRouteError.notFound("No such caption track.");
+				return { vtt: doc.vtt };
+			},
+		}),
+
+		"videos/play": definePluginRoute({
+			public: true,
+			methods: ["POST"],
+			request: { body: "json", maxBytes: 512 },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.engagement);
+				const { uid } = parseInput(z.object({ uid: uidSchema }), ctx.input);
+				if (!(await metaStore(ctx).exists(uid))) throw PluginRouteError.notFound("Unknown video.");
+				const { hash } = await visitorHash(ctx);
+				if (seenRecently(`${uid}:${hash}`)) return { plays: ((await statsStore(ctx).get(uid)) ?? { plays: 0 }).plays, counted: false };
+				const counts = await bump(ctx, uid, "plays", 1);
+				return { plays: counts.plays, counted: true };
+			},
+		}),
+
+		"videos/like": definePluginRoute({
+			public: true,
+			methods: ["POST"],
+			request: { body: "json", maxBytes: 512 },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.engagement);
+				const { uid } = parseInput(z.object({ uid: uidSchema }), ctx.input);
+				if (!(await metaStore(ctx).exists(uid))) throw PluginRouteError.notFound("Unknown video.");
+				const { hash, day } = await visitorHash(ctx);
+				const id = await sha256Hex(`${uid}|${hash}`);
+				const likes = (ctx.storage as Record<string, import("emdash").StorageCollection<{ uid: string; day: string }>>)[COLLECTIONS.likes];
+				if (await likes.delete(id)) {
+					const counts = await bump(ctx, uid, "likes", -1);
+					return { likes: counts.likes, liked: false };
+				}
+				const created = await likes.compareAndSet(id, null, { uid, day });
+				if (!created.applied) return { likes: ((await statsStore(ctx).get(uid)) ?? { likes: 0 }).likes, liked: true };
+				const counts = await bump(ctx, uid, "likes", 1);
+				return { likes: counts.likes, liked: true };
+			},
+		}),
+
+		"videos/webhook": definePluginRoute({
+			public: true,
+			methods: ["POST"],
+			request: { body: "text", maxBytes: 64 * 1024, headers: ["webhook-signature"] },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.webhook);
+				const secretValue = await ctx.settings.get<string>(SETTINGS.webhookSecret);
+				if (!secretValue) throw PluginRouteError.forbidden("The webhook isn't subscribed.");
+				const body = typeof ctx.input === "string" ? ctx.input : "";
+				if (!(await verifyWebhookSignature(ctx.request.headers.get("webhook-signature"), body, secretValue))) {
+					throw PluginRouteError.forbidden("Invalid webhook signature.");
+				}
+				let uid: unknown = null;
+				try {
+					uid = (JSON.parse(body) as { uid?: unknown }).uid;
+				} catch {
+					uid = null;
+				}
+				await invalidateLibrary(ctx);
+				await invalidateSitemap(ctx);
+				if (isUid(uid)) {
+					try {
+						const meta = await refreshVideo(ctx, uid);
+						if (meta?.downloadStatus === "inprogress") await refreshDownload(ctx, uid);
+					} catch (error) {
+						ctx.log.warn("Videos: webhook refresh failed", { uid, error: String(error) });
+					}
+				}
+				return { ok: true };
+			},
+		}),
+	};
+
+	const hooks = {
+		"content:afterSave": (event: { content: Record<string, unknown>; collection: string }, ctx: Ctx) => indexEntry(ctx, event.collection, event.content),
+		"content:afterPublish": (event: { content: Record<string, unknown>; collection: string }, ctx: Ctx) => indexEntry(ctx, event.collection, event.content),
+		"content:afterUnpublish": (event: { content: Record<string, unknown>; collection: string }, ctx: Ctx) => indexEntry(ctx, event.collection, event.content),
+		"content:afterRestore": (event: { content: Record<string, unknown>; collection: string }, ctx: Ctx) => indexEntry(ctx, event.collection, event.content),
+		"content:afterDelete": (event: { id: string; collection: string }, ctx: Ctx) => unindexEntry(ctx, event.collection, event.id),
+		"page:metadata": pageMetadata,
+	};
+
+	const tasks = [
+		{
+			// MP4 downloads take a while to generate; record the URL (schema contentUrl) once ready.
+			name: TASKS.downloads,
+			schedule: "@hourly",
+			feature: F.main,
+			handler: async (ctx: Ctx) => {
+				const pending = await metaStore(ctx).query({ where: { downloadStatus: "inprogress" }, limit: 20 });
+				if (!pending.items.length) return;
+				const api = await client(ctx);
+				if (!api) return;
+				for (const item of pending.items) {
+					try {
+						await refreshDownload(ctx, item.id, api);
+					} catch (error) {
+						ctx.log.warn("Videos: download refresh failed", { uid: item.id, error: String(error) });
+					}
+				}
+				await invalidateSitemap(ctx);
+			},
+		},
+		{
+			name: TASKS.captions,
+			schedule: "@hourly",
+			feature: F.captions,
+			handler: async (ctx: Ctx) => {
+				const pending = await metaStore(ctx).query({ where: { captionsPending: true }, limit: 10 });
+				const api = await client(ctx);
+				if (!api) return;
+				for (const item of pending.items) {
+					try {
+						await refreshCaptions(ctx, item.id, api);
+					} catch (error) {
+						ctx.log.warn("Videos: caption refresh failed", { uid: item.id, error: String(error) });
+					}
+				}
+			},
+		},
+		{
+			name: TASKS.likes,
+			schedule: "@daily",
+			feature: F.engagement,
+			handler: async (ctx: Ctx) => {
+				// Like rows only dedupe within a day (the visitor hash rotates daily); drop old ones.
+				const cutoff = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
+				const likes = (ctx.storage as Record<string, import("emdash").StorageCollection<unknown>>)[COLLECTIONS.likes];
+				for (let i = 0; i < 50; i++) {
+					const old = await likes.query({ where: { day: { lt: cutoff } }, limit: 100 });
+					if (!old.items.length) break;
+					await likes.deleteMany(old.items.map((x) => x.id));
+				}
+			},
+		},
+	];
+
+	return { routes, hooks, tasks };
+}

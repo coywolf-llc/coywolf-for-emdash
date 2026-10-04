@@ -10,13 +10,18 @@ import BreadcrumbsComponent from "./headings/Breadcrumbs.astro";
 import BreadcrumbsBlock from "./headings/BreadcrumbsBlock.astro";
 import HeadingBlock from "./headings/HeadingBlock.astro";
 import TableOfContents from "./headings/TableOfContents.astro";
+import CoywolfVideo from "./videos/CoywolfVideo.astro";
 
 export const blockComponents = {
 	"coywolf-toc": TableOfContents,
 	"coywolf-breadcrumbs": BreadcrumbsBlock,
 	code: CodeBlock,
 	"coywolf-file": FileCard,
+	"coywolf-video": CoywolfVideo,
 };
+
+/** Videos module: the Stream player, for theme code. */
+export { CoywolfVideo };
 
 /** Breadcrumb trail for theme layouts (Headings & TOC module). */
 export { BreadcrumbsComponent as Breadcrumbs };

@@ -1,0 +1,417 @@
+/**
+ * Videos module storage: settings, the Stream library cache, per-video
+ * metadata, play/like counters and the embed index (which entries embed
+ * which videos).
+ */
+import type { PluginContext, StorageCollection } from "emdash";
+
+import { secret, workerEnv } from "../shared.js";
+import {
+	type VideoFacts,
+	type VideoRef,
+	customerHostFromUrl,
+	isHex,
+	MAX_CAPTION_BYTES,
+	isUid,
+	normalizeCustomerHost,
+	utf8Bytes,
+	vttToTranscript,
+} from "./lib.js";
+import { type StreamClient, type StreamCredentials, type StreamVideo, streamClient } from "./stream.js";
+
+export const COLLECTIONS = {
+	meta: "videosMeta",
+	stats: "videosStats",
+	likes: "videosLikes",
+	embeds: "videosEmbeds",
+	captions: "videosCaptions",
+} as const;
+
+export const STORAGE = {
+	[COLLECTIONS.meta]: { indexes: ["captionsPending", "downloadStatus"] },
+	[COLLECTIONS.stats]: { indexes: [] },
+	[COLLECTIONS.likes]: { indexes: ["day"] },
+	[COLLECTIONS.embeds]: { indexes: ["status", "collection"] },
+	[COLLECTIONS.captions]: { indexes: ["uid"] },
+};
+
+export const SETTINGS = {
+	accountId: "videosAccountId",
+	token: "videosApiToken",
+	host: "videosCustomerSubdomain",
+	accent: "videosAccentColor",
+	background: "videosBackgroundColor",
+	webhookSecret: "videosWebhookSecret",
+} as const;
+
+export const videosSettingsSchema = {
+	[SETTINGS.accountId]: {
+		type: "string",
+		label: "Videos: Cloudflare account ID",
+		description: "The account that holds your Stream library. Falls back to the CF_ACCOUNT_ID Worker variable.",
+	},
+	[SETTINGS.token]: {
+		type: "secret",
+		label: "Videos: Stream API token",
+		description: "An API token with Account → Stream → Edit. Falls back to the CF_STREAM_TOKEN Worker secret.",
+	},
+	[SETTINGS.host]: {
+		type: "string",
+		label: "Videos: Stream customer subdomain",
+		description: "e.g. customer-abc123.cloudflarestream.com (Stream → any video → Embed). Learned automatically if empty.",
+	},
+	[SETTINGS.accent]: {
+		type: "string",
+		label: "Videos: player accent color",
+		description: "Hex color for the play button and progress bar, e.g. #f6821f. Empty uses Stream's default.",
+	},
+	[SETTINGS.background]: {
+		type: "string",
+		label: "Videos: player background color",
+		description: "Hex color behind letterboxed videos. Empty is transparent.",
+	},
+	[SETTINGS.webhookSecret]: {
+		type: "secret",
+		label: "Videos: Stream webhook signing secret",
+		description: "Filled in by Subscribe on the Videos page. Leave as is.",
+	},
+};
+
+export type Ctx = PluginContext;
+
+const coll = <T>(ctx: Ctx, name: string) => (ctx.storage as Record<string, StorageCollection<T>>)[name];
+
+// ── Settings ─────────────────────────────────────────────────────
+
+export interface PublicConfig {
+	host: string | null;
+	accent: string | null;
+	background: string | null;
+}
+
+let publicCache: { value: PublicConfig; at: number } | null = null;
+const PUBLIC_TTL = 60_000;
+
+export function invalidatePublicConfig(): void {
+	publicCache = null;
+}
+
+const HOST_KEY = "state:videos:customerHost";
+
+/** Player settings safe to use on public pages (cached per isolate for a minute). */
+export async function publicConfig(ctx: Ctx): Promise<PublicConfig> {
+	if (publicCache && Date.now() - publicCache.at < PUBLIC_TTL) return publicCache.value;
+	const [host, accent, background] = await Promise.all([
+		ctx.settings.get<string>(SETTINGS.host),
+		ctx.settings.get<string>(SETTINGS.accent),
+		ctx.settings.get<string>(SETTINGS.background),
+	]);
+	const value: PublicConfig = {
+		host: normalizeCustomerHost(host) ?? normalizeCustomerHost(await ctx.kv.get<string>(HOST_KEY)),
+		accent: isHex(accent) ? accent : null,
+		background: isHex(background) ? background : null,
+	};
+	publicCache = { value, at: Date.now() };
+	return value;
+}
+
+/** Remember the customer host seen in Stream's own URLs when none is configured. */
+async function learnHost(ctx: Ctx, videos: StreamVideo[]): Promise<void> {
+	for (const v of videos) {
+		const host = customerHostFromUrl(v.thumbnail) ?? customerHostFromUrl(v.preview) ?? customerHostFromUrl(v.playback?.hls);
+		if (!host) continue;
+		if ((await ctx.kv.get<string>(HOST_KEY)) !== host) {
+			await ctx.kv.set(HOST_KEY, host);
+			invalidatePublicConfig();
+		}
+		return;
+	}
+}
+
+export async function credentials(ctx: Ctx): Promise<StreamCredentials | null> {
+	const [accountId, token] = await Promise.all([ctx.settings.get<string>(SETTINGS.accountId), ctx.settings.get<string>(SETTINGS.token)]);
+	let env: Record<string, unknown> = {};
+	try {
+		env = await workerEnv();
+	} catch {
+		env = {};
+	}
+	const a = accountId?.trim() || secret(env, "CF_ACCOUNT_ID");
+	const t = token?.trim() || secret(env, "CF_STREAM_TOKEN");
+	return a && t ? { accountId: a, token: t } : null;
+}
+
+export async function client(ctx: Ctx): Promise<StreamClient | null> {
+	const creds = await credentials(ctx);
+	return creds ? streamClient(creds) : null;
+}
+
+// ── Library cache ────────────────────────────────────────────────
+
+export interface LibraryVideo {
+	uid: string;
+	name: string;
+	duration: number;
+	created: string | null;
+	width: number;
+	height: number;
+	state: string;
+	ready: boolean;
+	size: number;
+	allowedOrigins: string[];
+	meta: Record<string, unknown>;
+}
+
+const LIST_KEY = "cache:videos:list";
+const LIST_TTL = 5 * 60_000;
+let listMemo: { items: LibraryVideo[]; at: number } | null = null;
+
+export async function invalidateLibrary(ctx: Ctx): Promise<void> {
+	listMemo = null;
+	await ctx.kv.delete(LIST_KEY);
+}
+
+function slim(v: StreamVideo): LibraryVideo {
+	const name = typeof v.meta?.name === "string" && v.meta.name ? (v.meta.name as string) : v.uid;
+	return {
+		uid: v.uid,
+		name,
+		duration: typeof v.duration === "number" && v.duration > 0 ? v.duration : 0,
+		created: v.created ?? null,
+		width: v.input?.width ?? 0,
+		height: v.input?.height ?? 0,
+		state: v.status?.state ?? "unknown",
+		ready: v.readyToStream === true,
+		size: v.size ?? 0,
+		allowedOrigins: v.allowedOrigins ?? [],
+		meta: v.meta ?? {},
+	};
+}
+
+/** The Stream library: isolate memory → plugin KV (5 minutes) → one Stream API call. */
+export async function library(ctx: Ctx, force = false): Promise<LibraryVideo[]> {
+	if (!force && listMemo && Date.now() - listMemo.at < LIST_TTL) return listMemo.items;
+	if (!force) {
+		const cached = await ctx.kv.get<{ items: LibraryVideo[]; at: number }>(LIST_KEY);
+		if (cached && Date.now() - cached.at < LIST_TTL) {
+			listMemo = cached;
+			return cached.items;
+		}
+	}
+	const api = await client(ctx);
+	if (!api) throw new Error("Connect Cloudflare Stream first (account ID and API token in the plugin settings).");
+	const videos = await api.list();
+	await learnHost(ctx, videos);
+	const items = videos.map(slim);
+	listMemo = { items, at: Date.now() };
+	await ctx.kv.set(LIST_KEY, listMemo);
+	await syncMeta(ctx, items);
+	return items;
+}
+
+// ── Per-video metadata ───────────────────────────────────────────
+
+export interface VideoMeta extends VideoFacts {
+	ready?: boolean;
+	allowedOrigins?: string[];
+	downloadStatus?: string;
+	captionsPending?: boolean;
+	captionsChecked?: string;
+	updatedAt?: string;
+}
+
+export const metaStore = (ctx: Ctx) => coll<VideoMeta>(ctx, COLLECTIONS.meta);
+
+const SYNCED: Array<keyof VideoMeta> = ["name", "duration", "created", "width", "height", "ready"];
+
+function fromLibrary(v: LibraryVideo): Partial<VideoMeta> {
+	return { name: v.name, duration: v.duration, created: v.created ?? undefined, width: v.width, height: v.height, ready: v.ready, allowedOrigins: v.allowedOrigins };
+}
+
+/** Write Stream's facts into the metadata docs that changed (one read, at most one batched write). */
+async function syncMeta(ctx: Ctx, items: LibraryVideo[]): Promise<void> {
+	const store = metaStore(ctx);
+	for (let i = 0; i < items.length; i += 100) {
+		const chunk = items.slice(i, i + 100);
+		const existing = await store.getMany(chunk.map((v) => v.uid));
+		const changed: Array<{ id: string; data: VideoMeta }> = [];
+		for (const v of chunk) {
+			const prev = existing.get(v.uid);
+			const next = { ...(prev ?? { uid: v.uid }), ...fromLibrary(v), uid: v.uid } as VideoMeta;
+			if (!prev || SYNCED.some((k) => prev[k] !== next[k])) changed.push({ id: v.uid, data: { ...next, updatedAt: new Date().toISOString() } });
+		}
+		if (changed.length) await store.putMany(changed);
+	}
+}
+
+/** Re-read one video from Stream into its metadata doc. */
+export async function refreshVideo(ctx: Ctx, uid: string, api?: StreamClient | null): Promise<VideoMeta | null> {
+	const stream = api ?? (await client(ctx));
+	if (!stream || !isUid(uid)) return null;
+	const video = await stream.get(uid);
+	if (!video) return null;
+	await learnHost(ctx, [video]);
+	const store = metaStore(ctx);
+	const prev = await store.get(uid);
+	const next: VideoMeta = { ...(prev ?? { uid }), ...fromLibrary(slim(video)), uid, updatedAt: new Date().toISOString() };
+	await store.put(uid, next);
+	return next;
+}
+
+export async function patchMeta(ctx: Ctx, uid: string, patch: Partial<VideoMeta>): Promise<VideoMeta> {
+	const store = metaStore(ctx);
+	const prev = (await store.get(uid)) ?? { uid };
+	const next: VideoMeta = { ...prev, ...patch, uid, updatedAt: new Date().toISOString() };
+	for (const [k, v] of Object.entries(next)) if (v === undefined || v === null || v === "") delete (next as unknown as Record<string, unknown>)[k];
+	next.uid = uid;
+	await store.put(uid, next);
+	return next;
+}
+
+/** Check a pending MP4 download and record its URL once Stream has it ready. */
+export async function refreshDownload(ctx: Ctx, uid: string, api?: StreamClient | null): Promise<VideoMeta | null> {
+	const stream = api ?? (await client(ctx));
+	if (!stream) return null;
+	let d: { status?: string; url?: string } | undefined;
+	try {
+		d = (await stream.getDownloads(uid))?.default;
+	} catch (error) {
+		if ((error as { status?: number }).status === 404) return patchMeta(ctx, uid, { downloadStatus: undefined, downloadUrl: undefined });
+		throw error;
+	}
+	if (!d) return patchMeta(ctx, uid, { downloadStatus: undefined, downloadUrl: undefined });
+	return patchMeta(ctx, uid, { downloadStatus: d.status, downloadUrl: d.status === "ready" ? d.url : undefined });
+}
+
+// ── Captions cache ───────────────────────────────────────────────
+
+export interface CaptionDoc {
+	uid: string;
+	language: string;
+	label: string;
+	vtt: string;
+}
+
+export const captionStore = (ctx: Ctx) => coll<CaptionDoc>(ctx, COLLECTIONS.captions);
+
+/** Copy a video's ready caption tracks (and a transcript) from Stream, so public pages never call the API. */
+export async function refreshCaptions(ctx: Ctx, uid: string, api?: StreamClient | null): Promise<VideoMeta | null> {
+	const stream = api ?? (await client(ctx));
+	if (!stream) return null;
+	const list = await stream.listCaptions(uid);
+	const ready = list.filter((c) => (c.status ?? "ready") === "ready" && /^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i.test(c.language)).slice(0, 10);
+	const pending = list.some((c) => c.status === "inprogress");
+	const store = captionStore(ctx);
+	const docs: CaptionDoc[] = [];
+	for (const c of ready) {
+		try {
+			const vtt = await stream.captionVtt(uid, c.language);
+			if (utf8Bytes(vtt) > MAX_CAPTION_BYTES) {
+				ctx.log.warn("Videos: caption track too large to copy, skipped", { uid, language: c.language, bytes: utf8Bytes(vtt) });
+				continue;
+			}
+			docs.push({ uid, language: c.language, label: c.label || c.language, vtt });
+		} catch (error) {
+			ctx.log.warn("Videos: caption download failed", { uid, language: c.language, error: String(error) });
+		}
+	}
+	const old = await store.query({ where: { uid }, limit: 50 });
+	const keep = new Set(docs.map((d) => `${uid}:${d.language}`));
+	const stale = old.items.map((i) => i.id).filter((id) => !keep.has(id));
+	if (stale.length) await store.deleteMany(stale);
+	if (docs.length) await store.putMany(docs.map((d) => ({ id: `${uid}:${d.language}`, data: d })));
+	const preferred = docs.find((d) => d.language.toLowerCase().startsWith((ctx.site.locale || "en").slice(0, 2).toLowerCase())) ?? docs[0];
+	return patchMeta(ctx, uid, {
+		captions: docs.map((d) => ({ language: d.language, label: d.label })),
+		transcript: preferred ? vttToTranscript(preferred.vtt).slice(0, 50_000) : undefined,
+		captionsPending: pending || undefined,
+		captionsChecked: new Date().toISOString(),
+	});
+}
+
+// ── Counters ─────────────────────────────────────────────────────
+
+export interface Counts {
+	plays: number;
+	likes: number;
+}
+
+export const statsStore = (ctx: Ctx) => coll<Counts>(ctx, COLLECTIONS.stats);
+
+/** Atomically add to a counter, creating the row on first use. */
+export async function bump(ctx: Ctx, uid: string, field: keyof Counts, by: 1 | -1): Promise<Counts> {
+	const store = statsStore(ctx);
+	const args = by > 0 ? { where: {}, delta: { [field]: { inc: 1 } } } : { where: { [field]: { gte: 1 } }, delta: { [field]: { dec: 1 } } };
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const r = await store.updateIf(uid, args as Parameters<typeof store.updateIf>[1]);
+		if (r.applied) return r.data;
+		if (by < 0) return (await store.get(uid)) ?? { plays: 0, likes: 0 };
+		const init: Counts = { plays: 0, likes: 0, [field]: 1 };
+		const c = await store.compareAndSet(uid, null, init);
+		if (c.applied) return init;
+	}
+	return (await store.get(uid)) ?? { plays: 0, likes: 0 };
+}
+
+export async function countsFor(ctx: Ctx, uids: string[]): Promise<Map<string, Counts>> {
+	const out = new Map<string, Counts>();
+	const store = statsStore(ctx);
+	for (let i = 0; i < uids.length; i += 100) for (const [k, v] of await store.getMany(uids.slice(i, i + 100))) out.set(k, v);
+	return out;
+}
+
+export async function metaFor(ctx: Ctx, uids: string[]): Promise<Map<string, VideoMeta>> {
+	const out = new Map<string, VideoMeta>();
+	const store = metaStore(ctx);
+	for (let i = 0; i < uids.length; i += 100) for (const [k, v] of await store.getMany(uids.slice(i, i + 100))) out.set(k, v);
+	return out;
+}
+
+// ── Embed index ──────────────────────────────────────────────────
+
+export interface EmbedEntry {
+	collection: string;
+	entryId: string;
+	slug: string | null;
+	status: string;
+	title: string | null;
+	url: string | null;
+	publishedAt: string | null;
+	updatedAt: string | null;
+	uids: string[];
+	videos: VideoRef[];
+}
+
+export const embedStore = (ctx: Ctx) => coll<EmbedEntry>(ctx, COLLECTIONS.embeds);
+export const embedKey = (collection: string, id: string) => `${collection}:${id}`;
+
+let embedsMemo: { items: EmbedEntry[]; at: number } | null = null;
+const EMBEDS_TTL = 60_000;
+
+export function invalidateEmbeds(): void {
+	embedsMemo = null;
+}
+
+/** Every indexed entry (paged through plugin storage; cached per isolate for a minute). */
+export async function allEmbeds(ctx: Ctx): Promise<EmbedEntry[]> {
+	if (embedsMemo && Date.now() - embedsMemo.at < EMBEDS_TTL) return embedsMemo.items;
+	const store = embedStore(ctx);
+	const items: EmbedEntry[] = [];
+	let cursor: string | undefined;
+	for (let page = 0; page < 200; page++) {
+		const res = await store.query({ limit: 100, ...(cursor ? { cursor } : {}) });
+		items.push(...res.items.map((i) => i.data));
+		if (!res.hasMore || !res.cursor) break;
+		cursor = res.cursor;
+	}
+	embedsMemo = { items, at: Date.now() };
+	return items;
+}
+
+// ── Sitemap cache ────────────────────────────────────────────────
+
+export const SITEMAP_KEY = "cache:videos:sitemap";
+
+export async function invalidateSitemap(ctx: Ctx): Promise<void> {
+	await ctx.kv.delete(SITEMAP_KEY);
+}
