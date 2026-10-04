@@ -13,12 +13,12 @@
  */
 import { type SearchResult, search } from "emdash";
 
-import { COLLECTION_SLUG, interpolateUrlPattern, patternUsesDate, readCollections } from "../core/content-url.js";
+import { COLLECTION_SLUG, type CollectionInfo, createEntryUrlResolver, interpolateUrlPattern, readCollections } from "../core/content-url.js";
 import { workerEnv } from "../shared.js";
 import { buildOrQuery, rankByCoverage } from "./fallback.js";
 
 export interface PackSearchResult extends SearchResult {
-	/** Public path of the entry, from the collection's URL pattern. */
+	/** Public path of the entry: the site's `urls` override for the collection, or its URL pattern. */
 	url: string;
 	/** The collection's (singular) label, e.g. "Post". */
 	type: string;
@@ -39,7 +39,7 @@ export interface PackSearchOptions {
 	cursor?: string;
 	/** "suggest" matches titles first (typeahead), then full text. Default "search". */
 	mode?: "search" | "suggest";
-	/** D1 binding of the site database, for URL patterns. Default "DB". */
+	/** D1 binding of the site database, for URL patterns and terms. Default "DB". */
 	database?: string;
 }
 
@@ -82,23 +82,19 @@ async function withUrls(items: SearchResult[], database = "DB"): Promise<PackSea
 	} catch {
 		db = undefined;
 	}
-	const collections = db ? await readCollections(db, slugs).catch(() => new Map()) : new Map();
+	const collections = db ? await readCollections(db, slugs).catch(() => new Map<string, CollectionInfo>()) : new Map<string, CollectionInfo>();
 
-	// Publish dates, only for collections whose URL pattern has date tokens.
-	const dates = new Map<string, string | null>();
+	// Paths from the pack-wide resolver: the site's `urls` overrides (terms read in one batch per
+	// collection) or the collection's url_pattern (publish dates read only when it has date tokens).
+	const urls = new Map<string, string | null>();
 	if (db) {
+		const resolver = createEntryUrlResolver(db);
 		for (const slug of slugs) {
-			const info = collections.get(slug);
-			if (!info || !patternUsesDate(info.urlPattern) || !COLLECTION_SLUG.test(slug)) continue;
-			const ids = items.filter((i) => i.collection === slug).map((i) => i.id);
+			const entries = items.filter((i) => i.collection === slug).map((i) => ({ id: i.id, slug: i.slug ?? i.id, locale: i.locale }));
 			try {
-				const { results } = await db
-					.prepare(`SELECT id, published_at FROM "ec_${slug}" WHERE id IN (${ids.map(() => "?").join(",")})`)
-					.bind(...ids)
-					.all<{ id: string; published_at: string | null }>();
-				for (const r of results) dates.set(`${slug}:${r.id}`, r.published_at);
+				for (const [id, url] of await resolver.urls(slug, entries)) urls.set(`${slug}:${id}`, url);
 			} catch {
-				// Leave date tokens unresolved rather than fail the search.
+				// Fall back to the default route below rather than fail the search.
 			}
 		}
 	}
@@ -107,13 +103,7 @@ async function withUrls(items: SearchResult[], database = "DB"): Promise<PackSea
 		const info = collections.get(item.collection);
 		return {
 			...item,
-			url: interpolateUrlPattern({
-				pattern: info?.urlPattern ?? null,
-				collection: item.collection,
-				slug: item.slug ?? item.id,
-				id: item.id,
-				date: dates.get(`${item.collection}:${item.id}`),
-			}),
+			url: urls.get(`${item.collection}:${item.id}`) ?? interpolateUrlPattern({ pattern: null, collection: item.collection, slug: item.slug ?? item.id, id: item.id }),
 			type: info?.labelSingular || info?.label || item.collection,
 		};
 	});

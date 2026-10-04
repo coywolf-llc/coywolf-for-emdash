@@ -2,7 +2,9 @@
  * Builds llms.txt, the news sitemap, and per-entry Markdown from EmDash
  * content (inside the plugin context), with KV caching for the two lists.
  */
-import { type CollectionSchemaInfo, type PluginContentItem, type PluginContext, after, getEmDashEntry, getSiteSetting, resolveEmDashPath } from "emdash";
+import { type CollectionSchemaInfo, type PluginContentItem, type PluginContext, after, getSiteSetting } from "emdash";
+
+import { absoluteUrl, matchEntryPath } from "../core/content-url.js";
 
 import { buildLlmsTxt, type LlmsSection } from "./llms.js";
 import { estimateTokens, frontmatter, markdownUrl, portableTextToMarkdown } from "./markdown.js";
@@ -39,18 +41,28 @@ export async function pickCollections(ctx: PluginContext, selection: string[]): 
 	return all.filter((c) => c.routable && (selection.length ? selection.includes(c.slug) : !c.hidden));
 }
 
-/** Published entries of a collection, newest first. `stop` ends the walk early. */
+/** Published entries of a collection, newest first, a page at a time. `stop` ends the walk early. */
 async function* published(ctx: PluginContext, collection: string, max: number, stop?: (item: PluginContentItem) => boolean) {
 	if (!ctx.content || max <= 0) return;
 	let cursor: string | undefined;
 	let count = 0;
 	do {
 		const page = await ctx.content.list(collection, { limit: 100, cursor, orderBy: { publishedAt: "desc" }, where: { status: "published" } });
+		const batch: PluginContentItem[] = [];
+		let done = false;
 		for (const item of page.items) {
-			if (stop?.(item)) return;
-			yield item;
-			if (++count >= max) return;
+			if (stop?.(item)) {
+				done = true;
+				break;
+			}
+			batch.push(item);
+			if (++count >= max) {
+				done = true;
+				break;
+			}
 		}
+		if (batch.length) yield batch;
+		if (done) return;
 		cursor = page.hasMore ? page.cursor : undefined;
 	} while (cursor);
 }
@@ -65,11 +77,14 @@ export async function buildLlms(ctx: PluginContext, settings: DiscoverySettings)
 	for (const collection of await pickCollections(ctx, settings.llms.collections)) {
 		if (remaining <= 0) break;
 		const entries: LlmsSection["entries"] = [];
-		for await (const item of published(ctx, collection.slug, remaining)) {
-			if (item.seo?.noIndex) continue;
-			const url = await resolver.url(collection, item);
-			if (!url) continue;
-			entries.push({ title: entryTitle(collection, item), url: settings.llms.markdown ? markdownUrl(url) : url, note: entryNote(item) });
+		for await (const batch of published(ctx, collection.slug, remaining)) {
+			const listed = batch.filter((item) => !item.seo?.noIndex);
+			const urls = await resolver.urls(collection, listed);
+			for (const item of listed) {
+				const url = urls.get(item.id);
+				if (!url) continue;
+				entries.push({ title: entryTitle(collection, item), url: settings.llms.markdown ? markdownUrl(url) : url, note: entryNote(item) });
+			}
 		}
 		remaining -= entries.length;
 		if (entries.length) sections.push({ label: collection.label, entries });
@@ -96,10 +111,13 @@ export async function buildNews(ctx: PluginContext, settings: DiscoverySettings,
 	// An empty news selection lists nothing (unlike llms.txt, where empty means all).
 	const collections = settings.news.collections.length ? await pickCollections(ctx, settings.news.collections) : [];
 	for (const collection of collections) {
-		for await (const item of published(ctx, collection.slug, NEWS_LIMIT, tooOld)) {
-			if (item.seo?.noIndex || !item.publishedAt) continue;
-			const url = await resolver.url(collection, item);
-			if (url) articles.push({ url, title: entryTitle(collection, item), publishedAt: item.publishedAt });
+		for await (const batch of published(ctx, collection.slug, NEWS_LIMIT, tooOld)) {
+			const listed = batch.filter((item) => !item.seo?.noIndex && item.publishedAt);
+			const urls = await resolver.urls(collection, listed);
+			for (const item of listed) {
+				const url = urls.get(item.id);
+				if (url && item.publishedAt) articles.push({ url, title: entryTitle(collection, item), publishedAt: item.publishedAt });
+			}
 		}
 	}
 	const selectedArticles = selectNewsArticles(articles, now);
@@ -183,47 +201,18 @@ export interface MarkdownDocument {
 	markdownUrl: string;
 }
 
-const safeDecode = (path: string) => {
-	try {
-		return decodeURI(path);
-	} catch {
-		return path;
-	}
-};
-const trimSlash = (path: string) => (path.length > 1 ? path.replace(/\/+$/, "") : path);
-
 /**
- * Find the published entry a site path belongs to, using EmDash's own
- * routing: resolveEmDashPath() for collections with a url_pattern, the
- * default /{collection}/{slug} otherwise, and then a check that
- * getPublicUrl() for the match is this exact path.
+ * Find the published entry a site path belongs to: the pack-wide reverse
+ * resolver (core/content-url.ts matchEntryPath), which knows the site's
+ * `urls` overrides and otherwise uses EmDash's own routing, and only
+ * answers when the entry's canonical URL is this path.
  */
 async function resolveEntry(ctx: PluginContext, pagePath: string): Promise<{ collection: CollectionSchemaInfo; id: string; url: string } | null> {
-	const path = trimSlash(pagePath);
-	const decoded = safeDecode(path);
-	let found: { collection: string; id: string } | null = null;
-	for (const candidate of new Set([decoded, `${decoded}/`])) {
-		const match = await resolveEmDashPath(candidate).catch(() => null);
-		if (match) {
-			found = { collection: match.collection, id: str((match.entry.data as Record<string, unknown>).id) || match.entry.id };
-			break;
-		}
-	}
-	if (!found) {
-		const segments = decoded.split("/").filter(Boolean);
-		if (segments.length === 2) {
-			const info = await ctx.schema?.getCollection(segments[0]);
-			if (info?.routable && !info.urlPattern) {
-				const { entry } = await getEmDashEntry(segments[0], segments[1]).catch(() => ({ entry: null }));
-				if (entry) found = { collection: segments[0], id: str((entry.data as Record<string, unknown>).id) || entry.id };
-			}
-		}
-	}
-	if (!found) return null;
-	const collection = await ctx.schema?.getCollection(found.collection);
-	const url = await ctx.content?.getPublicUrl?.(found.collection, found.id);
-	if (!collection || !url || safeDecode(trimSlash(new URL(url).pathname)) !== decoded) return null;
-	return { collection, id: found.id, url };
+	const match = await matchEntryPath(ctx, pagePath);
+	if (!match) return null;
+	const collection = await ctx.schema?.getCollection(match.collection);
+	if (!collection) return null;
+	return { collection, id: match.id, url: absoluteUrl(match.path, siteOrigin(ctx)) };
 }
 
 export async function buildMarkdown(ctx: PluginContext, settings: DiscoverySettings, pagePath: string): Promise<MarkdownDocument | null> {

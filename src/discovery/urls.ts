@@ -1,64 +1,35 @@
 /**
- * Public URLs of content entries, using EmDash's own resolution.
- *
- * `ctx.content.getPublicUrl()` is EmDash's resolver (collection url_pattern,
- * date tokens, locale prefix, trailing-slash policy), but it costs two
- * queries per entry. For lists (llms.txt, the news sitemap) we interpolate
- * the url_pattern locally (core/content-url.ts, EmDash's interpolateUrlPattern)
- * and check the result against getPublicUrl() for the first entry of each
- * collection and locale; if they ever disagree (custom locale routing, say),
- * that group falls back to getPublicUrl() for every entry.
+ * Public URLs of content entries for discovery (llms.txt, the news sitemap,
+ * IndexNow), from the pack-wide resolver in core/content-url.ts: the site's
+ * `urls` overrides when configured, otherwise EmDash's own resolution
+ * (getPublicUrl, verified once per collection and locale against local
+ * url_pattern interpolation so long lists don't cost two queries an entry).
  */
 import type { CollectionSchemaInfo, PluginContentItem, PluginContext } from "emdash";
 
-import { interpolateUrlPattern } from "../core/content-url.js";
-
-/** EmDash's url_pattern interpolation (shared core helper) plus its trailing-slash policy; no locale prefix. */
-export function routePath(options: {
-	pattern: string | null;
-	collection: string;
-	slug: string;
-	id: string;
-	date?: string | null;
-	trailingSlash?: "always" | "never" | "ignore";
-}): string {
-	const path = interpolateUrlPattern(options);
-	return options.trailingSlash === "always" && path !== "/" ? `${path}/` : path;
-}
+import { absoluteUrl, createEntryUrlResolver } from "../core/content-url.js";
 
 export function siteOrigin(ctx: Pick<PluginContext, "site">): string {
 	return ctx.site.url.replace(/\/+$/, "");
 }
 
 export interface UrlResolver {
-	url(collection: CollectionSchemaInfo, item: PluginContentItem): Promise<string | null>;
+	/** Absolute URLs of published entries, keyed by id (null: none). Terms are read in one batch. */
+	urls(collection: CollectionSchemaInfo, items: PluginContentItem[]): Promise<Map<string, string | null>>;
 }
 
-/** See the file comment. One resolver per build (it remembers which groups verified). */
+/** One resolver per build (it remembers collection routes and verdicts). */
 export function createUrlResolver(ctx: PluginContext): UrlResolver {
-	const verdicts = new Map<string, "local" | "exact">();
+	const resolver = createEntryUrlResolver(ctx);
 	const origin = siteOrigin(ctx);
-
-	const exact = async (collection: string, id: string) => (await ctx.content?.getPublicUrl?.(collection, id)) ?? null;
-
 	return {
-		async url(collection, item) {
-			if (!collection.routable || item.status !== "published" || !item.slug) return null;
-			const group = `${collection.slug}|${item.locale ?? ""}`;
-			const local = `${origin}${routePath({
-				pattern: collection.urlPattern,
-				collection: collection.slug,
-				slug: item.slug,
-				id: item.id,
-				date: item.publishedAt,
-				trailingSlash: ctx.site.trailingSlash,
-			})}`;
-			const verdict = verdicts.get(group);
-			if (verdict === "local") return local;
-			if (verdict === "exact" || !ctx.content?.getPublicUrl) return verdict === "exact" ? exact(collection.slug, item.id) : local;
-			const real = await exact(collection.slug, item.id);
-			verdicts.set(group, real === local ? "local" : "exact");
-			return real;
+		async urls(collection, items) {
+			const out = new Map<string, string | null>();
+			const usable = items.filter((item) => collection.routable && item.status === "published" && item.slug);
+			for (const item of items) out.set(item.id, null);
+			const paths = await resolver.urls(collection.slug, usable);
+			for (const [id, path] of paths) out.set(id, path ? absoluteUrl(path, origin) : null);
+			return out;
 		},
 	};
 }

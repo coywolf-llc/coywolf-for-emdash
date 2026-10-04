@@ -7,6 +7,7 @@ import { PluginRouteError, definePluginRoute } from "emdash";
 import type { PageMetadataContribution, PageMetadataEvent } from "emdash";
 import { z } from "zod";
 
+import { absoluteUrl, entryUrl } from "../core/content-url.js";
 import { ctxFeatures, isOn, requireFeature } from "../core/features.js";
 import { parseInput } from "../shared.js";
 import {
@@ -125,7 +126,11 @@ async function indexEntry(ctx: Ctx, collection: string, content: Record<string, 
 		return 0;
 	}
 	const status = typeof item.status === "string" ? item.status : "draft";
-	const url = status === "published" ? ((await ctx.content?.getPublicUrl?.(collection, id)) ?? null) : null;
+	const path =
+		status === "published" && typeof item.slug === "string"
+			? await entryUrl(ctx, collection, { id, slug: item.slug, publishedAt: typeof item.publishedAt === "string" || item.publishedAt instanceof Date ? item.publishedAt : null, locale: typeof item.locale === "string" ? item.locale : null, status }).catch(() => null)
+			: null;
+	const url = path && ctx.site.url ? absoluteUrl(path, ctx.site.url) : null;
 	const entry: EmbedEntry = {
 		collection,
 		entryId: id,

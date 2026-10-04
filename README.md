@@ -59,6 +59,29 @@ export default defineConfig({
 });
 ```
 
+## Content URLs
+
+Several modules link to entries: llms.txt and the news sitemap, IndexNow, per-entry Markdown, the video sitemap, Schema previews, search results, and removed-content redirects. By default they resolve an entry's URL the way EmDash does, from the collection's URL pattern (`{slug}`, `{id}`, and date tokens such as `{year}`). If your theme routes a collection differently, tell the pack with `urls`:
+
+```js
+// wellbeing.io serves posts at WordPress-style /{category}/{slug}/
+coywolfPlugin({
+  urls: { posts: "/{term:category|uncategorized}/{slug}/" },
+});
+```
+
+Patterns take EmDash's tokens plus taxonomy tokens:
+
+- `{term:<taxonomy>}` is the slug of the entry's first term in that taxonomy, in the order EmDash's `getTermsForEntries` returns them (by label).
+- `{term:<taxonomy>|<fallback>}` uses `<fallback>` when the entry has no term. Without a fallback, an entry with no term has no URL.
+- `{category}` is shorthand for `{term:category|uncategorized}`.
+
+Collections without an override keep EmDash's resolution. The pack also maps paths back to entries (for example, the Markdown source at `/mind/some-post/index.html.md` resolves only when `mind` is the post's primary category), so a wrong category doesn't match.
+
+Trailing slashes follow Astro's `trailingSlash` setting. With the default (`"ignore"`), an override keeps the pattern's own trailing slash. Set `trailingSlash: "always" | "never"` on `coywolfPlugin()` to force one for every entry URL the pack builds. Override URLs get no locale prefix.
+
+The options are read when the Worker starts (EmDash creates the plugin then), so the middleware and Astro components use them too. Sites can resolve URLs the same way with `entryUrl`, `entryUrls`, and `matchEntryPath` from `@coywolf/emdash/astro`.
+
 ## Backups
 
 - **Database**: a restorable SQL dump of the site's D1 database: users, passkeys, settings, redirects, menus, plugin data, and content. Search indexes rebuild automatically on restore.
