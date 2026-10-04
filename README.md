@@ -13,6 +13,11 @@ One plugin with [Coywolf](https://coywolf.com)'s features for [EmDash](https://e
 | **Discovery** | IndexNow pings, a Google News sitemap, and llms.txt with Markdown versions of entries |
 | **Link Manager** | Every link in your content with its HTTP status, where it's used, and bulk replace, unlink, and ignore |
 | **Videos** | Cloudflare Stream library and uploads, the Coywolf Video block, VideoObject schema, a video sitemap, plays and likes, captions |
+| **Schema & Social** | One Schema.org graph per page (publisher, typed pages and articles, authors), breadcrumbs, robots directives, Open Graph extras |
+| **Robots.txt Rules** | Named robots.txt rules, a verified crawler directory kept current from Cloudflare Radar, and a URL tester |
+| **AI Enrichment** | Wikidata-grounded entities for schema, meta-description suggestions, and image alt text, with Workers AI or your own key |
+
+Every feature can be turned on or off under **Plugins → Features**, like Coywolf SEO's feature switches. New features start off, so installing or updating changes nothing on the site until you turn them on.
 
 More modules will follow as Coywolf's WordPress plugins move to EmDash.
 
@@ -25,7 +30,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.2.0
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.4.0
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
