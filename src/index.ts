@@ -28,7 +28,7 @@ export type { RobotsOptions } from "./robots/module.js";
 export type { CoywolfOptions } from "./options.js";
 export type { ContentUrlOptions, TrailingSlash } from "./core/content-url.js";
 
-const VERSION = "0.4.6";
+const VERSION = "0.4.7";
 const PACKAGE = "@coywolf/emdash";
 
 const FEATURES_PAGE = { path: "/features", label: "Features", icon: "toggle-right" };

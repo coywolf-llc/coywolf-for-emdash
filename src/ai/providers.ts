@@ -207,3 +207,70 @@ export async function chat(cfg: ProviderConfig, input: ChatRequest): Promise<Cha
 			return gemini(cfg, req);
 	}
 }
+
+// ── Model lists (for the settings page) ─────────────────────────
+
+export interface ModelOption {
+	id: string;
+	label: string;
+}
+
+/** Workers AI text-generation models that accept images (curated; the binding has no list call). */
+const WORKERS_AI_MODELS: ModelOption[] = [
+	{ id: "@cf/meta/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout 17B (text + images)" },
+	{ id: "@cf/mistralai/mistral-small-3.1-24b-instruct", label: "Mistral Small 3.1 24B (text + images)" },
+	{ id: "@cf/google/gemma-3-12b-it", label: "Gemma 3 12B (text + images)" },
+	{ id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", label: "Llama 3.3 70B fast (text only)" },
+];
+
+/** OpenAI ids that aren't chat models (audio, images, embeddings, moderation, …). */
+const OPENAI_SKIP = /(audio|realtime|tts|transcribe|whisper|dall-e|image|embedding|moderation|search|computer-use|babbage|davinci|instruct)/i;
+
+/**
+ * Models the saved key can use, newest first where the provider says.
+ * The key is sent only to the provider and never returned or logged.
+ */
+export async function listModels(cfg: Pick<ProviderConfig, "provider" | "apiKey" | "fetch">): Promise<ModelOption[]> {
+	const get = async (url: string, headers: Record<string, string>) => {
+		const response = await cfg.fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
+		if (!response.ok) throw new ProviderError(`The provider answered ${response.status} when listing models.`, response.status);
+		return (await response.json()) as Record<string, unknown>;
+	};
+	switch (cfg.provider) {
+		case "workers-ai":
+			return WORKERS_AI_MODELS;
+		case "anthropic": {
+			const out: ModelOption[] = [];
+			let after: string | undefined;
+			for (let page = 0; page < 5; page++) {
+				const body = await get(`https://api.anthropic.com/v1/models?limit=100${after ? `&after_id=${encodeURIComponent(after)}` : ""}`, {
+					"x-api-key": cfg.apiKey,
+					"anthropic-version": "2023-06-01",
+				});
+				const data = (body.data ?? []) as Array<{ id: string; display_name?: string }>;
+				for (const m of data) out.push({ id: m.id, label: m.display_name ? `${m.display_name} (${m.id})` : m.id });
+				if (!body.has_more || !data.length) break;
+				after = data[data.length - 1].id;
+			}
+			return out;
+		}
+		case "openai": {
+			const body = await get("https://api.openai.com/v1/models", { Authorization: `Bearer ${cfg.apiKey}` });
+			const data = (body.data ?? []) as Array<{ id: string; created?: number }>;
+			return data
+				.filter((m) => /^(gpt|o\d|chatgpt)/i.test(m.id) && !OPENAI_SKIP.test(m.id))
+				.sort((a, b) => (b.created ?? 0) - (a.created ?? 0))
+				.map((m) => ({ id: m.id, label: m.id }));
+		}
+		case "gemini": {
+			const body = await get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000", { "x-goog-api-key": cfg.apiKey });
+			const models = (body.models ?? []) as Array<{ name: string; displayName?: string; supportedGenerationMethods?: string[] }>;
+			return models
+				.filter((m) => m.supportedGenerationMethods?.includes("generateContent") && /gemini/i.test(m.name))
+				.map((m) => {
+					const id = m.name.replace(/^models\//, "");
+					return { id, label: m.displayName ? `${m.displayName} (${id})` : id };
+				});
+		}
+	}
+}
