@@ -8,7 +8,7 @@ import type { PageMetadataContribution, PageMetadataEvent } from "emdash";
 import { z } from "zod";
 
 import { absoluteUrl, entryUrl } from "../core/content-url.js";
-import { ctxFeatures, isOn, requireFeature } from "../core/features.js";
+import { ctxFeatures, isOn, requireFeature, cachedCtxFeatures } from "../core/features.js";
 import { parseInput } from "../shared.js";
 import {
 	type SitemapEntry,
@@ -209,8 +209,27 @@ function usage(entries: EmbedEntry[]): Map<string, Array<{ title: string | null;
 
 // ── Schema ───────────────────────────────────────────────────────
 
+/**
+ * VideoObject nodes (no @context) for the videos embedded in a page's entry.
+ * Schema & Social folds these into its @graph; on their own they're emitted
+ * by pageMetadata below.
+ */
+export async function entryVideoObjects(ctx: Ctx, page: PageMetadataEvent["page"]): Promise<Record<string, unknown>[]> {
+	const contributions = await videoContributions(ctx, page);
+	return (contributions ?? []).flatMap((c) => {
+		if (c.kind !== "jsonld" || Array.isArray(c.graph)) return [];
+		const { "@context": _omit, ...node } = c.graph;
+		return [node];
+	});
+}
+
 async function pageMetadata(event: PageMetadataEvent, ctx: Ctx): Promise<PageMetadataContribution[] | null> {
-	const page = event.page;
+	// Schema & Social's graph includes these videos (linked from the Article) when it's on.
+	if (isOn(await cachedCtxFeatures(ctx), "schema.graph")) return null;
+	return videoContributions(ctx, event.page);
+}
+
+async function videoContributions(ctx: Ctx, page: PageMetadataEvent["page"]): Promise<PageMetadataContribution[] | null> {
 	if (!page.content) return null;
 	const entry = await embedStore(ctx).get(embedKey(page.content.collection, page.content.id));
 	// Legacy WordPress markers are rendered (with their own schema) by the theme.
