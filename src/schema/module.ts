@@ -8,6 +8,7 @@
  * "<collection>:<entry id>") and schemaAuthors (Person property rows per
  * byline id).
  */
+import { siteName } from "../core/site.js";
 import type { PageMetadataContribution, PluginContext, PublicPageContext } from "emdash";
 import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
@@ -734,9 +735,10 @@ export function schemaModule(options: SchemaOptions) {
 				);
 				invalidateSchemaConfig();
 				const siteUrl = originOf(ctx.site.url);
+				const name = await siteName(ctx);
 				let page: PublicPageContext;
 				if (input.target === "home") {
-					page = { url: `${siteUrl}/`, path: "/", locale: null, kind: "custom", pageType: "website", title: ctx.site.name, pageTitle: ctx.site.name, description: null, canonical: `${siteUrl}/`, image: null, siteName: ctx.site.name };
+					page = { url: `${siteUrl}/`, path: "/", locale: null, kind: "custom", pageType: "website", title: name, pageTitle: name, description: null, canonical: `${siteUrl}/`, image: null, siteName: name };
 				} else {
 					if (!input.collection || !input.entryId || !ctx.content) throw PluginRouteError.badRequest("Choose an entry.");
 					const [item, info] = await Promise.all([ctx.content.get(input.collection, input.entryId), ctx.schema?.getCollection(input.collection)]);
@@ -760,7 +762,7 @@ export function schemaModule(options: SchemaOptions) {
 						content: { collection: input.collection, id: item.id, slug: item.slug },
 						seo: { robots: item.seo?.noIndex ? "noindex, nofollow" : null },
 						articleMeta: { publishedTime: item.publishedAt, modifiedTime: item.updatedAt },
-						siteName: ctx.site.name,
+						siteName: name,
 					};
 				}
 				const contributions = await schemaContributions(ctx, page, options);
