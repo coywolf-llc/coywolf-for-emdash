@@ -1,0 +1,62 @@
+import "./ts-resolve.mjs";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+const { buildPending, snapshotFromRow, snapshotFromContent, pendingId } = await import("../src/redirects/removed-core.ts");
+const { interpolateUrlPattern } = await import("../src/core/content-url.ts");
+
+const now = new Date("2026-10-03T12:00:00Z");
+
+test("deleted published entry: decision with the URL from the collection pattern", () => {
+	const row = { id: "01J", slug: "red-wolf", status: "published", published_at: "2025-04-07 09:30:00", locale: "en", headline: "The Red Wolf" };
+	const entry = snapshotFromRow(row, "headline");
+	const pending = buildPending("posts", entry, { urlPattern: "/{year}/{month}/{slug}/" }, "deleted", now);
+	assert.deepEqual(pending, {
+		id: "posts:01J",
+		collection: "posts",
+		entryId: "01J",
+		url: "/2025/04/red-wolf",
+		title: "The Red Wolf",
+		reason: "deleted",
+		locale: "en",
+		at: "2026-10-03T12:00:00.000Z",
+	});
+});
+
+test("no URL pattern: EmDash's /<collection>/<slug> default", () => {
+	const entry = snapshotFromRow({ id: "1", slug: "about", status: "published", title: "About" }, null);
+	assert.equal(buildPending("pages", entry, undefined, "deleted", now).url, "/pages/about");
+});
+
+test("deleted drafts and entries without slugs need no decision", () => {
+	const draft = snapshotFromRow({ id: "1", slug: "wip", status: "draft", title: "WIP" }, null);
+	assert.equal(buildPending("posts", draft, undefined, "deleted", now), null);
+	const noSlug = snapshotFromRow({ id: "2", slug: null, status: "published" }, null);
+	assert.equal(buildPending("posts", noSlug, undefined, "deleted", now), null);
+});
+
+test("unpublished entry: from the hook's content record (status is already draft)", () => {
+	const content = { id: "9", slug: "coyotes", status: "draft", publishedAt: "2024-01-02T03:04:05Z", locale: "en", data: { title: "Coyotes" } };
+	const pending = buildPending("posts", snapshotFromContent(content, null), { urlPattern: "/blog/{slug}" }, "unpublished", now);
+	assert.equal(pending.url, "/blog/coyotes");
+	assert.equal(pending.title, "Coyotes");
+	assert.equal(pending.reason, "unpublished");
+	assert.equal(pending.id, pendingId("posts", "9"));
+});
+
+test("unpublished entry that was never published: nothing to decide", () => {
+	const content = { id: "9", slug: "x", status: "draft", publishedAt: null, data: {} };
+	assert.equal(buildPending("posts", snapshotFromContent(content, null), undefined, "unpublished", now), null);
+});
+
+test("title falls back to the slug", () => {
+	const entry = snapshotFromRow({ id: "3", slug: "untitled", status: "published" }, "name");
+	assert.equal(buildPending("posts", entry, undefined, "deleted", now).title, "untitled");
+});
+
+test("URL interpolation matches EmDash: encoding, {id}, repeated and trailing slashes, unresolved date tokens", () => {
+	assert.equal(interpolateUrlPattern({ pattern: "/news//{slug}/", collection: "news", slug: "a b", id: "1" }), "/news/a%20b");
+	assert.equal(interpolateUrlPattern({ pattern: "items/{id}", collection: "items", slug: "s", id: "42" }), "/items/42");
+	assert.equal(interpolateUrlPattern({ pattern: "/{year}/{slug}", collection: "p", slug: "s", id: "1", date: null }), "/{year}/s");
+	assert.equal(interpolateUrlPattern({ pattern: "/{year}/{month}/{day}/{slug}.html", collection: "p", slug: "s", id: "1", date: "2023-05-08 23:59:00" }), "/2023/05/08/s.html");
+});

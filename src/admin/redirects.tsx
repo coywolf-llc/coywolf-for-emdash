@@ -6,6 +6,8 @@ import { ArrowRight, ArrowsSplit, DotsThree, PencilSimple, Plus, Trash, UploadSi
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { RemovedContentPanel } from "./redirects-removed.js";
+
 const API = "/_emdash/api/plugins/coywolf-pack/redirects";
 
 interface Rule {
@@ -309,6 +311,7 @@ export function RedirectsPage() {
 
 			{notice && <Banner variant="default" role="status" title={notice} />}
 			{error && <Banner variant="error" role="alert" title="Something went wrong" description={error} />}
+			<RemovedContentPanel onRuleCreated={() => void load()} />
 
 			{!rules && !error ? (
 				<div className="py-12 text-center text-kumo-subtle">

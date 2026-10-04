@@ -1,0 +1,59 @@
+---
+/**
+ * SearchBox: a search form with as-you-type suggestions (feature "search.box").
+ *
+ * ```astro
+ * ---
+ * import { SearchBox } from "@coywolf/emdash/astro";
+ * ---
+ * <SearchBox action="/search" collections={["posts", "pages"]} />
+ * ```
+ *
+ * Without JavaScript it's a plain GET form to `action` (?q=…), so the site's
+ * search page handles it. With JavaScript, suggestions come from the pack's
+ * search route: titles first, then full text, then results for any of the
+ * words when nothing matches all of them. Renders nothing while the feature
+ * is off. Colors are CSS custom properties (--cw-search-*).
+ */
+import { siteFeatureOn } from "../../core/features.js";
+import SearchBoxForm from "./SearchBoxForm.astro";
+
+export interface Props {
+	/** The site's search results page. Default "/search". */
+	action?: string;
+	/** Query parameter name. Default "q". */
+	name?: string;
+	/** Field label (visually hidden unless showLabel). Default "Search". */
+	label?: string;
+	showLabel?: boolean;
+	placeholder?: string;
+	/** Collections to suggest from (default: every searchable collection). */
+	collections?: string[];
+	/** Locale to search (default: the page's locale; null for all). */
+	locale?: string | null;
+	/** Characters before suggesting. Default 2. */
+	minChars?: number;
+	/** Milliseconds to wait after typing. Default 200. */
+	debounce?: number;
+	/** Suggestions to show. Default 8. */
+	limit?: number;
+	/** Show the content type (e.g. "Post") beside each suggestion. Default true. */
+	showType?: boolean;
+	/** Show a matching excerpt under each suggestion. Default true. */
+	showSnippets?: boolean;
+	/** Show a submit button. Default true. */
+	submitButton?: boolean;
+	/** Value to start with, e.g. the current query on the results page. */
+	value?: string;
+	class?: string;
+	/** Base for element ids (needed when a page has more than one box). Default "cw-search". */
+	id?: string;
+	/** D1 binding of the site database, for the feature switch. Default "DB". */
+	database?: string;
+}
+
+const { database, ...props } = Astro.props;
+const enabled = await siteFeatureOn("search.box", database);
+---
+
+{enabled && <SearchBoxForm {...props} />}
