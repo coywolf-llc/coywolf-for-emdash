@@ -6,7 +6,7 @@
  */
 import type { PluginContext } from "emdash";
 
-import { ctxFeatures, isOn, registerFeatures } from "../core/features.js";
+import { cachedCtxFeatures, ctxFeatures, isOn, registerFeatures } from "../core/features.js";
 import type { PackModule } from "../core/module.js";
 import { getEntryEntities } from "./entities.js";
 import { PROVIDER_HOSTS } from "./providers.js";
@@ -98,6 +98,8 @@ export function aiPack(options: AiOptions = {}): PackModule {
 			"page:metadata": async (event: { page: { content?: { collection: string; id: string }; canonical: string | null; url: string } }, ctx: PluginContext) => {
 				const ref = event.page.content;
 				if (!ref) return null;
+				// The Schema & Social graph already carries these on its Article/WebPage node.
+				if (isOn(await cachedCtxFeatures(ctx), "schema.graph")) return null;
 				const { about, mentions } = await getEntryEntities(ctx, ref.collection, ref.id);
 				if (!about.length && !mentions.length) return null;
 				const graph: Record<string, unknown> = { "@context": "https://schema.org", "@type": "WebPage", "@id": event.page.canonical ?? event.page.url };

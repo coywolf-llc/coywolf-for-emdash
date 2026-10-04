@@ -338,3 +338,17 @@ test("publisher uses the chosen organization type and policy URLs", () => {
 	assert.equal(node.correctionsPolicy, `${ORIGIN}/policies-and-standards/`);
 	assert.deepEqual(node.parentOrganization, { "@type": "Organization", name: "Coywolf LLC", url: "https://coywolf.llc", "@id": "https://coywolf.llc#Organization" });
 });
+
+test("nested copies of graph entities become references; WebPage doesn't repeat the Article", () => {
+	const nodes = g.linkNestedEntities([
+		{ "@type": "Person", "@id": "https://example.com/author/jon/#person", name: "Jon", url: "https://coywolf.com/jon-henshaw/" },
+		{
+			"@type": "NewsMediaOrganization",
+			"@id": "https://example.com/#organization",
+			founder: { "@type": "Person", "@id": "https://coywolf.com/jon-henshaw/#Person", name: "Jon", url: "https://coywolf.com/jon-henshaw/" },
+			parentOrganization: { "@type": "Organization", name: "Coywolf LLC", url: "https://coywolf.llc" },
+		},
+	]);
+	assert.deepEqual(nodes[1].founder, { "@id": "https://example.com/author/jon/#person" });
+	assert.equal(nodes[1].parentOrganization.name, "Coywolf LLC");
+});

@@ -30,7 +30,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.4.10
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.4.11
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
