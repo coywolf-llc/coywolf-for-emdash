@@ -522,13 +522,6 @@ Use the block from theme code too: `import { CoywolfVideo } from "@coywolf/emdas
 - Plays aren't counted for autoplaying videos (including the GIF style), so muted previews don't inflate them. Visitors who block `embed.cloudflarestream.com` (the player SDK, loaded only where plays are counted) aren't counted.
 - Signed URLs (`requireSignedURLs`) aren't supported.
 
-## Development
-
-```bash
-npx tsc --noEmit -p .        # typecheck
-node --test test/*.test.mjs  # unit tests (Node 22.15+; runs the TypeScript sources directly)
-```
-
 ## Robots.txt Rules
 
 Write `robots.txt` as named, plain-English rules instead of a text box: **Block AI training crawlers**, **Block AI search and assistants**, **Allow search engines**, **Block SEO tool crawlers**, or a custom path rule (a folder, a prefix, one page, an exact URL, a file type, a query parameter, a wildcard, or "block a folder but allow one item in it"). Pick crawlers by category or search from a directory of about 700 bots, see the generated file as you edit, and test it: **Can GPTBot fetch /2026/my-post/?** The tester runs a TypeScript port of Google's open-source robots.txt matcher (RFC 9309: a bot's own groups are merged and shadow `*`, longest match wins, Allow wins ties, `*` and `$` wildcards), against exactly what will be served.
@@ -568,6 +561,13 @@ npx wrangler secret put RADAR_API_TOKEN
 ```
 
 The module declares `network:request` for `api.cloudflare.com` only.
+
+## Development
+
+```bash
+npx tsc --noEmit -p .        # typecheck
+node --test test/*.test.mjs  # unit tests (Node 22.15+; runs the TypeScript sources directly)
+```
 
 ## License
 
