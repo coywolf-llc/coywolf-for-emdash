@@ -236,7 +236,8 @@ export function transformLinks<T>(value: T, match: (href: string) => boolean, ed
 				if (edit.type === "replace") {
 					changed++;
 					set(key, key === "link" && isObj(raw) ? { ...raw, href: edit.to } : edit.to);
-				} else if (key === "link" || key === "href" || (key === "url" && v._type === "button")) {
+				} else if ((key === "link" && v._type === "image") || (key === "url" && v._type === "button")) {
+					// Only shapes known to be links: a linked image keeps its image, a button keeps its label.
 					changed++;
 					del(key);
 				} else {
@@ -292,6 +293,20 @@ export function resolveHref(href: string, siteUrl: string): URL | null {
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Whether a replacement URL is acceptable: absolute http(s), a site path,
+ * a fragment, mailto: or tel:. Protocol-relative forms ("//host", "/\\host")
+ * and backslashes in the authority are refused, since browsers treat them as
+ * links to another host.
+ */
+export function isAllowedTarget(value: string): boolean {
+	const v = value.trim();
+	if (!v || v.length > 2048 || /[\u0000-\u001f]/.test(v)) return false;
+	if (!/^(https?:\/\/|\/|#|mailto:|tel:)/i.test(v)) return false;
+	if (/^\/[/\\]/.test(v) || /^https?:\/\/[^/?#]*\\/i.test(v) || /^https?:[/\\]{3}/i.test(v)) return false;
+	return true;
 }
 
 /** Host without a leading "www.", lowercased. */

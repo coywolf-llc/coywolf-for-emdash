@@ -9,23 +9,29 @@ import { ctxFeatures, requireFeature } from "../core/features.js";
 import { parseInput } from "../shared.js";
 import { BudgetExhausted, type Budget, checkUrl } from "./check.js";
 import { type IgnoreRule, IgnoreRuleError, type LinkStatus, nextCheckAt, normalizeIgnore } from "./classify.js";
-import { type LinkEdit, transformEntry } from "./pt.js";
+import { type LinkEdit, isAllowedTarget, transformEntry } from "./pt.js";
 import {
 	IDLE_SCAN,
 	IGNORES_KEY,
+	Ops,
 	type RefRow,
+	STATUS_RANK,
 	type UrlRow,
+	fixUnresolved,
+	getCounts,
 	getIgnores,
+	getMany,
 	getScan,
 	indexEntry,
+	invalidateCounts,
 	latestData,
 	linkCollections,
-	queryAll,
+	putMany,
+	queryIn,
 	reapplyIgnores,
 	refs,
 	removeEntry,
 	scanStep,
-	siteUrl,
 	startScan,
 	urls,
 } from "./store.js";
@@ -38,15 +44,22 @@ export const LINKS_SCAN_TASK = "links-scan";
 export const LINKS_CHECK_TASK = "links-check";
 const PAGE_SIZE = 50;
 const CONCURRENCY = 6;
-const STATUSES: LinkStatus[] = ["unchecked", "ok", "redirect", "broken", "blocked", "error"];
+const STATUSES = Object.keys(STATUS_RANK) as LinkStatus[];
+
+/** Per admin request: statements (D1 calls count as subrequests) and wall time. */
+const REQUEST_OPS = 150;
+const REQUEST_MS = 25_000;
+/** Per scheduled scan run. */
+const SCAN_OPS = 200;
+const SCAN_MS = 60_000;
 
 export const linksSettingsSchema = {
 	linksCheckBudget: {
 		type: "number" as const,
-		label: "Link Manager: requests per check run",
+		label: "Link Manager: subrequests per check run",
 		description:
-			"Link checks run every 5 minutes. Each run makes at most this many HTTP requests (a link takes 1–2, plus 1 per redirect). Workers allow 50 subrequests per run on the Free plan and 1,000 on Paid.",
-		min: 5,
+			"Link checks run every 5 minutes. Each run uses at most this many subrequests: a link takes 1–2 HTTP requests (plus 1 per redirect) and 1 database write. Workers allow 50 subrequests per invocation on the Free plan and 1,000 on Paid, shared with other scheduled jobs.",
+		min: 10,
 		max: 900,
 		default: 40,
 	},
@@ -74,9 +87,7 @@ function writable(ctx: PluginContext): WritableContent {
 	return content as WritableContent;
 }
 
-function since(ms: number) {
-	return Date.now() + ms;
-}
+const requestOps = () => new Ops(REQUEST_OPS, Date.now() + REQUEST_MS);
 
 // ── Checking ─────────────────────────────────────────────────────
 
@@ -86,16 +97,23 @@ export interface CheckRun {
 	exhausted: boolean;
 }
 
-/** Check due links (or `ids`) within a request budget. */
-export async function runChecks(ctx: PluginContext, options: { ids?: string[]; budget?: number } = {}): Promise<CheckRun> {
+/**
+ * Check due links (or `ids`) within a subrequest budget (HTTP requests and
+ * database statements together) and a wall-clock deadline.
+ */
+export async function runChecks(ctx: PluginContext, options: { ids?: string[]; budget?: number; deadline?: number } = {}): Promise<CheckRun> {
 	const budget: Budget = { left: options.budget ?? (await ctx.settings.get<number>("linksCheckBudget")) ?? 40 };
 	const checkInternal = (await ctx.settings.get<boolean>("linksCheckInternal")) ?? true;
 	const userAgent = (await ctx.settings.get<string>("linksUserAgent")) ?? undefined;
+	budget.left -= 4; // The three settings reads and the candidate query.
+	const deadline = options.deadline ?? Number.POSITIVE_INFINITY;
 	const now = Date.now();
 
 	let candidates: Array<{ id: string; data: UrlRow }>;
 	if (options.ids) {
-		const found = await urls(ctx).getMany(options.ids);
+		const ops = new Ops();
+		const found = await getMany(urls(ctx), options.ids, ops);
+		budget.left -= ops.used - 1;
 		candidates = [...found].map(([id, data]) => ({ id, data }));
 	} else {
 		const page = await urls(ctx).query({
@@ -110,11 +128,13 @@ export async function runChecks(ctx: PluginContext, options: { ids?: string[]; b
 	const queue = [...candidates];
 	const worker = async () => {
 		for (let next = queue.shift(); next; next = queue.shift()) {
-			if (budget.left <= 0) {
+			// Room for the write plus a HEAD and a GET.
+			if (budget.left < 3 || Date.now() >= deadline) {
 				run.exhausted = true;
 				return;
 			}
 			const { id, data } = next;
+			budget.left--; // The row write below.
 			const checkedAt = new Date().toISOString();
 			if (!data.resolved || (data.internal && !checkInternal)) {
 				await urls(ctx).put(id, {
@@ -126,10 +146,10 @@ export async function runChecks(ctx: PluginContext, options: { ids?: string[]; b
 			}
 			try {
 				const outcome = await checkUrl(new URL(data.resolved), budget, { userAgent });
-				const current = (await urls(ctx).get(id)) ?? data;
 				await urls(ctx).put(id, {
-					...current,
+					...data,
 					status: outcome.status,
+					rank: STATUS_RANK[outcome.status],
 					code: outcome.code || null,
 					finalUrl: outcome.finalUrl,
 					chain: outcome.chain.slice(0, 8),
@@ -149,6 +169,7 @@ export async function runChecks(ctx: PluginContext, options: { ids?: string[]; b
 		}
 	};
 	await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+	if (run.checked) await invalidateCounts(ctx);
 	return run;
 }
 
@@ -158,43 +179,69 @@ export interface EditResult {
 	entries: number;
 	links: number;
 	published: number;
+	/** Fixed in the entry's draft only (it had unpublished changes, or is scheduled). */
 	staged: number;
+	scheduled: number;
 	skipped: number;
+	/** Entries changed by someone else while this ran; retry them. */
+	conflicts: number;
 	failed: Array<{ entry: string; error: string }>;
 	/** Entry keys after `next` still to process; call again with `after: next`. */
 	remaining: number;
 	next: string | null;
 }
 
-const EDIT_BATCH = 20;
+const EMPTY_EDIT: EditResult = {
+	entries: 0,
+	links: 0,
+	published: 0,
+	staged: 0,
+	scheduled: 0,
+	skipped: 0,
+	conflicts: 0,
+	failed: [],
+	remaining: 0,
+	next: null,
+};
+
+/** Statements one entry edit may take (reads, update, publish, re-index). */
+const EDIT_RESERVE = 30;
+
+const versionOf = (item: { version?: number; updatedAt?: string; draftRevisionId?: string | null }) =>
+	`${item.version ?? ""}|${item.updatedAt ?? ""}|${item.draftRevisionId ?? ""}`;
 
 /**
  * Apply link edits to every entry that uses the given URLs. An entry with
  * unpublished changes is edited in its draft only; a published entry with no
- * pending draft is republished so the fix goes live.
+ * pending draft is republished so the fix goes live. An entry that changes
+ * while it's being edited is skipped and reported, never overwritten.
  */
 async function applyEdits(ctx: PluginContext, plan: Map<string, LinkEdit>, ids: string[], after: string | null): Promise<EditResult> {
+	const ops = requestOps();
 	const content = writable(ctx);
 	const collections = await linkCollections(ctx);
-	const usage = await queryAll(refs(ctx), { urlId: { in: ids } });
+	const usage = await queryIn(refs(ctx), "urlId", ids, ops);
 	const keys = [...new Set(usage.map((r) => r.data.entryKey))].sort().filter((k) => !after || k > after);
-	const batch = keys.slice(0, EDIT_BATCH);
-	const result: EditResult = { entries: 0, links: 0, published: 0, staged: 0, skipped: 0, failed: [], remaining: keys.length - batch.length, next: null };
+	const result: EditResult = { ...EMPTY_EDIT, failed: [] };
+	let done = 0;
 
-	for (const key of batch) {
+	for (const key of keys) {
+		if (!ops.has(EDIT_RESERVE)) break;
+		done++;
 		result.next = key;
 		const slash = key.indexOf("/");
 		const collection = key.slice(0, slash);
 		const id = key.slice(slash + 1);
 		try {
 			const info = collections.get(collection);
+			ops.spend(2);
 			const item = await content.get(collection, id);
 			if (!item || !info) {
-				await removeEntry(ctx, collection, id);
+				await removeEntry(ctx, collection, id, ops);
 				continue;
 			}
 			const hadDraft = Boolean(item.draftRevisionId);
-			let data = await latestData(ctx, collection, item);
+			let data = await latestData(ctx, collection, item, ops);
 			const patch: Record<string, unknown> = {};
 			let changed = 0;
 			for (const [href, edit] of plan) {
@@ -205,27 +252,45 @@ async function applyEdits(ctx: PluginContext, plan: Map<string, LinkEdit>, ids: 
 				data = { ...data, ...step.patch };
 			}
 			if (changed && Object.keys(patch).length) {
+				// Re-read right before writing: if anyone saved in between, leave the entry alone.
+				ops.spend(2);
+				const fresh = await content.get(collection, id);
+				if (!fresh || versionOf(fresh) !== versionOf(item)) {
+					result.conflicts++;
+					result.failed.push({ entry: key, error: "Changed while being edited. Run the action again for this link." });
+					continue;
+				}
+				ops.spend(5);
 				await content.update(collection, id, patch);
 				result.entries++;
 				result.links += changed;
+				if (item.status === "scheduled") result.scheduled++;
 				if (info.revisions && item.status === "published") {
+					let published = false;
 					if (!hadDraft && content.getVersioned && content.publish) {
+						ops.spend(2);
 						const versioned = await content.getVersioned(collection, id);
-						if (versioned) {
+						// Publish only the draft this edit created: exactly one version after the one read.
+						if (versioned && versioned.item.version === (fresh.version ?? 0) + 1) {
+							ops.spend(5);
 							await content.publish(collection, id, { _rev: versioned._rev });
-							result.published++;
-						} else result.staged++;
-					} else {
-						result.staged++;
+							published = true;
+						}
 					}
+					if (published) result.published++;
+					else result.staged++;
+				} else if (info.revisions && item.status === "scheduled") {
+					result.staged++;
 				}
 			}
-			await indexEntry(ctx, collection, { ...item, data });
+			await indexEntry(ctx, collection, { ...item, data }, { ops });
 		} catch (error) {
 			result.failed.push({ entry: key, error: String(error).slice(0, 200) });
 			ctx.log.error("links: edit failed", { entry: key, error: String(error) });
 		}
 	}
+	result.remaining = keys.length - done;
+	await invalidateCounts(ctx);
 	return result;
 }
 
@@ -236,81 +301,63 @@ const listInput = z.object({
 	scope: z.enum(["all", "internal", "external"]).optional(),
 	host: z.string().max(253).optional(),
 	q: z.string().max(500).optional(),
-	page: z.number().int().min(1).max(10_000).optional(),
-	sort: z.enum(["status", "url", "refs", "checked"]).optional(),
+	cursor: z.string().max(2000).nullish(),
+	sort: z.enum(["status", "url", "checked"]).optional(),
 });
 
-const STATUS_ORDER: Record<LinkStatus, number> = { broken: 0, error: 1, blocked: 2, redirect: 3, unchecked: 4, ok: 5 };
-
+/** One page of links, filtered and sorted by indexed storage queries. */
 async function list(ctx: PluginContext, input: z.infer<typeof listInput>) {
-	const rows = await queryAll(urls(ctx));
-	const counts: Record<string, number> = { all: 0, ignored: 0, internal: 0, external: 0 };
-	for (const s of STATUSES) counts[s] = 0;
-	const hosts = new Map<string, number>();
-	for (const { data } of rows) {
-		if (data.ignored) {
-			counts.ignored++;
-			continue;
-		}
-		counts.all++;
-		counts[data.status]++;
-		counts[data.internal ? "internal" : "external"]++;
-		if (data.host) hosts.set(data.host, (hosts.get(data.host) ?? 0) + 1);
-	}
-
 	const status = input.status ?? "all";
-	const q = input.q?.trim().toLowerCase();
+	const where: Record<string, unknown> = { ignored: status === "ignored" };
+	if (status !== "all" && status !== "ignored") where.status = status;
+	if (input.scope === "internal") where.internal = true;
+	if (input.scope === "external") where.internal = false;
 	const host = input.host?.trim().toLowerCase().replace(/^www\./, "");
-	const filtered = rows.filter(({ data }) => {
-		if (status === "ignored" ? !data.ignored : data.ignored) return false;
-		if (status !== "all" && status !== "ignored" && data.status !== status) return false;
-		if (input.scope === "internal" && !data.internal) return false;
-		if (input.scope === "external" && data.internal) return false;
-		if (host && data.host !== host && !data.host.endsWith(`.${host}`)) return false;
-		if (q && !data.url.toLowerCase().includes(q) && !data.finalUrl?.toLowerCase().includes(q)) return false;
-		return true;
-	});
+	if (host) where.host = host;
+	const q = input.q?.trim();
+	if (q) {
+		// Storage matches prefixes: a URL or path searches URLs, anything else searches domains.
+		if (/^(https?:|\/)/i.test(q)) where.url = { startsWith: q };
+		else if (!host) where.host = { startsWith: q.toLowerCase().replace(/^www\./, "") };
+	}
 	const sort = input.sort ?? "status";
-	filtered.sort((a, b) => {
-		if (sort === "url") return a.data.url.localeCompare(b.data.url);
-		if (sort === "refs") return b.data.refs - a.data.refs;
-		if (sort === "checked") return (b.data.checkedAt ?? "").localeCompare(a.data.checkedAt ?? "");
-		return STATUS_ORDER[a.data.status] - STATUS_ORDER[b.data.status] || a.data.url.localeCompare(b.data.url);
-	});
+	const orderBy: Record<string, "asc" | "desc"> = sort === "url" ? { url: "asc" } : sort === "checked" ? { checkedAt: "desc" } : { rank: "asc" };
 
-	const page = input.page ?? 1;
-	const slice = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-	const ids = slice.map((r) => r.id);
-	const usage = ids.length ? await queryAll(refs(ctx), { urlId: { in: ids } }) : [];
+	// biome-ignore lint/suspicious/noExplicitAny: WhereClause is EmDash's.
+	const page = await urls(ctx).query({ where: where as any, orderBy, limit: PAGE_SIZE, cursor: input.cursor ?? undefined });
+	// biome-ignore lint/suspicious/noExplicitAny: WhereClause is EmDash's.
+	const total = await urls(ctx).count(where as any);
+	const usage = await queryIn(
+		refs(ctx),
+		"urlId",
+		page.items.map((r) => r.id),
+	);
 	const byUrl = new Map<string, RefRow[]>();
 	for (const { data } of usage) byUrl.set(data.urlId, [...(byUrl.get(data.urlId) ?? []), data]);
 
 	return {
-		items: slice.map(({ id, data }) => ({
-			id,
-			...data,
-			usedIn: (byUrl.get(id) ?? []).sort((a, b) => a.title.localeCompare(b.title)).map((r) => ({
-				collection: r.collection,
-				entryId: r.entryId,
-				title: r.title,
-				status: r.entryStatus,
-				kinds: r.kinds,
-				anchors: r.anchors,
-				count: r.count,
-			})),
-		})),
-		total: filtered.length,
-		page,
+		items: page.items.map(({ id, data }) => {
+			const used = (byUrl.get(id) ?? []).sort((a, b) => a.title.localeCompare(b.title));
+			return {
+				id,
+				...data,
+				refs: used.length,
+				usedIn: used.map((r) => ({
+					collection: r.collection,
+					entryId: r.entryId,
+					title: r.title,
+					status: r.entryStatus,
+					kinds: r.kinds,
+					anchors: r.anchors,
+					count: r.count,
+				})),
+			};
+		}),
+		total,
 		pageSize: PAGE_SIZE,
-		counts,
-		hosts: [...hosts].sort((a, b) => b[1] - a[1]).slice(0, 200).map(([name, count]) => ({ name, count })),
+		nextCursor: page.hasMore ? (page.cursor ?? null) : null,
+		counts: await getCounts(ctx, 60_000),
 	};
-}
-
-async function summary(ctx: PluginContext) {
-	const counts: Record<string, number> = {};
-	for (const s of STATUSES) counts[s] = await urls(ctx).count({ ignored: false, status: s });
-	return { counts, scan: (await getScan(ctx)) ?? IDLE_SCAN };
 }
 
 // ── Module ───────────────────────────────────────────────────────
@@ -321,13 +368,10 @@ const targetUrl = z
 	.trim()
 	.min(1, "Enter the new URL.")
 	.max(2048)
-	.refine((v) => /^(https?:\/\/|\/|#|mailto:|tel:)/i.test(v), "Use an http(s) URL, a path starting with /, mailto: or tel:.");
+	.refine(isAllowedTarget, "Use an http(s) URL, a path starting with a single /, mailto: or tel:. Protocol-relative URLs (//host) aren't allowed.");
 
 export function linksModule() {
-	async function guard(ctx: PluginContext, feature = "links") {
-		await requireFeature(ctx, feature);
-		await siteUrl(ctx);
-	}
+	const guard = (ctx: PluginContext, feature = "links") => requireFeature(ctx, feature);
 
 	const routes = {
 		"links/list": definePluginRoute({
@@ -342,6 +386,7 @@ export function linksModule() {
 					...(await list(ctx, input)),
 					scan: (await getScan(ctx)) ?? IDLE_SCAN,
 					checking: features["links.check"] ?? false,
+					siteUrlKnown: Boolean(ctx.site?.url),
 					ignores: await getIgnores(ctx),
 				};
 			},
@@ -350,12 +395,12 @@ export function linksModule() {
 		"links/summary": {
 			permission: "plugins:manage" as const,
 			handler: async (ctx: PluginContext) => {
-				await requireFeature(ctx, "links");
-				return summary(ctx);
+				await guard(ctx);
+				return { counts: await getCounts(ctx), scan: (await getScan(ctx)) ?? IDLE_SCAN };
 			},
 		},
 
-		/** Start (or continue) a full scan; indexes for up to ~20 seconds per call. */
+		/** Start (with `restart`, or when never scanned) or continue a full scan, one bounded step per call. */
 		"links/scan": definePluginRoute({
 			permission: "plugins:manage",
 			methods: ["POST"],
@@ -363,9 +408,8 @@ export function linksModule() {
 			handler: async (ctx) => {
 				await guard(ctx);
 				const { restart } = parseInput(z.object({ restart: z.boolean().optional() }), ctx.input ?? {});
-				// Only start a scan when asked (or never scanned); otherwise continue one in progress.
 				if (restart || !(await getScan(ctx))) await startScan(ctx);
-				return scanStep(ctx, since(20_000));
+				return scanStep(ctx, requestOps());
 			},
 		}),
 
@@ -375,13 +419,20 @@ export function linksModule() {
 			request: { body: "json" },
 			handler: async (ctx) => {
 				await guard(ctx, "links.check");
-				const input = parseInput(z.object({ ids: ids.optional() }), ctx.input ?? {});
-				if (input.ids) {
-					const found = await urls(ctx).getMany(input.ids);
-					await urls(ctx).putMany([...found].map(([id, data]) => ({ id, data: { ...data, nextCheckAt: "" } })));
+				const input = parseInput(z.object({ ids: ids.max(50).optional() }), ctx.input ?? {});
+				const run = await runChecks(ctx, { ids: input.ids, budget: 45, deadline: Date.now() + REQUEST_MS });
+				// Whatever didn't fit is queued for the scheduled job.
+				if (input.ids && run.exhausted) {
+					const ops = requestOps();
+					const left = await getMany(urls(ctx), input.ids, ops);
+					const queued = [...left].filter(([, d]) => !d.checkedAt || Date.now() - Date.parse(d.checkedAt) > REQUEST_MS * 2);
+					await putMany(
+						urls(ctx),
+						queued.map(([id, data]) => ({ id, data: { ...data, nextCheckAt: "" } })),
+						ops,
+					);
 				}
-				// Stay well inside a request's subrequest allowance.
-				return runChecks(ctx, { ids: input.ids?.slice(0, 40), budget: 40 });
+				return run;
 			},
 		}),
 
@@ -392,10 +443,10 @@ export function linksModule() {
 			handler: async (ctx) => {
 				await guard(ctx);
 				const input = parseInput(z.object({ ids, to: targetUrl, after: z.string().max(600).nullish() }), ctx.input);
-				const found = await urls(ctx).getMany(input.ids);
+				const found = await getMany(urls(ctx), input.ids);
 				const plan = new Map<string, LinkEdit>();
 				for (const row of found.values()) if (row.url !== input.to) plan.set(row.url, { type: "replace", to: input.to });
-				if (!plan.size) return { entries: 0, links: 0, published: 0, staged: 0, skipped: 0, failed: [], remaining: 0, next: null };
+				if (!plan.size) return { ...EMPTY_EDIT };
 				const result = await applyEdits(ctx, plan, input.ids, input.after ?? null);
 				ctx.log.info("links: replaced", { from: [...plan.keys()].slice(0, 10), to: input.to, entries: result.entries });
 				return result;
@@ -409,7 +460,7 @@ export function linksModule() {
 			handler: async (ctx) => {
 				await guard(ctx);
 				const input = parseInput(z.object({ ids, after: z.string().max(600).nullish() }), ctx.input);
-				const found = await urls(ctx).getMany(input.ids);
+				const found = await getMany(urls(ctx), input.ids);
 				const plan = new Map<string, LinkEdit>([...found.values()].map((row) => [row.url, { type: "unlink" }]));
 				const result = await applyEdits(ctx, plan, input.ids, input.after ?? null);
 				ctx.log.info("links: unlinked", { urls: [...plan.keys()].slice(0, 10), entries: result.entries });
@@ -451,33 +502,38 @@ export function linksModule() {
 		}),
 	};
 
+	const reindex = async (event: { content: Record<string, unknown>; collection: string }, ctx: PluginContext) => {
+		const c = event.content as { id?: string; slug?: string | null; status?: string; data?: Record<string, unknown> };
+		if (!c.id || !c.data) return;
+		await indexEntry(ctx, event.collection, { id: c.id, slug: c.slug, status: c.status, data: c.data });
+		await invalidateCounts(ctx);
+	};
+
 	const hooks = {
-		"content:afterSave": async (event: { content: Record<string, unknown>; collection: string }, ctx: PluginContext) => {
-			const c = event.content as { id?: string; slug?: string | null; status?: string; data?: Record<string, unknown> };
-			if (!c.id || !c.data) return;
-			await indexEntry(ctx, event.collection, { id: c.id, slug: c.slug, status: c.status, data: c.data });
-		},
-		"content:afterRestore": async (event: { content: Record<string, unknown>; collection: string }, ctx: PluginContext) => {
-			const c = event.content as { id?: string; slug?: string | null; status?: string; data?: Record<string, unknown> };
-			if (!c.id || !c.data) return;
-			await indexEntry(ctx, event.collection, { id: c.id, slug: c.slug, status: c.status, data: c.data });
-		},
+		"content:afterSave": reindex,
+		"content:afterRestore": reindex,
 		"content:afterDelete": async (event: { id: string; collection: string }, ctx: PluginContext) => {
 			await removeEntry(ctx, event.collection, event.id);
+			await invalidateCounts(ctx);
 		},
 	};
 
 	/** Every 5 minutes: run the first full scan automatically, and continue any scan in progress. */
 	async function scanTask(ctx: PluginContext) {
+		if (!ctx.site?.url) {
+			ctx.log.warn("links: the site URL isn't set (Settings → General or astro.config `site`); scanning waits for it.");
+			return;
+		}
+		const ops = new Ops(SCAN_OPS, Date.now() + SCAN_MS);
+		await fixUnresolved(ctx, ops);
 		const state = await getScan(ctx);
 		if (!state) await startScan(ctx);
 		else if (state.status !== "running") return;
-		await scanStep(ctx, since(4 * 60_000));
+		await scanStep(ctx, ops);
 	}
 
 	async function checkTask(ctx: PluginContext) {
-		await siteUrl(ctx);
-		const run = await runChecks(ctx);
+		const run = await runChecks(ctx, { deadline: Date.now() + 10 * 60_000 });
 		if (run.checked) ctx.log.info("links: checked", run);
 	}
 

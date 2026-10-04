@@ -69,12 +69,12 @@ interface ScanState {
 interface ListResponse {
 	items: LinkRow[];
 	total: number;
-	page: number;
 	pageSize: number;
+	nextCursor: string | null;
 	counts: Record<string, number>;
-	hosts: Array<{ name: string; count: number }>;
 	scan: ScanState;
 	checking: boolean;
+	siteUrlKnown: boolean;
 	ignores: IgnoreRule[];
 }
 
@@ -83,7 +83,9 @@ interface EditResult {
 	links: number;
 	published: number;
 	staged: number;
+	scheduled: number;
 	skipped: number;
+	conflicts: number;
 	failed: Array<{ entry: string; error: string }>;
 	remaining: number;
 	next: string | null;
@@ -129,7 +131,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 
 /** Run a batched edit route until every affected entry is done. */
 async function runEdit(path: "replace" | "unlink", body: Record<string, unknown>, onProgress: (done: number) => void): Promise<EditResult> {
-	const total: EditResult = { entries: 0, links: 0, published: 0, staged: 0, skipped: 0, failed: [], remaining: 0, next: null };
+	const total: EditResult = { entries: 0, links: 0, published: 0, staged: 0, scheduled: 0, skipped: 0, conflicts: 0, failed: [], remaining: 0, next: null };
 	let after: string | null = null;
 	for (let i = 0; i < 500; i++) {
 		const step: EditResult = await post<EditResult>(path, { ...body, after });
@@ -137,6 +139,8 @@ async function runEdit(path: "replace" | "unlink", body: Record<string, unknown>
 		total.links += step.links;
 		total.published += step.published;
 		total.staged += step.staged;
+		total.scheduled += step.scheduled;
+		total.conflicts += step.conflicts;
 		total.skipped += step.skipped;
 		total.failed.push(...step.failed);
 		onProgress(total.entries);
@@ -148,9 +152,11 @@ async function runEdit(path: "replace" | "unlink", body: Record<string, unknown>
 
 function editSummary(verb: string, r: EditResult): string {
 	const parts = [`${verb} ${plural(r.links, "link")} in ${plural(r.entries, "entry", "entries")}.`];
-	if (r.staged) parts.push(`${plural(r.staged, "entry", "entries")} had unpublished changes, so the fix is saved in the draft; publish to make it live.`);
+	if (r.staged) parts.push(`${plural(r.staged, "entry", "entries")} had unpublished changes or a schedule, so the fix is saved in the draft; publish to make it live.`);
+	if (r.scheduled) parts.push(`${plural(r.scheduled, "entry", "entries")} ${r.scheduled === 1 ? "is" : "are"} scheduled.`);
+	if (r.conflicts) parts.push(`${plural(r.conflicts, "entry", "entries")} changed while this ran and ${r.conflicts === 1 ? "was" : "were"} left alone; run it again to retry.`);
 	if (r.skipped) parts.push(`${plural(r.skipped, "embed")} can't be unlinked and ${r.skipped === 1 ? "was" : "were"} left as is.`);
-	if (r.failed.length) parts.push(`${plural(r.failed.length, "entry", "entries")} failed: ${r.failed[0].error}`);
+	if (r.failed.length > r.conflicts) parts.push(`${plural(r.failed.length, "entry", "entries")} failed: ${r.failed[0].error}`);
 	return parts.join(" ");
 }
 
@@ -405,7 +411,9 @@ export function LinksPage() {
 	const [scope, setScope] = React.useState<"all" | "internal" | "external">("all");
 	const [host, setHost] = React.useState("");
 	const [query, setQuery] = React.useState("");
-	const [page, setPage] = React.useState(1);
+	/** Cursors of the pages before the current one, and the current one. */
+	const [cursors, setCursors] = React.useState<Array<string | null>>([null]);
+	const cursor = cursors[cursors.length - 1];
 	const [selected, setSelected] = React.useState<Set<string>>(new Set());
 	const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
 	const [replacing, setReplacing] = React.useState<LinkRow[] | null>(null);
@@ -420,17 +428,17 @@ export function LinksPage() {
 	const load = React.useCallback(async () => {
 		setError(undefined);
 		try {
-			const result = await post<ListResponse>("list", { status, scope, host: deferredHost || undefined, q: deferredQuery || undefined, page });
+			const result = await post<ListResponse>("list", { status, scope, host: deferredHost || undefined, q: deferredQuery || undefined, cursor });
 			setData(result);
 			setSelected((prev) => new Set([...prev].filter((id) => result.items.some((r) => r.id === id))));
 		} catch (cause) {
 			setError(errorText(cause, "Could not load links"));
 		}
-	}, [status, scope, deferredHost, deferredQuery, page]);
+	}, [status, scope, deferredHost, deferredQuery, cursor]);
 	React.useEffect(() => {
 		void load();
 	}, [load]);
-	React.useEffect(() => setPage(1), [status, scope, deferredHost, deferredQuery]);
+	React.useEffect(() => setCursors([null]), [status, scope, deferredHost, deferredQuery]);
 
 	/** Keep a running scan moving while the page is open (the scheduled job continues it otherwise). */
 	const scan = React.useCallback(
@@ -439,10 +447,16 @@ export function LinksPage() {
 			scanning.current = true;
 			setError(undefined);
 			try {
-				let state = await post<ScanState>("scan", { restart });
-				while (state.status === "running") {
+				let state = await post<ScanState & { busy?: boolean }>("scan", { restart });
+				while (state.status === "running" && !state.error) {
 					setData((d) => (d ? { ...d, scan: state } : d));
-					state = await post<ScanState>("scan", {});
+					// Another step (the scheduled job) holds the scan: wait instead of spinning.
+					if (state.busy) await new Promise((resolve) => setTimeout(resolve, 5000));
+					state = await post<ScanState & { busy?: boolean }>("scan", {});
+				}
+				if (state.error) {
+					setData((d) => (d ? { ...d, scan: state } : d));
+					return;
 				}
 				setNotice(`Scan finished: ${plural(state.processed, "entry", "entries")} indexed.`);
 				await load();
@@ -489,7 +503,7 @@ export function LinksPage() {
 	const items = data?.items ?? [];
 	const selectedRows = items.filter((r) => selected.has(r.id));
 	const allSelected = items.length > 0 && selectedRows.length === items.length;
-	const pages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
+	const pageNumber = cursors.length;
 	const scanState = data?.scan;
 	const neverScanned = scanState && !scanState.finishedAt && scanState.status !== "running";
 
@@ -540,7 +554,7 @@ export function LinksPage() {
 					<div className="sm:w-72">
 						<Input
 							label="Search"
-							placeholder="Search URLs"
+							placeholder="Start of a URL or domain"
 							value={query}
 							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
 						/>
@@ -549,17 +563,9 @@ export function LinksPage() {
 						<Input
 							label="Domain"
 							placeholder="example.com"
-							list="cw-links-hosts"
 							value={host}
 							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setHost(e.target.value)}
 						/>
-						<datalist id="cw-links-hosts">
-							{data?.hosts.map((h) => (
-								<option key={h.name} value={h.name}>
-									{plural(h.count, "link")}
-								</option>
-							))}
-						</datalist>
 					</div>
 					<div className="sm:w-44">
 						<Select
@@ -582,6 +588,13 @@ export function LinksPage() {
 				)}
 				{neverScanned && (
 					<Banner variant="default" title="Your content hasn't been scanned yet" description="Scan content to build the link list. New and edited entries are added as they're saved." />
+				)}
+				{data && !data.siteUrlKnown && (
+					<Banner
+						variant="error"
+						title="Set your site URL"
+						description="Link Manager needs the site URL (Settings → General, or site in astro.config) to tell internal links from external ones. Nothing is indexed until it's set."
+					/>
 				)}
 				{scanState?.error && <Banner variant="error" title="The last scan stopped" description={scanState.error} />}
 				{busy && <Banner variant="default" title={busy} />}
@@ -722,16 +735,21 @@ export function LinksPage() {
 				</div>
 			) : null}
 
-			{data && pages > 1 && (
+			{data && (cursors.length > 1 || data.nextCursor) && (
 				<nav className="flex items-center justify-between text-sm" aria-label="Pagination">
 					<span className="text-kumo-subtle">
-						Page {data.page} of {pages} · {plural(data.total, "link")}
+						Page {pageNumber} of {Math.max(1, Math.ceil(data.total / data.pageSize))} · {plural(data.total, "link")}
 					</span>
 					<div className="flex gap-2">
-						<Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+						<Button size="sm" variant="secondary" disabled={cursors.length <= 1} onClick={() => setCursors((c) => c.slice(0, -1))}>
 							Previous
 						</Button>
-						<Button size="sm" variant="secondary" disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>
+						<Button
+							size="sm"
+							variant="secondary"
+							disabled={!data.nextCursor}
+							onClick={() => setCursors((c) => (data.nextCursor ? [...c, data.nextCursor] : c))}
+						>
 							Next
 						</Button>
 					</div>

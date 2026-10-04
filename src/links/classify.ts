@@ -122,6 +122,11 @@ export function normalizeIgnore(type: IgnoreType, raw: string): string {
 		case "wildcard":
 			return value.replace(/\*+/g, "*");
 		case "regex":
+			if (value.length > 200) throw new IgnoreRuleError("Keep regular expressions under 200 characters, or use a wildcard rule.");
+			// Repeated groups holding a quantifier or alternation, like (a+)+ or (a|ab)*, and backreferences can take exponential time.
+			if (/\((?:[^()\\]|\\.)*[+*}|](?:[^()\\]|\\.)*\)\s*[+*{]|\\[1-9]/.test(value)) {
+				throw new IgnoreRuleError("That regular expression could be very slow (nested repetition or a backreference). Simplify it or use a wildcard rule.");
+			}
 			try {
 				new RegExp(value, "i");
 			} catch {
@@ -177,9 +182,10 @@ export function ruleMatches(rule: IgnoreRule, absoluteUrl: string): boolean {
 		case "url":
 			return normalizeUrlForMatch(absoluteUrl).toLowerCase() === rule.value.toLowerCase();
 		case "wildcard":
-			return absoluteUrl.length <= 4096 && (compiled(rule.value, true)?.test(absoluteUrl) ?? false);
+			return absoluteUrl.length <= 2048 && (compiled(rule.value, true)?.test(absoluteUrl) ?? false);
 		case "regex":
-			return absoluteUrl.length <= 4096 && (compiled(rule.value, false)?.test(absoluteUrl) ?? false);
+			// Stored rules were vetted by normalizeIgnore; still refuse anything that no longer passes.
+			return absoluteUrl.length <= 2048 && rule.value.length <= 200 && (compiled(rule.value, false)?.test(absoluteUrl) ?? false);
 	}
 }
 
@@ -192,7 +198,7 @@ export function isIgnored(rules: IgnoreRule[], absoluteUrl: string): boolean {
 /** Refuse to request loopback, private, link-local or metadata addresses. */
 export function isPublicTarget(url: URL): boolean {
 	if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-	const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+	const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
 	if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return false;
 	const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
 	if (v4) {
@@ -202,10 +208,13 @@ export function isPublicTarget(url: URL): boolean {
 		if (a === 172 && b >= 16 && b <= 31) return false;
 		if (a === 192 && b === 168) return false;
 		if (a === 100 && b >= 64 && b <= 127) return false;
+		if (a === 198 && (b === 18 || b === 19)) return false;
 		return true;
 	}
 	if (host.includes(":")) {
 		if (host === "::" || host === "::1" || /^f[cd]/.test(host) || /^fe[89ab]/.test(host) || host.startsWith("::ffff:")) return false;
+		// NAT64 (64:ff9b::/96) embeds an IPv4 address.
+		if (host.startsWith("64:ff9b:")) return false;
 	}
 	return true;
 }

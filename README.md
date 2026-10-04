@@ -473,14 +473,15 @@ Feature switches: **Link Manager** (`links`) and **Scheduled link checking** (`l
 
 ### Setup
 
-No bindings or secrets. Plugin settings: requests per check run (default 40), whether to check links to your own site (default on), and a User-Agent override. The checker presents a current desktop Chrome by default, which avoids most false "Blocked" results.
+No bindings or secrets, but EmDash needs to know the site URL (**Settings → General**, or `site` in `astro.config`) to tell internal links from external ones; nothing is indexed until it's set. Plugin settings: subrequests per check run (default 40), whether to check links to your own site (default on), and a User-Agent override. The checker presents a current desktop Chrome by default, which avoids most false "Blocked" results.
 
 ### Notes
 
-- Edits go through EmDash's content API. A published entry is republished so the fix goes live. An entry with unpublished changes is fixed in its draft only, so its live version keeps the old link until the draft is published (the result message says how many). An editor with the entry open may overwrite the change on their next save.
+- Edits go through EmDash's content API. A published entry is republished so the fix goes live. An entry with unpublished changes (or a schedule) is fixed in its draft only, so its live version keeps the old link until the draft is published (the result message says how many). An entry saved by someone else while the action runs is left alone and reported, so run the action again for it. An editor with the entry open may still overwrite the change on their next save.
 - The inventory follows each entry's latest saved version (its pending draft, if it has one). Links inside raw HTML blocks aren't tracked.
-- Workers limit subrequests per invocation (50 on Free, 1,000 on Paid). A link takes 1–2 requests plus 1 per redirect, so keep **requests per check run** under your plan's limit, leaving room for other scheduled jobs.
-- Links are stored in plugin storage (`links_urls`, `links_refs`) in the site's D1 database, so backups include them. The admin list loads every link row, which suits sites with up to tens of thousands of links.
+- Workers limit subrequests per invocation (50 on Free, 1,000 on Paid), and database calls count. A checked link takes 1–2 requests plus 1 per redirect, and 1 database write; keep **subrequests per check run** under your plan's limit, leaving room for other scheduled jobs. Scans run in steps of about 200 database statements (60 seconds) every 5 minutes, or faster while the Link Manager page is open; admin actions stop at about 150 statements or 25 seconds and continue on the next call.
+- Links are stored in plugin storage (`links_urls`, `links_refs`) in the site's D1 database, so backups include them. The list pages through indexed queries; search matches the start of a URL (when it starts with `http` or `/`) or of a domain. Status counts are cached for up to a minute (10 minutes in the dashboard widget).
+- Regular-expression ignore rules are limited to 200 characters, and patterns that can take exponential time (repeated groups containing a quantifier or alternation, backreferences) are refused.
 
 ## Development
 

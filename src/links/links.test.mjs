@@ -18,6 +18,8 @@ registerHooks({
 const { extractLinks, extractEntryLinks, transformLinks, transformEntry, isInternal, resolveHref, isTrackable } = await import("./pt.ts");
 const { classify, isBotWall, nextCheckAt, normalizeIgnore, ruleMatches, isIgnored, isPublicTarget, IgnoreRuleError } = await import("./classify.ts");
 const { checkUrl, BudgetExhausted } = await import("./check.ts");
+const store = await import("./store.ts");
+const { isAllowedTarget } = await import("./pt.ts");
 
 const deepFreeze = (v) => {
 	if (v && typeof v === "object") {
@@ -331,4 +333,247 @@ test("checker: HEAD ok, redirect chain recorded, GET fallback, budget", async ()
 
 	s = stub({ "HEAD https://a.test/x": { status: 405 } });
 	await assert.rejects(checkUrl(new URL("https://a.test/x"), { left: 1 }, { fetcher: s.fetcher }), BudgetExhausted);
+});
+
+// ── Unlink shapes, targets, guards ───────────────────────────────
+
+test("unlink only touches known link shapes; other href/link fields are skipped", () => {
+	const input = deepFreeze([
+		{ _type: "card", _key: "c", href: "https://x.test/", link: "https://x.test/" },
+		{ _type: "image", _key: "i", asset: { _ref: "m" }, link: "https://x.test/" },
+	]);
+	const r = transformLinks(input, (h) => h === "https://x.test/", { type: "unlink" });
+	assert.equal(r.changed, 1);
+	assert.equal(r.skipped, 2);
+	assert.equal(r.value[0], input[0]);
+	assert.equal("link" in r.value[1], false);
+});
+
+test("replacement targets refuse protocol-relative forms", () => {
+	for (const ok of ["https://a.test/x", "/path/", "#top", "mailto:a@b.test", "tel:+1"]) assert.equal(isAllowedTarget(ok), true, ok);
+	for (const bad of ["//evil.test/", "/\\evil.test/", "https:///evil.test", "https://a.test\\@evil.test/", "javascript:alert(1)", "ftp://x", "", "/a\nb"]) {
+		assert.equal(isAllowedTarget(bad), false, bad);
+	}
+});
+
+test("address guard covers trailing-dot localhost, NAT64 and benchmark ranges", () => {
+	for (const u of ["http://localhost./", "http://198.18.0.1/", "http://198.19.255.1/", "http://[64:ff9b::7f00:1]/", "http://[::ffff:127.0.0.1]/", "http://0.0.0.0/"]) {
+		assert.equal(isPublicTarget(new URL(u)), false, u);
+	}
+	assert.equal(isPublicTarget(new URL("http://198.20.0.1/")), true);
+});
+
+test("regex ignore rules refuse catastrophic patterns", () => {
+	for (const bad of ["(a+)+$", "(a|ab)*c", "(x*){2,}", "(a)\\1", "a".repeat(201)]) assert.throws(() => normalizeIgnore("regex", bad), IgnoreRuleError, bad);
+	assert.equal(normalizeIgnore("regex", "^https://example\\.com/(tag|category)/"), "^https://example\\.com/(tag|category)/");
+});
+
+// ── Storage (in-memory fake with D1's 100-parameter limit) ───────
+
+const MAX_PARAMS = 100;
+function fakeCollection() {
+	const rows = new Map();
+	const params = (where = {}) =>
+		2 + Object.values(where).reduce((n, v) => n + (v && typeof v === "object" && "in" in v ? v.in.length : 1), 0);
+	const matches = (data, where = {}) =>
+		Object.entries(where).every(([k, cond]) => {
+			const v = data[k] ?? null;
+			if (cond && typeof cond === "object") {
+				if ("in" in cond) return cond.in.includes(v);
+				if ("startsWith" in cond) return typeof v === "string" && v.startsWith(cond.startsWith);
+				if (v === null) return false;
+				return (cond.lt === undefined || v < cond.lt) && (cond.lte === undefined || v <= cond.lte) && (cond.gt === undefined || v > cond.gt) && (cond.gte === undefined || v >= cond.gte);
+			}
+			return v === cond;
+		});
+	const check = (n) => {
+		if (n > MAX_PARAMS) throw new Error(`too many SQL variables (${n})`);
+	};
+	return {
+		rows,
+		async get(id) {
+			return rows.get(id) ?? null;
+		},
+		async put(id, data) {
+			rows.set(id, structuredClone(data));
+		},
+		async getMany(ids) {
+			check(ids.length + 2);
+			return new Map(ids.filter((id) => rows.has(id)).map((id) => [id, structuredClone(rows.get(id))]));
+		},
+		async putMany(items) {
+			for (const { id, data } of items) rows.set(id, structuredClone(data));
+		},
+		async deleteMany(ids) {
+			check(ids.length + 2);
+			let n = 0;
+			for (const id of ids) if (rows.delete(id)) n++;
+			return n;
+		},
+		async delete(id) {
+			return rows.delete(id);
+		},
+		async count(where) {
+			check(params(where));
+			return [...rows.values()].filter((d) => matches(d, where)).length;
+		},
+		async query({ where, orderBy, limit = 50, cursor } = {}) {
+			check(params(where));
+			let all = [...rows].filter(([, d]) => matches(d, where)).map(([id, data]) => ({ id, data: structuredClone(data) }));
+			const [field, dir] = Object.entries(orderBy ?? {})[0] ?? [];
+			if (field) all.sort((a, b) => ((a.data[field] ?? "") < (b.data[field] ?? "") ? -1 : (a.data[field] ?? "") > (b.data[field] ?? "") ? 1 : 0) * (dir === "desc" ? -1 : 1));
+			const start = cursor ? Number(cursor) : 0;
+			const items = all.slice(start, start + Math.min(limit, 100));
+			const hasMore = start + items.length < all.length;
+			return { items, hasMore, cursor: hasMore ? String(start + items.length) : undefined };
+		},
+	};
+}
+
+function fakeKv() {
+	const map = new Map();
+	let rev = 0;
+	return {
+		async get(k) {
+			return map.has(k) ? structuredClone(map.get(k).value) : null;
+		},
+		async set(k, value) {
+			map.set(k, { value: structuredClone(value), revision: String(++rev) });
+		},
+		async delete(k) {
+			return map.delete(k);
+		},
+		async getVersioned(k) {
+			return map.has(k) ? structuredClone(map.get(k)) : null;
+		},
+		async compareAndSet(k, expected, value) {
+			const cur = map.get(k);
+			if ((cur?.revision ?? null) !== expected) return { applied: false };
+			const revision = String(++rev);
+			map.set(k, { value: structuredClone(value), revision });
+			return { applied: true, revision };
+		},
+		async compareAndDelete(k, expected) {
+			if (map.get(k)?.revision !== expected) return { applied: false };
+			map.delete(k);
+			return { applied: true };
+		},
+	};
+}
+
+const block = (key, href, text = "link") => ({
+	_type: "block",
+	_key: key,
+	markDefs: [{ _type: "link", _key: `m${key}`, href }],
+	children: [{ _type: "span", _key: `s${key}`, text, marks: [`m${key}`] }],
+});
+
+function fakeCtx({ siteUrl = "https://site.test", entries = [] } = {}) {
+	const logs = [];
+	return {
+		logs,
+		storage: { links_urls: fakeCollection(), links_refs: fakeCollection() },
+		kv: fakeKv(),
+		site: { url: siteUrl },
+		log: { info: () => {}, debug: () => {}, warn: (m) => logs.push(m), error: (m) => logs.push(m) },
+		schema: {
+			async listCollections() {
+				return [
+					{
+						slug: "posts",
+						label: "Posts",
+						titleField: "title",
+						supports: [],
+						fields: [
+							{ slug: "title", type: "string" },
+							{ slug: "body", type: "portableText" },
+						],
+					},
+				];
+			},
+		},
+		content: {
+			async list(_collection, { limit, cursor }) {
+				const start = cursor ? Number(cursor) : 0;
+				const items = entries.slice(start, start + limit);
+				const hasMore = start + limit < entries.length;
+				return { items, hasMore, cursor: hasMore ? String(start + limit) : undefined };
+			},
+		},
+	};
+}
+
+const ids500 = Array.from({ length: 500 }, (_, i) => i.toString(16).padStart(24, "0"));
+
+test("id lists are chunked under D1's 100-parameter limit", async () => {
+	const col = fakeCollection();
+	for (const id of ids500) await col.put(id, { urlId: id, n: 1 });
+	await assert.rejects(col.getMany(ids500), /too many SQL variables/, "the stub enforces the limit");
+	const ops = new store.Ops();
+	assert.equal((await store.getMany(col, ids500, ops)).size, 500);
+	assert.equal(ops.used, 6);
+	assert.equal((await store.queryIn(col, "urlId", ids500)).length, 500);
+	assert.equal(await store.deleteMany(col, ids500), 500);
+	assert.equal(col.rows.size, 0);
+});
+
+test("indexing: refs per entry, orphans dropped, counts derived from refs", async () => {
+	const ctx = fakeCtx();
+	const urls = ctx.storage.links_urls;
+	const refs = ctx.storage.links_refs;
+	const a = { id: "a", slug: "a", status: "published", data: { title: "A", body: [block("1", "https://x.test/"), block("2", "/about/")] } };
+	const b = { id: "b", slug: "b", status: "draft", data: { title: "B", body: [block("1", "https://x.test/")] } };
+	assert.equal(await store.indexEntry(ctx, "posts", a), 2);
+	assert.equal(await store.indexEntry(ctx, "posts", b), 1);
+	assert.equal(await store.indexEntry(ctx, "posts", b), 1, "re-indexing is idempotent");
+	assert.equal(urls.rows.size, 2);
+	assert.equal(refs.rows.size, 3);
+	const about = [...urls.rows.values()].find((r) => r.url === "/about/");
+	assert.equal(about.internal, true);
+	assert.equal(about.resolved, "https://site.test/about/");
+	// A drops /about/: its row goes; x.test stays (B still uses it).
+	await store.indexEntry(ctx, "posts", { ...a, data: { title: "A", body: [block("1", "https://x.test/")] } });
+	assert.equal(urls.rows.size, 1);
+	await store.removeEntry(ctx, "posts", "a");
+	assert.equal(urls.rows.size, 1);
+	await store.removeEntry(ctx, "posts", "b");
+	assert.equal(urls.rows.size, 0);
+	assert.equal(refs.rows.size, 0);
+});
+
+test("indexing bails without a site URL instead of misclassifying internal links", async () => {
+	const ctx = fakeCtx({ siteUrl: "" });
+	const r = await store.indexEntry(ctx, "posts", { id: "a", status: "published", data: { body: [block("1", "/about/")] } });
+	assert.equal(r, -1);
+	assert.equal(ctx.storage.links_urls.rows.size, 0);
+	assert.ok(ctx.logs.some((m) => /site URL/.test(m)));
+});
+
+test("an entry with hundreds of links indexes and removes without exceeding parameter limits", async () => {
+	const ctx = fakeCtx();
+	const body = Array.from({ length: 300 }, (_, i) => block(String(i), `https://x.test/${i}`));
+	assert.equal(await store.indexEntry(ctx, "posts", { id: "big", status: "published", data: { body } }), 300);
+	await store.removeEntry(ctx, "posts", "big");
+	assert.equal(ctx.storage.links_urls.rows.size, 0);
+});
+
+test("scan: bounded steps resume mid-page, stale refs are dropped, one scan at a time", async () => {
+	const entries = Array.from({ length: 23 }, (_, i) => ({ id: `e${i}`, slug: `e${i}`, status: "published", data: { title: `E${i}`, body: [block("1", `https://x.test/${i % 5}`)] } }));
+	const ctx = fakeCtx({ entries });
+	// A stale reference from an entry that no longer exists.
+	await store.indexEntry(ctx, "posts", { id: "gone", status: "published", data: { body: [block("1", "https://gone.test/")] } });
+	await new Promise((r) => setTimeout(r, 5));
+	await store.startScan(ctx);
+
+	// Two overlapping steps: only one runs.
+	const [s1, s2] = await Promise.all([store.scanStep(ctx, new store.Ops(60)), store.scanStep(ctx, new store.Ops(60))]);
+	assert.equal([s1, s2].filter((s) => s.busy).length, 1);
+
+	let state = (await store.getScan(ctx)) ?? {};
+	for (let i = 0; i < 50 && state.status === "running"; i++) state = await store.scanStep(ctx, new store.Ops(60));
+	assert.equal(state.status, "idle");
+	assert.equal(state.processed, 23);
+	assert.equal(ctx.storage.links_refs.rows.size, 23);
+	assert.equal(ctx.storage.links_urls.rows.size, 5, "gone.test dropped");
+	assert.ok(![...ctx.storage.links_urls.rows.values()].some((r) => r.url.includes("gone")));
 });
