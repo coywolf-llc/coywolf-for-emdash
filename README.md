@@ -30,7 +30,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.4.11
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.4.12
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -354,6 +354,21 @@ Nothing to configure beyond the Schema page. The module reads the site database 
 - Page types come from the page context your theme passes to `EmDashHead`: an entry page is matched to its collection through `content`, and `pageType: "article"` is what makes a page an article by default. Pages without `content` use the home page or "other pages" types.
 - Derived breadcrumbs name parent segments from the URL (`/health-tips/` → "Health tips"); pass `breadcrumbs` in the page context for exact names.
 - A content page costs a few extra database reads per render (the entry override, its bylines, and saved author properties); image lookups and settings are cached.
+
+### Videos in the graph
+
+With the graph on, embedded videos are VideoObject nodes inside it, linked from the Article (or WebPage) as `video`: videos from the Videos module (when Video schema is on) and any a theme passes on the page context:
+
+```astro
+---
+const page = { ...createPublicPageContext({ /* … */ }), coywolf: { videos: [
+	{ name, description, thumbnailUrl, embedUrl, contentUrl, uploadDate, duration: "PT18S" },
+] } };
+---
+<EmDashHead page={page} />
+```
+
+Theme videos are validated (absolute http(s) URLs, ISO 8601 duration) and de-duplicated by embed or content URL. When the graph is on, the Videos module doesn't print separate VideoObject blocks.
 
 ## Search
 

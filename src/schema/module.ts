@@ -42,6 +42,8 @@ import {
 	publisherNode,
 	resolveTypes,
 	robotsContent,
+	attachVideos,
+	themeVideoNode,
 } from "./graph.js";
 
 export interface SchemaOptions {
@@ -297,6 +299,25 @@ async function authorNodes(ctx: PluginContext, page: PublicPageContext, config: 
 }
 
 /** Every contribution this module makes for a page (also used by the admin preview). */
+/** Fold the page's videos into the graph (see attachVideos). Errors are logged, never fatal. */
+async function attachPageVideos(ctx: PluginContext, page: PublicPageContext, graph: { "@graph": Node[] }, origin: string, on: FeatureMap) {
+	try {
+		const videos: Node[] = [];
+		if (isOn(on, "videos.schema")) {
+			const { entryVideoObjects } = await import("../videos/module.js");
+			videos.push(...(await entryVideoObjects(ctx as never, page)));
+		}
+		const themed = (page as PublicPageContext & { coywolf?: { videos?: unknown } }).coywolf?.videos;
+		if (Array.isArray(themed)) for (const v of themed.slice(0, 50)) {
+			const node = themeVideoNode(v, origin);
+			if (node) videos.push(node);
+		}
+		attachVideos(graph, videos);
+	} catch (error) {
+		ctx.log.warn("schema: could not attach videos", { error: String(error) });
+	}
+}
+
 /**
  * Add `about` / `mentions` from AI Enrichment to the page's Article node (or
  * its WebPage when there's no Article). Loaded lazily so sites without the AI
@@ -373,6 +394,8 @@ export async function schemaContributions(
 			breadcrumbs: isOn(on, SCHEMA_FEATURES.breadcrumbs),
 			homeLabel: config.settings.schemaBreadcrumbHome || "Home",
 		});
+		// Videos: from the Videos module, and any the theme passes as page.coywolf.videos.
+		await attachPageVideos(ctx, page, graph as { "@graph": Node[] }, site.origin, on);
 		// AI Enrichment's Wikidata-grounded entities, when that feature is on.
 		if (page.content && isOn(on, "ai.entities")) await attachEntities(ctx, page.content, graph);
 		// Same id as EmDash's own JSON-LD, so this graph replaces it (first contribution wins).

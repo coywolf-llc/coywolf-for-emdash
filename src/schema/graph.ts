@@ -664,3 +664,69 @@ export function ogLocale(locale: string | null | undefined): string | null {
 	const region = parts.slice(1).find((p) => /^[a-z]{2}$/i.test(p))?.toUpperCase() ?? DEFAULT_REGION[lang] ?? lang.toUpperCase();
 	return `${lang}_${region}`;
 }
+
+// ── Videos ───────────────────────────────────────────────────────
+
+/** A video a theme passes in the page context (`page.coywolf.videos`). */
+export interface ThemeVideo {
+	name?: string;
+	description?: string;
+	thumbnailUrl?: string | string[];
+	embedUrl?: string;
+	contentUrl?: string;
+	uploadDate?: string;
+	duration?: string;
+}
+
+const ISO_DURATION = /^P(?!$)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?(T(?=\d)(\d+H)?(\d+M)?(\d+(\.\d+)?S)?)?$/;
+
+/** Clean a theme-provided video into a VideoObject node, or null if it has nothing usable. */
+export function themeVideoNode(input: unknown, origin: string): Node | null {
+	if (!input || typeof input !== "object") return null;
+	const v = input as Record<string, unknown>;
+	const text = (x: unknown, max: number) => (typeof x === "string" ? x.trim().slice(0, max) : "");
+	const url = (x: unknown) => (typeof x === "string" ? absolute(x.trim(), origin) : undefined);
+	const embedUrl = url(v.embedUrl);
+	const contentUrl = url(v.contentUrl);
+	if (!embedUrl && !contentUrl) return null;
+	const thumbs = (Array.isArray(v.thumbnailUrl) ? v.thumbnailUrl : [v.thumbnailUrl]).map(url).filter((t): t is string => !!t);
+	const node: Node = { "@type": "VideoObject" };
+	const name = text(v.name, 200);
+	if (name) node.name = name;
+	const description = text(v.description, 1000) || name;
+	if (description) node.description = description;
+	if (thumbs.length) node.thumbnailUrl = thumbs;
+	if (typeof v.uploadDate === "string" && !Number.isNaN(Date.parse(v.uploadDate))) node.uploadDate = v.uploadDate;
+	if (typeof v.duration === "string" && ISO_DURATION.test(v.duration)) node.duration = v.duration;
+	if (embedUrl) node.embedUrl = embedUrl;
+	if (contentUrl) node.contentUrl = contentUrl;
+	return node;
+}
+
+/**
+ * Add VideoObject nodes to a graph and link them from the Article (or the
+ * WebPage when there's no Article). Duplicates (same embed or content URL)
+ * are dropped; each video gets an @id under the page URL.
+ */
+export function attachVideos(graph: { "@graph": Node[] }, videos: Node[]): void {
+	if (!videos.length) return;
+	const nodes = graph["@graph"];
+	const article = nodes.find((n) => typeof n["@id"] === "string" && (n["@id"] as string).endsWith("#article"));
+	const webpage = nodes.find((n) => typeof n["@id"] === "string" && (n["@id"] as string).endsWith("#webpage"));
+	const owner = article ?? webpage;
+	if (!owner) return;
+	const base = String(owner["@id"]).replace(/#[^#]*$/, "");
+	const seen = new Set<string>();
+	const refs: Node[] = [];
+	for (const video of videos) {
+		const key = String(video.embedUrl ?? video.contentUrl ?? "");
+		if (!key || seen.has(key)) continue;
+		seen.add(key);
+		const uid = /([0-9a-f]{32})/.exec(key)?.[1];
+		const id = `${base}#video-${uid ?? refs.length + 1}`;
+		const { "@context": _omit, ...rest } = video;
+		nodes.splice(nodes.indexOf(owner) + 1 + refs.length, 0, { ...rest, "@id": id });
+		refs.push({ "@id": id });
+	}
+	if (refs.length) owner.video = refs.length === 1 ? refs[0] : refs;
+}

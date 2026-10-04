@@ -352,3 +352,20 @@ test("nested copies of graph entities become references; WebPage doesn't repeat 
 	assert.deepEqual(nodes[1].founder, { "@id": "https://example.com/author/jon/#person" });
 	assert.equal(nodes[1].parentOrganization.name, "Coywolf LLC");
 });
+
+test("theme videos become VideoObjects linked from the Article", () => {
+	const uid = "3161485099a6f1d5d0fd9e7165b87f37";
+	const graph = { "@graph": [
+		{ "@type": "WebPage", "@id": `${ORIGIN}/p/#webpage` },
+		{ "@type": "Article", "@id": `${ORIGIN}/p/#article` },
+	] };
+	const v = g.themeVideoNode({ name: "Chemex", description: "", thumbnailUrl: `https://customer-x.cloudflarestream.com/${uid}/thumbnails/thumbnail.jpg`, embedUrl: `https://customer-x.cloudflarestream.com/${uid}/iframe`, uploadDate: "2024-01-01T00:00:00Z", duration: "PT18S" }, ORIGIN);
+	assert.equal(v.description, "Chemex");
+	assert.equal(g.themeVideoNode({ name: "no urls" }, ORIGIN), null);
+	assert.equal(g.themeVideoNode({ embedUrl: "javascript:alert(1)" }, ORIGIN), null);
+	g.attachVideos(graph, [v, { ...v }]);
+	const videos = graph["@graph"].filter((n) => n["@type"] === "VideoObject");
+	assert.equal(videos.length, 1);
+	assert.equal(videos[0]["@id"], `${ORIGIN}/p/#video-${uid}`);
+	assert.deepEqual(graph["@graph"][1].video, { "@id": `${ORIGIN}/p/#video-${uid}` });
+});
