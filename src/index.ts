@@ -13,7 +13,7 @@
 import type { PluginCapability, PluginDescriptor } from "emdash";
 import { definePlugin } from "emdash";
 
-import { composeHooks } from "./core/compose.js";
+import { composeHooks, hookCapabilities } from "./core/compose.js";
 import { PLUGIN_ID } from "./core/features.js";
 import { featuresRoutes } from "./core/features-module.js";
 import type { PackModule } from "./core/module.js";
@@ -38,7 +38,7 @@ function surfaces(modules: PackModule[]) {
 		blocks: modules.flatMap((m) => m.portableTextBlocks ?? []),
 		settingsSchema: Object.assign({}, ...modules.map((m) => m.settingsSchema ?? {})),
 		storage: Object.assign({}, ...modules.map((m) => m.storage ?? {})),
-		capabilities: [...new Set(modules.flatMap((m) => m.capabilities ?? []))] as PluginCapability[],
+		capabilities: [...new Set([...modules.flatMap((m) => m.capabilities ?? []), ...hookCapabilities(modules)])] as PluginCapability[],
 		allowedHosts: [...new Set(modules.flatMap((m) => m.allowedHosts ?? []))],
 	};
 }
