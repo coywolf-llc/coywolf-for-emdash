@@ -6,7 +6,7 @@ import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
 import { ctxFeatures, requireFeature } from "../core/features.js";
-import { parseInput } from "../shared.js";
+import { parseInput, workerEnv } from "../shared.js";
 import { BudgetExhausted, type Budget, checkUrl } from "./check.js";
 import { type IgnoreRule, IgnoreRuleError, type LinkStatus, nextCheckAt, normalizeIgnore } from "./classify.js";
 import { type LinkEdit, isAllowedTarget, transformEntry } from "./pt.js";
@@ -101,6 +101,19 @@ export interface CheckRun {
  * Check due links (or `ids`) within a subrequest budget (HTTP requests and
  * database statements together) and a wall-clock deadline.
  */
+/** Service binding to the site's own Worker, used to check internal links. */
+export const SELF_BINDING = "SELF";
+
+async function selfBinding(): Promise<{ fetch(url: string, init?: RequestInit): Promise<Response> } | null> {
+	try {
+		const env = await workerEnv();
+		const binding = env[SELF_BINDING] as { fetch?: unknown } | undefined;
+		return binding && typeof binding.fetch === "function" ? (binding as { fetch(url: string, init?: RequestInit): Promise<Response> }) : null;
+	} catch {
+		return null;
+	}
+}
+
 export async function runChecks(ctx: PluginContext, options: { ids?: string[]; budget?: number; deadline?: number } = {}): Promise<CheckRun> {
 	const budget: Budget = { left: options.budget ?? (await ctx.settings.get<number>("linksCheckBudget")) ?? 40 };
 	const checkInternal = (await ctx.settings.get<boolean>("linksCheckInternal")) ?? true;
@@ -108,6 +121,18 @@ export async function runChecks(ctx: PluginContext, options: { ids?: string[]; b
 	budget.left -= 4; // The three settings reads and the candidate query.
 	const deadline = options.deadline ?? Number.POSITIVE_INFINITY;
 	const now = Date.now();
+	// A Worker can't fetch its own custom domain over HTTP (Cloudflare answers 522), so
+	// internal links go through a service binding to the site's own Worker when there is one.
+	const self = await selfBinding();
+	const siteHost = (() => {
+		try {
+			return ctx.site.url ? new URL(ctx.site.url).host : "";
+		} catch {
+			return "";
+		}
+	})();
+	const fetcher = (url: string, init: RequestInit) =>
+		self && siteHost && new URL(url).host === siteHost ? self.fetch(url, init) : fetch(url, init);
 
 	let candidates: Array<{ id: string; data: UrlRow }>;
 	if (options.ids) {
@@ -136,16 +161,20 @@ export async function runChecks(ctx: PluginContext, options: { ids?: string[]; b
 			const { id, data } = next;
 			budget.left--; // The row write below.
 			const checkedAt = new Date().toISOString();
-			if (!data.resolved || (data.internal && !checkInternal)) {
+			if (!data.resolved || (data.internal && (!checkInternal || !self))) {
 				await urls(ctx).put(id, {
 					...data,
-					note: data.resolved ? "Internal links aren't checked (see settings)." : "Can't be resolved to a web address.",
+					note: !data.resolved
+						? "Can't be resolved to a web address."
+						: !checkInternal
+							? "Internal links aren't checked (see settings)."
+							: `Internal links need a "${SELF_BINDING}" service binding to the site's own Worker (see README).`,
 					nextCheckAt: nextCheckAt("ok", now),
 				});
 				continue;
 			}
 			try {
-				const outcome = await checkUrl(new URL(data.resolved), budget, { userAgent });
+				const outcome = await checkUrl(new URL(data.resolved), budget, { userAgent, fetcher });
 				await urls(ctx).put(id, {
 					...data,
 					status: outcome.status,
