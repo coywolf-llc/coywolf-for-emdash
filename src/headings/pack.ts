@@ -57,6 +57,16 @@ const BLOCKS = [
 		description: "A linked list of this entry's headings",
 		fields: [
 			{ type: "text_input", action_id: "title", label: "Title", placeholder: "Site default (Table of contents)" },
+			{
+				type: "select",
+				action_id: "showTitle",
+				label: "Show title",
+				options: [
+					{ label: "Site default", value: "" },
+					{ label: "Show", value: "show" },
+					{ label: "Hide (collapsible tables keep it as the toggle)", value: "hide" },
+				],
+			},
 			{ type: "checkbox", action_id: "levels", label: "Heading levels (none checked: site default)", options: LEVEL_OPTIONS },
 			{
 				type: "select",

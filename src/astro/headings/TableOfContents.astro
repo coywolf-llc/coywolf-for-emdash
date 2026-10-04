@@ -14,6 +14,7 @@ const { node } = Astro.props as { node: Record<string, unknown> };
 
 let show = false;
 let title = "";
+let showTitle = true;
 let listStyle = "none";
 let display = "open";
 let smooth = false;
@@ -25,6 +26,7 @@ if (await siteFeatureOn("headings.toc")) {
 	const levels = parseLevels(node.levels);
 	tree = buildTocTree(storedHeadings(node._headings), levels.length ? levels : defaults.levels);
 	title = (typeof node.title === "string" && node.title.trim()) || defaults.title;
+	showTitle = node.showTitle === "show" ? true : node.showTitle === "hide" ? false : defaults.showTitle;
 	listStyle = ["none", "bulleted", "numbered"].includes(node.listStyle as string) ? (node.listStyle as string) : defaults.listStyle;
 	display = ["open", "collapsible", "collapsed"].includes(node.display as string) ? (node.display as string) : defaults.display;
 	smooth = defaults.smoothScroll;
@@ -34,10 +36,15 @@ const ordered = listStyle === "numbered";
 ---
 
 {show && (
-	<nav class={`cw-toc cw-toc--${listStyle}`} aria-labelledby={titleId} data-smooth={smooth ? "" : undefined}>
+	<nav
+		class={`cw-toc cw-toc--${listStyle}`}
+		aria-labelledby={display !== "open" || showTitle ? titleId : undefined}
+		aria-label={display === "open" && !showTitle ? title : undefined}
+		data-smooth={smooth ? "" : undefined}
+	>
 		{display === "open" ? (
 			<Fragment>
-				<h2 id={titleId} class="cw-toc__title">{title}</h2>
+				{showTitle && <h2 id={titleId} class="cw-toc__title">{title}</h2>}
 				<TocList nodes={tree} ordered={ordered} root />
 			</Fragment>
 		) : (

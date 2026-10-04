@@ -6,6 +6,7 @@ import { capturePage, capturedPage, humanize, resolveTrail } from "./breadcrumbs
 import { blockText, slugify, uniqueSlug, validAnchor } from "./slug.js";
 import { stampContent } from "./stamp.js";
 import { buildTocTree, countToc } from "./toc.js";
+import { normalizeSettings } from "./settings.js";
 
 const h = (key: string, style: string, text: string, extra: Record<string, unknown> = {}) => ({
 	_type: "block",
@@ -170,4 +171,10 @@ test("captured theme trails are keyed by URL path and query", () => {
 	assert.equal(capturedPage("/fr/guide?v=2")?.title, "Guide");
 	assert.equal(capturedPage("/fr/guide"), null);
 	assert.equal(capturedPage("/guide/?v=2"), null);
+});
+
+test("TOC title can be hidden; levels can be H2 only", () => {
+	assert.equal(normalizeSettings({}).toc.showTitle, true);
+	assert.equal(normalizeSettings({ toc: { showTitle: false } }).toc.showTitle, false);
+	assert.deepEqual(normalizeSettings({ toc: { levels: [2] } }).toc.levels, [2]);
 });

@@ -33,6 +33,8 @@ export interface HeadingsSettings {
 	scrollUnit: "px" | "rem";
 	toc: {
 		title: string;
+		/** Show the title above the list. A collapsible table always shows it (it's the toggle). */
+		showTitle: boolean;
 		levels: number[];
 		listStyle: TocListStyle;
 		display: TocDisplay;
@@ -56,7 +58,7 @@ export const DEFAULT_SETTINGS: HeadingsSettings = {
 	copyLink: false,
 	scrollOffset: 0,
 	scrollUnit: "px",
-	toc: { title: "Table of contents", levels: [2, 3], listStyle: "none", display: "open", minHeadings: 2, smoothScroll: true },
+	toc: { title: "Table of contents", showTitle: true, levels: [2, 3], listStyle: "none", display: "open", minHeadings: 2, smoothScroll: true },
 	breadcrumbs: { separator: "slash", customSeparator: "", homeLabel: "Home", showHome: true, showCurrent: true },
 };
 
@@ -91,6 +93,7 @@ export function normalizeSettings(raw: unknown): HeadingsSettings {
 		scrollUnit: pick(r.scrollUnit, ["px", "rem"], d.scrollUnit),
 		toc: {
 			title: text(toc.title, 100, d.toc.title) || d.toc.title,
+			showTitle: bool(toc.showTitle, d.toc.showTitle),
 			levels: levels.length ? levels : d.toc.levels,
 			listStyle: pick(toc.listStyle, ["none", "bulleted", "numbered"], d.toc.listStyle),
 			display: pick(toc.display, ["open", "collapsible", "collapsed"], d.toc.display),

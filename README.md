@@ -30,7 +30,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.4.3
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.4.4
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -212,10 +212,10 @@ Ported from Coywolf SEO. Off until you turn it on under **Features**:
 | --- | --- | --- |
 | `headings` | off | Main switch |
 | `headings.anchors` | off | Every H2–H6 gets an id like `jump-pricing`, plus an optional "copy link to section" button on hover and focus |
-| `headings.toc` | off | **Table of Contents** block: title, heading levels, plain/bulleted/numbered (1, 1.1, 1.1.1), always open or collapsible (open or collapsed) |
+| `headings.toc` | off | **Table of Contents** block: title (shown or hidden), heading levels (any of H2–H6), plain/bulleted/numbered (1, 1.1, 1.1.1), always open or collapsible (open or collapsed) |
 | `headings.breadcrumbs` | off | **Breadcrumbs** block and a `Breadcrumbs` component for themes |
 
-Site defaults live on **Headings & TOC**: id prefix, copy link, scroll offset for sticky headers (px or rem), TOC defaults (title, levels, style, display, minimum headings, smooth scrolling), and breadcrumb separator, home label, and whether to show home and the current page.
+Site defaults live on **Headings & TOC**: id prefix, copy link, scroll offset for sticky headers (px or rem), TOC defaults (title, show title, levels, style, display, minimum headings, smooth scrolling), and breadcrumb separator, home label, and whether to show home and the current page.
 
 Anchors are written into the content when it's saved (an `anchor` field on each heading block), so they're unique within the entry and stay the same when a heading is reworded. A Table of Contents block stores the entry's heading list the same way, so the table always matches the anchors. After turning the features on, re-save an entry to stamp it; until then headings get ids from their text when the page renders.
 
