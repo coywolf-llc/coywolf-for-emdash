@@ -1,6 +1,7 @@
 ---
 /**
- * SearchBox: a search form with as-you-type suggestions (feature "search.box").
+ * SearchBox: a search form (feature "search.box") with live results as you
+ * type while "search.live" is on.
  *
  * ```astro
  * ---
@@ -11,11 +12,12 @@
  *
  * Without JavaScript it's a plain GET form to `action` (?q=…), so the site's
  * search page handles it. With JavaScript, suggestions come from the pack's
- * search route: titles first, then full text, then results for any of the
- * words when nothing matches all of them. Renders nothing while the feature
+ * live results route: titles first, then full text (with excerpts), then
+ * results for any of the words when nothing matches all of them. Renders
+ * nothing while "search.box" is off, and a plain form while "search.live"
  * is off. Colors are CSS custom properties (--cw-search-*).
  */
-import { siteFeatureOn } from "../../core/features.js";
+import { isOn, siteFeatures } from "../../core/features.js";
 import SearchBoxForm from "./SearchBoxForm.astro";
 
 export interface Props {
@@ -53,7 +55,7 @@ export interface Props {
 }
 
 const { database, ...props } = Astro.props;
-const enabled = await siteFeatureOn("search.box", database);
+const features = await siteFeatures(database);
 ---
 
-{enabled && <SearchBoxForm {...props} />}
+{isOn(features, "search.box") && <SearchBoxForm {...props} live={isOn(features, "search.live")} />}

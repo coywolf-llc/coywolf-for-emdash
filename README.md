@@ -32,7 +32,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.8.0
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.9.0
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -432,11 +432,32 @@ Theme videos are validated (absolute http(s) URLs, ISO 8601 duration) and de-dup
 
 ## Search
 
-EmDash has full-text search built in: SQLite FTS5 with BM25 ranking, English stemming, prefix matching, highlighted snippets, a public API (`/_emdash/api/search`), and a `LiveSearch` component. This module adds what it leaves out. Turn on **Search** and its parts on the Coywolf Pack page (all off by default).
+EmDash has full-text search built in: SQLite FTS5 with BM25 ranking, English stemming, prefix matching, highlighted snippets, a public API (`/_emdash/api/search`), and a `LiveSearch` component. This module adds what it leaves out. Turn on **Search** and its parts on the Coywolf Pack page. Search is off by default; once it's on, **Live results** is on too, and the other parts are off until you turn them on.
 
 - **Search settings** (`search.settings`): a **Search** admin page to choose which collections are searchable, set field weights, pick the tokenizer (English stemming, exact words, or trigram substrings), and rebuild indexes with a progress readout and per-collection entry counts. It calls EmDash's own search API, so it needs EmDash's `search:manage` permission (admins). Fields are made searchable in each collection's schema.
-- **Search box** (`search.box`): a `SearchBox` component with as-you-type suggestions (titles first, then full text), arrow keys, Enter and Escape, a clear button, content-type labels, highlighted matches, screen-reader announcements, and a fade that respects reduced motion. When nothing matches every word, it shows results for any of the words, ranked by how many they contain. Without JavaScript it's a plain search form that submits to your search page.
-- **Search rate limit** (`search.rateLimit`): limits each visitor to 120 searches a minute (configurable) on EmDash's public search and suggestion endpoints and the pack's search route, answering `429` with `Retry-After`. Visitors are keyed by a salted hash of their IP address, never the address itself.
+- **Live results** (`search.live`, on by default with Search): matching entries in a dropdown as visitors type into the site's search box, like the Coywolf Search WordPress plugin. See [Live results](#live-results).
+- **Search box** (`search.box`): a `SearchBox` component with as-you-type suggestions while **Live results** is on (titles first, then full text, with excerpts), arrow keys, Enter and Escape, a clear button, content-type labels, highlighted matches, screen-reader announcements, and a fade that respects reduced motion. When nothing matches every word, it shows results for any of the words, ranked by how many they contain. Without JavaScript it's a plain search form that submits to your search page.
+- **Search rate limit** (`search.rateLimit`): limits each visitor to 120 searches a minute (configurable) on EmDash's public search and suggestion endpoints and the pack's search and live results routes, answering `429` with `Retry-After`. Visitors are keyed by a salted hash of their IP address, never the address itself.
+
+### Live results
+
+With **Live results** on, every public page gets a small inline script (about 14 KB, 4.5 KB compressed, at the end of the body via EmDash's page fragments, so the layout needs `<EmDashBodyEnd>`). It attaches to any GET form with a search field (`type="search"`, or a field named `s` or `q`), so a theme's own search form works as is; the pack's `SearchBox` has the same dropdown built in. Pages without a search form do nothing with it, and its styles are added only when a form is found.
+
+- From 2 characters, 200 ms after the last keystroke, it shows up to 8 entries: title matches first, then full-text matches (with the any-word fallback). Each row has the title, with the typed words underlined, and an excerpt of about 180 characters around the first match, with the matches in bold and "…" where it was cut. A final **View all results** row opens the search page, the same URL the form submits.
+- The first result is selected as results appear, so Enter opens it. Arrow keys move (wrapping, and through View all results), Escape closes the list and a second Escape clears the field, Tab or a click elsewhere closes it, and submitting the form searches as before. Results are real links, so middle-click and "open in new tab" work.
+- Accessible as an ARIA combobox: `role="combobox"` with `aria-expanded`, `aria-controls` and `aria-activedescendant` on the field, a `listbox` of `option`s, and a polite live region announcing the result count (with a one-time keyboard hint). A clear (×) button sits inside the field for pointer and touch; Escape does the same from the keyboard. Forced colors are respected, and the fade is skipped for reduced motion.
+- It takes the theme's font and text color from the form and its background from the nearest opaque ancestor, and tints with `currentColor`, so it fits light and dark themes without configuration.
+- In-flight requests are cancelled as you type, answers are cached per query for the page view, and a slow earlier answer never replaces a newer one. Without JavaScript the form works exactly as before.
+
+Results come from `GET /_emdash/api/plugins/coywolf-pack/search/live?q=…` (optional `limit` up to 20, `collections`, `locale`): published entries only, each with `title`, `titleHtml`, `url`, `type` and `snippet`. `titleHtml` and `snippet` are escaped HTML whose only tags are `<mark>`. Excerpts come from the text EmDash indexed (the searchable fields other than the title). Responses are cached for 60 seconds, and **Search rate limit** covers the route.
+
+Tune it in `astro.config.mjs` (defaults shown):
+
+```js
+coywolfPlugin({ search: { live: { limit: 8, minChars: 2, debounce: 200, enterOpensTop: true } } });
+```
+
+`enterOpensTop: false` leaves nothing selected until the visitor arrows to a result, so Enter runs a full search.
 
 ### Search box
 
@@ -465,7 +486,7 @@ Colors are CSS custom properties with light and dark defaults. Override them on 
 }
 ```
 
-Suggestions come from `GET /_emdash/api/plugins/coywolf-pack/search/query?q=…&mode=suggest`, which returns EmDash's results plus each entry's URL (from the collection's URL pattern) and type label. Use the same OR fallback on your search page:
+Suggestions come from the live results route (above); with **Live results** off the SearchBox is a plain search form with a clear button. `GET /_emdash/api/plugins/coywolf-pack/search/query?q=…&mode=suggest` still returns EmDash's results plus each entry's URL (from the collection's URL pattern) and type label. Use the same OR fallback on your search page:
 
 ```astro
 ---
@@ -498,7 +519,7 @@ coywolfPlugin({ search: { rateLimiter: "SEARCH_RATE_LIMITER" } });
 - Optional Worker secret `SEARCH_RATE_LIMIT_SALT` for the IP hash (recommended; a fixed built-in salt is used otherwise, so keys agree across isolates).
 - Requires the pack middleware (`coywolfPack()` in `src/middleware.ts`). The admin endpoints (enable, rebuild, stats) aren't limited.
 
-For a hard limit that never reaches your Worker, use a Cloudflare WAF rate limiting rule instead of (or as well as) this feature. The free plan includes one: **Security → WAF → Rate limiting rules**, match `URI Path starts with /_emdash/api/search` or `URI Path equals /_emdash/api/plugins/coywolf-pack/search/query`, counted per IP, for example 60 requests per 10 seconds with a 10-second block.
+For a hard limit that never reaches your Worker, use a Cloudflare WAF rate limiting rule instead of (or as well as) this feature. The free plan includes one: **Security → WAF → Rate limiting rules**, match `URI Path starts with /_emdash/api/search` or `URI Path starts with /_emdash/api/plugins/coywolf-pack/search/`, counted per IP, for example 60 requests per 10 seconds with a 10-second block.
 
 ## AI Enrichment
 

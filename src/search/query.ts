@@ -16,6 +16,7 @@ import { type SearchResult, search } from "emdash";
 import { COLLECTION_SLUG, type CollectionInfo, createEntryUrlResolver, interpolateUrlPattern, readCollections } from "../core/content-url.js";
 import { workerEnv } from "../shared.js";
 import { buildOrQuery, rankByCoverage } from "./fallback.js";
+import { buildSnippet, highlightHtml, highlightWords } from "./snippet.js";
 
 export interface PackSearchResult extends SearchResult {
 	/** Public path of the entry: the site's `urls` override for the collection, or its URL pattern. */
@@ -71,6 +72,125 @@ export async function searchWithFallback(query: string, options: PackSearchOptio
 	const any = await search(orQuery, { ...base, limit: FALLBACK_POOL });
 	const ranked = rankByCoverage(any.items, query).slice(0, limit);
 	return { items: await withUrls(ranked, options.database), fallback: ranked.length > 0 };
+}
+
+/** One live result (feature "search.live"): everything the dropdown shows, already escaped where it's HTML. */
+export interface LiveSearchResult {
+	id: string;
+	collection: string;
+	title: string;
+	/** The title, escaped, with the visitor's words in <mark> (the only tag). */
+	titleHtml: string;
+	url: string;
+	type: string;
+	/** An excerpt around the first match, escaped, with matches in <mark> and "…" where it was cut. */
+	snippet: string;
+}
+
+export interface LiveSearchResponse {
+	items: LiveSearchResult[];
+	/** True when nothing matched every word, so these results match any word. */
+	fallback: boolean;
+}
+
+/**
+ * Live results (as-you-type dropdown): title matches first, then full-text
+ * matches (with the OR fallback) to fill the list, each with an excerpt from
+ * the entry's indexed text. Built on searchWithFallback, so ranking, the
+ * fallback and URLs are the same as the search page's. Published entries
+ * only (EmDash's search default).
+ */
+export async function liveSearch(query: string, options: Omit<PackSearchOptions, "cursor" | "mode"> = {}): Promise<LiveSearchResponse> {
+	const limit = Math.min(Math.max(options.limit ?? 8, 1), 20);
+	const collections = options.collections ? [...new Set(options.collections)].filter((c) => COLLECTION_SLUG.test(c)).slice(0, 10) : undefined;
+	if (collections && collections.length === 0) return { items: [], fallback: false };
+
+	const titles = await search(query, { collections, locale: options.locale, limit, scope: "title" });
+	const merged: PackSearchResult[] = await withUrls(titles.items, options.database);
+	let fallback = false;
+	if (merged.length < limit) {
+		const seen = new Set(merged.map((i) => `${i.collection}:${i.id}`));
+		const rest = await searchWithFallback(query, { collections, locale: options.locale, limit, database: options.database });
+		for (const item of rest.items) {
+			if (merged.length >= limit) break;
+			if (seen.has(`${item.collection}:${item.id}`)) continue;
+			merged.push(item);
+		}
+		fallback = rest.fallback && titles.items.length === 0;
+	}
+
+	const words = highlightWords(query);
+	const texts = await snippetTexts(merged, options.database);
+	return {
+		fallback,
+		items: merged.map((item) => {
+			const title = item.title || item.slug || item.id;
+			return {
+				id: item.id,
+				collection: item.collection,
+				title,
+				titleHtml: highlightHtml(title, words),
+				url: item.url,
+				type: item.type,
+				snippet: buildSnippet(texts.get(`${item.collection}:${item.id}`) ?? "", words),
+			};
+		}),
+	};
+}
+
+/** Characters of indexed text read per entry for its excerpt (a match past this shows the start instead). */
+const SNIPPET_SOURCE_CHARS = 20_000;
+/** Field slugs are SQL identifiers here; EmDash validates them the same way. */
+const FIELD_SLUG = /^[a-z][a-z0-9_]*$/;
+
+/**
+ * Each result's indexed plain text, without the title: the searchable fields
+ * as EmDash stored them in the collection's FTS5 table (Portable Text already
+ * reduced to prose). Rows are found by rowid, which the FTS table shares with
+ * the content table, so this never scans the index. Best effort: any failure
+ * just means results without excerpts.
+ */
+async function snippetTexts(items: PackSearchResult[], database = "DB"): Promise<Map<string, string>> {
+	const out = new Map<string, string>();
+	if (!items.length) return out;
+	let db: D1Database | undefined;
+	try {
+		db = (await workerEnv())[database] as D1Database | undefined;
+	} catch {
+		db = undefined;
+	}
+	if (!db) return out;
+	const slugs = [...new Set(items.map((i) => i.collection))].filter((s) => COLLECTION_SLUG.test(s));
+	try {
+		const [collections, fields] = await Promise.all([
+			readCollections(db, slugs),
+			db
+				.prepare(
+					`SELECT c.slug AS collection, f.slug AS field FROM _emdash_fields f JOIN _emdash_collections c ON c.id = f.collection_id WHERE f.searchable = 1 AND c.slug IN (${slugs.map(() => "?").join(",")}) ORDER BY f.sort_order`,
+				)
+				.bind(...slugs)
+				.all<{ collection: string; field: string }>(),
+		]);
+		await Promise.all(
+			slugs.map(async (slug) => {
+				const titleField = collections.get(slug)?.titleField || "title";
+				const columns = fields.results.filter((f) => f.collection === slug && f.field !== titleField && FIELD_SLUG.test(f.field)).map((f) => f.field);
+				if (!columns.length) return;
+				const ids = items.filter((i) => i.collection === slug).map((i) => i.id);
+				const text = columns.map((c) => `COALESCE(substr(f."${c}", 1, ${SNIPPET_SOURCE_CHARS}), '')`).join(" || ' ' || ");
+				const { results } = await db
+					.prepare(
+						`SELECT c.id AS id, ${text} AS text FROM "ec_${slug}" c JOIN "_emdash_fts_${slug}" f ON f.rowid = c.rowid WHERE c.id IN (${ids.map(() => "?").join(",")})`,
+					)
+					.bind(...ids)
+					.all<{ id: string; text: string | null }>();
+				for (const row of results) if (row.text) out.set(`${slug}:${row.id}`, row.text);
+			}),
+		);
+	} catch {
+		// Results without excerpts rather than no results.
+	}
+	return out;
 }
 
 async function withUrls(items: SearchResult[], database = "DB"): Promise<PackSearchResult[]> {

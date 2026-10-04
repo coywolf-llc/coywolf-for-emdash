@@ -5,7 +5,7 @@ import { configureSearchRateLimit } from "./ratelimit.js";
 
 export { searchRateLimitMiddleware } from "./ratelimit.js";
 
-const FEATURES = [
+export const FEATURES = [
 	{
 		id: "search",
 		label: "Search",
@@ -19,10 +19,17 @@ const FEATURES = [
 		default: false,
 	},
 	{
+		id: "search.live",
+		label: "Live results",
+		description: "Show matching posts in a dropdown as visitors type.",
+		// On with Search, including sites that turned Search on before this existed (an unsaved choice takes the default).
+		default: true,
+	},
+	{
 		id: "search.box",
 		label: "Search box",
 		description:
-			"The SearchBox component: as-you-type suggestions, and results for any of the words when nothing matches all of them.",
+			"The SearchBox component: a search form with a clear button, live results (with Live results on), and results for any of the words when nothing matches all of them.",
 		default: false,
 	},
 	{
@@ -36,11 +43,14 @@ registerFeatures(FEATURES);
 
 export function searchPack(options: SearchOptions): PackModule {
 	configureSearchRateLimit({ requestsPerMinute: options.requestsPerMinute, rateLimiter: options.rateLimiter });
+	const module = searchModule(options);
 	return {
 		id: "search",
 		label: "Search",
 		features: FEATURES,
-		routes: searchModule(options).routes,
+		routes: module.routes,
+		hooks: module.hooks,
+		hookFeature: { "page:fragments": "search.live" },
 		adminPages: [{ path: "/search", label: "Search", icon: "magnifying-glass" }],
 	};
 }
