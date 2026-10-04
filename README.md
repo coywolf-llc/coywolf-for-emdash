@@ -9,6 +9,7 @@ One plugin with [Coywolf](https://coywolf.com)'s features for [EmDash](https://e
 | **Headings & TOC** | Linkable headings (`#jump-…` anchors), a Table of Contents block, and a Breadcrumbs block and theme component |
 | **Code Blocks** | Server-side syntax highlighting, themes, language label, copy button and line numbers for code blocks |
 | **File Downloads** | A download card block, stable download URLs with counts, a Files page, and direct-to-R2 uploads of any size |
+| **Search** | Settings page for EmDash's full-text search, a search box with as-you-type suggestions and an OR fallback, and rate limiting |
 
 More modules will follow as Coywolf's WordPress plugins move to EmDash.
 
@@ -153,6 +154,16 @@ export const onRequest = sequence(coywolfRedirects(), /* your middleware */);
 ```
 
 Rules are read at most once a minute per Worker isolate, and hits are counted after the response is sent, so redirects add no database query to normal page views.
+
+### Removed content
+
+Feature **Redirects → Removed content** (`redirects.trashPrompt`, off by default). When a published entry is deleted (trashed) or unpublished, its old URL is listed in a **Removed content** panel on the Redirects page, with three choices:
+
+- **Redirect to…** creates a Coywolf redirect rule (301 by default) from the old URL.
+- **Return 410 Gone** creates a 410 rule, telling search engines the page is gone for good.
+- **Dismiss** forgets it (for example, when the URL should simply 404).
+
+The old URL is resolved the way EmDash resolves it: the collection's URL pattern (`{slug}`, `{id}`, and date tokens from the publish date), or `/<collection>/<slug>`. Locale prefixes aren't added. Drafts that were never published aren't listed, and republishing or restoring an entry removes it from the list. Decisions are kept in plugin storage (`redirects_removed`). The module declares the `content:read` capability for the delete and publish hooks.
 
 ### Export redirects from WordPress (Coywolf SEO)
 
@@ -310,6 +321,68 @@ Nothing to configure beyond the Schema page. The module reads the site database 
 - Page types come from the page context your theme passes to `EmDashHead`: an entry page is matched to its collection through `content`, and `pageType: "article"` is what makes a page an article by default. Pages without `content` use the home page or "other pages" types.
 - Derived breadcrumbs name parent segments from the URL (`/health-tips/` → "Health tips"); pass `breadcrumbs` in the page context for exact names.
 - A content page costs a few extra database reads per render (the entry override, its bylines, and saved author properties); image lookups and settings are cached.
+
+## Search
+
+EmDash has full-text search built in: SQLite FTS5 with BM25 ranking, English stemming, prefix matching, highlighted snippets, a public API (`/_emdash/api/search`), and a `LiveSearch` component. This module adds what it leaves out. Turn on **Search** and its parts on the Features page (all off by default).
+
+- **Search settings** (`search.settings`): a **Search** admin page to choose which collections are searchable, set field weights, pick the tokenizer (English stemming, exact words, or trigram substrings), and rebuild indexes with a progress readout and per-collection entry counts. It calls EmDash's own search API, so it needs EmDash's `search:manage` permission (admins). Fields are made searchable in each collection's schema.
+- **Search box** (`search.box`): a `SearchBox` component with as-you-type suggestions (titles first, then full text), arrow keys, Enter and Escape, a clear button, content-type labels, highlighted matches, screen-reader announcements, and a fade that respects reduced motion. When nothing matches every word, it shows results for any of the words, ranked by how many they contain. Without JavaScript it's a plain search form that submits to your search page.
+- **Search rate limit** (`search.rateLimit`): limits each visitor to 120 searches a minute (configurable) on EmDash's public search and suggestion endpoints and the pack's search route, answering `429` with `Retry-After`. Visitors are keyed by a salted hash of their IP address, never the address itself.
+
+### Search box
+
+```astro
+---
+import { SearchBox } from "@coywolf/emdash/astro";
+---
+<SearchBox action="/search" collections={["posts", "pages"]} placeholder="Search articles" />
+```
+
+Props: `action` (your search page, default `/search`), `name` (`q`), `label`, `showLabel`, `placeholder`, `collections`, `locale`, `minChars` (2), `debounce` (200 ms), `limit` (8), `showType`, `showSnippets`, `submitButton`, `value`, `class`, and `id` (set a different one for each box on a page). Its script (about 4 KB minified, 2 KB compressed) loads only on pages that use it.
+
+Colors are CSS custom properties with light and dark defaults. Override them on `.cw-search`:
+
+```css
+.cw-search {
+  --cw-search-bg: #fff;
+  --cw-search-fg: #1a1a1a;
+  --cw-search-muted: #5c5c5c;
+  --cw-search-border: #d4d4d4;
+  --cw-search-active-bg: #f1f1f1;
+  --cw-search-active-border: currentColor;
+  --cw-search-active-fg: inherit;
+  --cw-search-mark: rgb(255 214 0 / 0.35);
+  --cw-search-radius: 0.5rem;
+}
+```
+
+Suggestions come from `GET /_emdash/api/plugins/coywolf-pack/search/query?q=…&mode=suggest`, which returns EmDash's results plus each entry's URL (from the collection's URL pattern) and type label. Use the same OR fallback on your search page:
+
+```astro
+---
+import { searchWithFallback } from "@coywolf/emdash/astro";
+const q = Astro.url.searchParams.get("q")?.trim() ?? "";
+const { items, fallback } = q ? await searchWithFallback(q, { limit: 20 }) : { items: [], fallback: false };
+---
+{fallback && <p>No results for all of your words. Showing results for some of them.</p>}
+{items.map((item) => <a href={item.url}>{item.title}</a>)}
+```
+
+Fallback results aren't paginated (the best 50 are ranked together).
+
+### Rate limit setup
+
+```js
+coywolfPlugin({ search: { requestsPerMinute: 120, kv: "SEARCH_RATE_LIMIT" } });
+```
+
+- `requestsPerMinute`: default 120; `0` turns limiting off.
+- `kv`: a KV namespace binding name. Without one, each Worker isolate counts on its own, which stops a single client hammering one isolate but isn't a hard limit. With one, isolates share a one-minute window in KV (KV is eventually consistent, so short bursts can overshoot). Don't reuse the `SESSION` namespace.
+- Optional Worker secret `SEARCH_RATE_LIMIT_SALT` for the IP hash. Without it, a random salt is kept in the KV namespace (or per isolate).
+- Requires the pack middleware (`coywolfPack()` in `src/middleware.ts`). The admin endpoints (enable, rebuild, stats) aren't limited.
+
+For a hard limit at no cost, use a Cloudflare WAF rate limiting rule instead of (or as well as) this feature. The free plan includes one: **Security → WAF → Rate limiting rules**, match `URI Path starts with /_emdash/api/search` or `URI Path equals /_emdash/api/plugins/coywolf-pack/search/query`, counted per IP, for example 60 requests per 10 seconds with a 10-second block. It runs before your Worker, so blocked requests cost nothing.
 
 ## License
 

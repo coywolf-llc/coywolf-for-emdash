@@ -26,3 +26,7 @@ export { BreadcrumbsComponent as Breadcrumbs };
  * (Headings & TOC module). Plugins can't override EmDash's `block` renderer.
  */
 export const portableTextComponents = { block: HeadingBlock };
+/** Search module: the SearchBox component and OR-fallback search for site search pages. */
+export { default as SearchBox } from "./search/SearchBox.astro";
+export { searchWithFallback } from "../search/query.js";
+export type { PackSearchOptions, PackSearchResponse, PackSearchResult } from "../search/query.js";

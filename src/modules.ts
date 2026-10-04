@@ -10,6 +10,7 @@ import { headingsPack } from "./headings/pack.js";
 import { filesMiddleware, filesPack } from "./files/pack.js";
 import { redirectsMiddleware, redirectsPack } from "./redirects/pack.js";
 import { schemaPack } from "./schema/pack.js";
+import { searchPack, searchRateLimitMiddleware } from "./search/pack.js";
 import type { CoywolfOptions } from "./options.js";
 
 type Factory = (options: CoywolfOptions) => PackModule | null;
@@ -21,6 +22,7 @@ export const MODULES: Factory[] = [
 	(o) => (o.codeBlocks === false ? null : codeBlocksPack(o.codeBlocks ?? {})),
 	(o) => (o.schema === false ? null : schemaPack(o.schema ?? {})),
 	(o) => (o.files === false ? null : filesPack(o.files ?? {})),
+	(o) => (o.search === false ? null : searchPack(o.search ?? {})),
 ];
 
-export const MIDDLEWARE: PackMiddleware[] = [redirectsMiddleware, filesMiddleware];
+export const MIDDLEWARE: PackMiddleware[] = [redirectsMiddleware, filesMiddleware, searchRateLimitMiddleware];
