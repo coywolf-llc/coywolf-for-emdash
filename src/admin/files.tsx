@@ -382,7 +382,7 @@ function SettingsPanel(props: { largeUploadsEnabled: boolean; onSaved: (message:
 					<>
 						Files over 50 MB, or of any type, upload straight from the browser to R2 through its S3 API. Create an R2 API token with Object Read &amp; Write
 						on the bucket. R2 storage and operations are billed to your account.
-						{!props.largeUploadsEnabled && " Turn on Large uploads under Features to use them."}
+						{!props.largeUploadsEnabled && " Turn on Large uploads under Plugins → Coywolf Pack to use them."}
 					</>
 				}
 			>
@@ -566,7 +566,7 @@ export function FilesPage() {
 								Download links look like <code>/{data.base}/&lt;id&gt;/&lt;file name&gt;</code>.
 							</>
 						) : null}
-						{data && !data.largeUploadsEnabled ? " Turn on Large uploads (Features) to upload files over 50 MB or of any type." : ""}
+						{data && !data.largeUploadsEnabled ? " Turn on Large uploads (Plugins → Coywolf Pack) to upload files over 50 MB or of any type." : ""}
 					</p>
 				</div>
 				{tab === "files" && (

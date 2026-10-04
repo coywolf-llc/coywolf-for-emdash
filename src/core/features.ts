@@ -139,6 +139,6 @@ export async function siteFeatureOn(id: string, database?: string): Promise<bool
 export async function requireFeature(ctx: SettingsCtx, id: string): Promise<void> {
 	if (!isOn(await ctxFeatures(ctx), id)) {
 		const { PluginRouteError } = await import("emdash");
-		throw PluginRouteError.notFound("This feature is turned off (Coywolf Pack → Features).");
+		throw PluginRouteError.notFound("This feature is turned off (Plugins → Coywolf Pack).");
 	}
 }

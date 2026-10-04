@@ -8,7 +8,7 @@
  * ```
  *
  * and add `coywolfPack()` from "@coywolf/emdash/middleware" to the site's
- * middleware. Every feature can be turned on or off under Plugins → Features.
+ * middleware. Every feature can be turned on or off under Plugins → Coywolf Pack.
  */
 import type { PluginCapability, PluginDescriptor } from "emdash";
 import { definePlugin } from "emdash";
@@ -29,10 +29,10 @@ export type { RobotsOptions } from "./robots/module.js";
 export type { CoywolfOptions } from "./options.js";
 export type { ContentUrlOptions, TrailingSlash } from "./core/content-url.js";
 
-const VERSION = "0.6.0";
+const VERSION = "0.6.1";
 const PACKAGE = "@coywolf/emdash";
 
-const FEATURES_PAGE = { path: "/features", label: "Features", icon: "toggle-right" };
+const FEATURES_PAGE = { path: "/features", label: "Coywolf Pack", icon: "toggle-right" };
 
 function buildModules(options: CoywolfOptions): PackModule[] {
 	// Module-level, like the search rate limit: createPlugin() runs when the Worker isolate

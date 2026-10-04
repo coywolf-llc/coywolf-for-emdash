@@ -17,7 +17,7 @@ import type { TrailingSlash } from "./core/content-url.js";
 /**
  * Modules to include in the build. Backups needs its bindings, so it's
  * included only when configured; every other module is included unless set
- * to false. Included modules are then turned on or off on the Features page.
+ * to false. Included modules are then turned on or off on the Coywolf Pack page.
  */
 export interface CoywolfOptions {
 	backups?: BackupsOptions | false;

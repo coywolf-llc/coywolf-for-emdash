@@ -188,7 +188,7 @@ export function DiscoveryPage() {
 			{!anyOn && (
 				<Banner
 					variant="default"
-					description="Discovery features are off. Turn on Discovery and the parts you want under Coywolf Pack → Features. You can change settings here first."
+					description="Discovery features are off. Turn on Discovery and the parts you want under Plugins → Coywolf Pack. You can change settings here first."
 				/>
 			)}
 			<div aria-live="polite">

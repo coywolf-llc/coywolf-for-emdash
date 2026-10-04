@@ -19,7 +19,7 @@ One plugin with [Coywolf](https://coywolf.com)'s features for [EmDash](https://e
 | **Robots.txt Rules** | Named robots.txt rules, a verified crawler directory kept current from Cloudflare Radar, and a URL tester |
 | **AI Enrichment** | Wikidata-grounded entities for schema, meta-description suggestions, and image alt text, with Workers AI or your own key |
 
-Every feature can be turned on or off under **Plugins → Features**, like Coywolf SEO's feature switches. New features start off, so installing or updating changes nothing on the site until you turn them on. A module that is off also leaves the admin sidebar and dashboard.
+Every feature can be turned on or off under **Plugins → Coywolf Pack**, like Coywolf SEO's feature switches. New features start off, so installing or updating changes nothing on the site until you turn them on. A module that is off also leaves the admin sidebar and dashboard.
 
 More modules will follow as Coywolf's WordPress plugins move to EmDash.
 
@@ -32,7 +32,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.6.0
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.6.1
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -320,7 +320,7 @@ The Coywolf Files plugin for WordPress, on EmDash. Add a **File download** block
 
 ### Setup
 
-1. Turn on **File Downloads** under **Plugins → Features**. The middleware from the Redirects setup (`coywolfPack()`) serves the download URLs; nothing else to add.
+1. Turn on **File Downloads** under **Plugins → Coywolf Pack**. The middleware from the Redirects setup (`coywolfPack()`) serves the download URLs; nothing else to add.
 2. Settings (**Files → Settings**): download URL base (default `download`), optional public bucket / CDN URL, card color scheme, accent color, and largest upload (default 5 GB).
 3. Bindings: `DB` and `MEDIA`. To keep large uploads in their own bucket, bind it as `FILES` (or pass `files: { uploads: "MYBINDING" }`, and note the middleware looks for `FILES`).
 
@@ -417,7 +417,7 @@ Theme videos are validated (absolute http(s) URLs, ISO 8601 duration) and de-dup
 
 ## Search
 
-EmDash has full-text search built in: SQLite FTS5 with BM25 ranking, English stemming, prefix matching, highlighted snippets, a public API (`/_emdash/api/search`), and a `LiveSearch` component. This module adds what it leaves out. Turn on **Search** and its parts on the Features page (all off by default).
+EmDash has full-text search built in: SQLite FTS5 with BM25 ranking, English stemming, prefix matching, highlighted snippets, a public API (`/_emdash/api/search`), and a `LiveSearch` component. This module adds what it leaves out. Turn on **Search** and its parts on the Coywolf Pack page (all off by default).
 
 - **Search settings** (`search.settings`): a **Search** admin page to choose which collections are searchable, set field weights, pick the tokenizer (English stemming, exact words, or trigram substrings), and rebuild indexes with a progress readout and per-collection entry counts. It calls EmDash's own search API, so it needs EmDash's `search:manage` permission (admins). Fields are made searchable in each collection's schema.
 - **Search box** (`search.box`): a `SearchBox` component with as-you-type suggestions (titles first, then full text), arrow keys, Enter and Escape, a clear button, content-type labels, highlighted matches, screen-reader announcements, and a fade that respects reduced motion. When nothing matches every word, it shows results for any of the words, ranked by how many they contain. Without JavaScript it's a plain search form that submits to your search page.
@@ -494,7 +494,7 @@ Ported from Coywolf SEO's AI features, with the same prompts and validation:
 - **Meta descriptions** (`ai.descriptions`). Writes a description (under 155 characters, no clickbait) for published entries in SEO-enabled collections that don't have one. By default they're suggestions you edit and apply on the AI page; or have empty descriptions filled automatically. Either way it writes only EmDash's SEO panel field and never replaces a description someone wrote unless you choose **Replace**.
 - **Image text** (`ai.imageText`). Writes alt text (and, if you turn it on, captions) for images on upload and in bulk, with accessibility-first prompts. Alt text and captions people wrote are kept unless you turn on overwrite. EmDash media has no title or description fields, so titles are shown on the AI page for reference only.
 
-All four are off by default, under the **AI Enrichment** switch on the Features page.
+All four are off by default, under the **AI Enrichment** switch on the Coywolf Pack page.
 
 ### How it runs
 
@@ -604,7 +604,7 @@ The Coywolf Video Manager for EmDash, on Cloudflare Stream.
 
 1. Create an API token with **Account → Stream → Edit**.
 2. On the **Videos** page, enter the account ID and the token in the **Connect** card (or later under **Videos → Settings**; the token is a secret setting, which needs EmDash's `EMDASH_ENCRYPTION_KEY`). Until Stream is connected, the page shows only that card: the library, uploads, captions and the webhook appear once it's connected. Or set `CF_ACCOUNT_ID` and the `CF_STREAM_TOKEN` Worker secret, the same variables EmDash's `cloudflareStream()` media provider reads. Optional settings (**Videos → Settings → Player**): the customer subdomain (`customer-….cloudflarestream.com`, learned from the library if empty), and the player accent and background colors.
-3. Turn on **Videos** (and any sub-features) under **Plugins → Coywolf Pack → Features**, open the **Videos** page, and click **Test connection**. Then **Rebuild embed index** once.
+3. Turn on **Videos** (and any sub-features) under **Plugins → Coywolf Pack**, open the **Videos** page, and click **Test connection**. Then **Rebuild embed index** once.
 4. For the sitemap and caption files, add `coywolfPack()` to the site middleware (see Redirects), and list the sitemap in `robots.txt`:
 
    ```text
