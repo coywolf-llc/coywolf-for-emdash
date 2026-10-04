@@ -1,0 +1,49 @@
+---
+/**
+ * The review box (Reviews module), for themes: renders a review in the same
+ * markup and style as the Coywolf Review block, including the accent color
+ * and custom CSS from the Reviews page. Not gated by the feature switch: a
+ * theme that uses it has opted in.
+ *
+ *   <Review review={{ itemName, rating: 4.5, pros: ["…"], cons: ["…"] }} />
+ *   <Review attrs={markerAttrs} />   (legacy WordPress review marker:
+ *                                     { name, brand, rating, strengths, shortcomings })
+ *   <Review {...markerAttrs} />      (same, spread)
+ *
+ * Schema isn't printed here; pass the same reviews as page.coywolf.reviews
+ * (see reviewFromAttrs) and Review schema adds them to the page's JSON-LD.
+ * The CSS is inlined once per page, before the first box, so no layout shift.
+ */
+import { normalizeReview, pageCss, renderReviewHtml, reviewFromAttrs } from "../../reviews/lib.js";
+import { siteReviewStyle } from "../../reviews/settings.js";
+
+interface Props {
+	/** Block-shaped fields (itemName, itemType, brand, itemUrl, image, rating, pros, cons, …). */
+	review?: Record<string, unknown>;
+	/** Legacy WordPress review marker attributes. */
+	attrs?: Record<string, unknown>;
+	/** Set by the block renderer, which claims the page's CSS before its own await. */
+	styles?: boolean;
+	[key: string]: unknown;
+}
+
+const props = Astro.props as Props;
+const source =
+	props.review ??
+	(props.attrs ? reviewFromAttrs(props.attrs) : "strengths" in props || "shortcomings" in props ? reviewFromAttrs(props) : props);
+const review = normalizeReview(source);
+
+const locals = (Astro.locals ?? {}) as Record<string, unknown>;
+let first: boolean;
+if (typeof props.styles === "boolean") first = props.styles;
+else {
+	first = Boolean(review) && !locals.__cwReviewAssets;
+	if (review) locals.__cwReviewAssets = true;
+}
+
+const html = review ? renderReviewHtml(review) : "";
+const css = first ? pageCss(await siteReviewStyle()) : "";
+---
+
+{css && <style is:inline set:html={css} />}
+{html && <Fragment set:html={html} />}

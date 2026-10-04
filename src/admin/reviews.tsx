@@ -1,0 +1,263 @@
+/**
+ * Reviews page: the review box's accent color and custom CSS, with a live
+ * preview of a sample review (rendered by the same code as the site), and the
+ * Reviews / Review schema switches (the same ones as the Features page).
+ */
+import { Banner, Button, Input, InputArea, Loader, Switch } from "@cloudflare/kumo";
+import { ArrowCounterClockwise, FloppyDisk } from "@phosphor-icons/react";
+import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
+import * as React from "react";
+
+import { DEFAULT_ACCENT, MAX_CUSTOM_CSS, SAMPLE_REVIEW, isAccent, pageCss, renderReviewHtml, sanitizeCustomCss } from "../reviews/lib.js";
+
+const API = "/_emdash/api/plugins/coywolf-pack";
+
+type Switches = Record<string, boolean>;
+interface Style {
+	accent: string;
+	css: string;
+}
+
+const SWITCHES: Array<{ id: string; label: string; description: string }> = [
+	{ id: "reviews", label: "Review block", description: "Show Coywolf Review blocks on the site." },
+	{ id: "reviews.schema", label: "Review schema", description: "Review structured data with the rating, pros and cons." },
+];
+
+const EXAMPLE_CSS = `/* Target .cw-review … so rules only reach review boxes. */
+.cw-review {
+  --cw-review-accent: #b22d47;
+  --cw-review-column-min: 100%; /* one column */
+}`;
+
+const errorText = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
+
+async function post<T>(path: string, body: unknown, fallback: string): Promise<T> {
+	const response = await apiFetch(`${API}/${path}`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	});
+	return parseApiResponse<T>(response, fallback);
+}
+
+/** The sample review in an isolated frame, so custom CSS can't restyle this admin page. */
+function Preview({ style, width }: { style: Style; width: "wide" | "phone" }) {
+	const frame = React.useRef<HTMLIFrameElement>(null);
+	const [height, setHeight] = React.useState(320);
+	const doc = React.useMemo(() => {
+		const css = pageCss({ accent: isAccent(style.accent) ? style.accent : DEFAULT_ACCENT, css: sanitizeCustomCss(style.css) });
+		return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html{color-scheme:light dark}body{margin:0;padding:16px;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.5;background:Canvas;color:CanvasText}</style><style>${css}</style></head><body>${renderReviewHtml(SAMPLE_REVIEW)}</body></html>`;
+	}, [style.accent, style.css]);
+	const measure = () => {
+		const body = frame.current?.contentDocument?.documentElement;
+		if (body) setHeight(Math.min(1200, Math.max(120, body.scrollHeight)));
+	};
+	return (
+		<iframe
+			ref={frame}
+			title="Review box preview"
+			// No scripts; same origin only so the frame's height can be measured.
+			sandbox="allow-same-origin"
+			srcDoc={doc}
+			onLoad={measure}
+			className="block rounded-lg border border-kumo-line bg-white"
+			style={{ width: width === "phone" ? 375 : "100%", maxWidth: "100%", height }}
+		/>
+	);
+}
+
+export function ReviewsPage() {
+	const [saved, setSaved] = React.useState<{ style: Style; switches: Switches } | null>(null);
+	const [style, setStyle] = React.useState<Style>({ accent: DEFAULT_ACCENT, css: "" });
+	const [switches, setSwitches] = React.useState<Switches>({});
+	const [width, setWidth] = React.useState<"wide" | "phone">("wide");
+	const [error, setError] = React.useState<string | null>(null);
+	const [status, setStatus] = React.useState("");
+	const [saving, setSaving] = React.useState(false);
+
+	React.useEffect(() => {
+		void (async () => {
+			try {
+				const [settings, features] = await Promise.all([
+					apiFetch(`${API}/reviews/settings`).then((r) => parseApiResponse<Style>(r, "Couldn't load settings")),
+					apiFetch(`${API}/features/list`).then((r) =>
+						parseApiResponse<{ modules: Array<{ id: string; features: Array<{ id: string; enabled: boolean }> }> }>(r, "Couldn't load features"),
+					),
+				]);
+				const mine = features.modules.find((m) => m.id === "reviews")?.features ?? [];
+				const state = Object.fromEntries(SWITCHES.map((s) => [s.id, mine.find((f) => f.id === s.id)?.enabled ?? false]));
+				const loaded = { accent: settings.accent, css: settings.css };
+				setStyle(loaded);
+				setSwitches(state);
+				setSaved({ style: loaded, switches: state });
+			} catch (cause) {
+				setError(errorText(cause, "Couldn't load settings"));
+			}
+		})();
+	}, []);
+
+	const changedSwitches = saved ? Object.fromEntries(Object.entries(switches).filter(([id, on]) => saved.switches[id] !== on)) : {};
+	const styleDirty = saved !== null && (style.accent !== saved.style.accent || style.css !== saved.style.css);
+	const dirty = styleDirty || Object.keys(changedSwitches).length > 0;
+	const accentValid = isAccent(style.accent);
+	const tooLong = style.css.length > MAX_CUSTOM_CSS;
+
+	React.useEffect(() => {
+		if (!dirty) return;
+		const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+		window.addEventListener("beforeunload", warn);
+		return () => window.removeEventListener("beforeunload", warn);
+	}, [dirty]);
+
+	async function save() {
+		if (!saved || !accentValid || tooLong) return;
+		setSaving(true);
+		setError(null);
+		setStatus("Saving…");
+		try {
+			let next = style;
+			if (styleDirty) next = await post<Style>("reviews/save", style, "Couldn't save the style");
+			if (Object.keys(changedSwitches).length) await post("features/save", { features: changedSwitches }, "Couldn't save the switches");
+			setStyle(next);
+			setSaved({ style: next, switches });
+			setStatus("Saved. The site picks up changes within a minute.");
+		} catch (cause) {
+			setStatus("");
+			setError(errorText(cause, "Couldn't save"));
+		} finally {
+			setSaving(false);
+		}
+	}
+
+	const mainOn = switches.reviews ?? false;
+
+	return (
+		<div className="space-y-6">
+			<header className="grid min-w-0 gap-4 border-b border-kumo-line pb-4">
+				<div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1">
+					<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Reviews</h1>
+					<div className="flex shrink-0 justify-end">
+						<Button variant="primary" icon={<FloppyDisk />} disabled={!dirty || saving || !accentValid || tooLong} onClick={() => void save()}>
+							Save
+						</Button>
+					</div>
+					<p className="col-span-2 text-sm leading-5 text-pretty text-kumo-subtle">
+						Add a review to an entry with the Coywolf Review block: a rating badge, what you liked most, and what could be better.
+						The box is styled with plain CSS sent only on pages with a review; no script.
+					</p>
+				</div>
+			</header>
+
+			{error && <Banner variant="error" role="alert" description={error} />}
+			<p className="sr-only" role="status" aria-live="polite">
+				{status}
+			</p>
+			{status && !saving && <p className="text-sm text-kumo-subtle">{status}</p>}
+
+			{!saved && !error && (
+				<div className="flex justify-center py-12">
+					<Loader />
+				</div>
+			)}
+
+			{saved && (
+				<div className="grid gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]">
+					<div className="space-y-6">
+						<section className="rounded-lg border border-kumo-line" aria-label="Switches">
+							<ul className="divide-y divide-kumo-line">
+								{SWITCHES.map((s, i) => (
+									<li key={s.id} className={`flex items-start justify-between gap-4 px-4 py-3 ${i > 0 ? "pl-8" : ""}`}>
+										<div className="min-w-0">
+											<h2 className={i === 0 ? "text-base font-semibold" : "text-sm font-medium"}>{s.label}</h2>
+											<p className="mt-0.5 text-sm text-kumo-subtle">{s.description}</p>
+										</div>
+										<Switch
+											size={i === 0 ? undefined : "sm"}
+											aria-label={`${s.label}: ${switches[s.id] ? "on" : "off"}`}
+											checked={(switches[s.id] ?? false) && (i === 0 || mainOn)}
+											disabled={saving || (i > 0 && !mainOn)}
+											onCheckedChange={(on: boolean) => setSwitches((cur) => ({ ...cur, [s.id]: on }))}
+										/>
+									</li>
+								))}
+							</ul>
+						</section>
+
+						<div className="space-y-2">
+							<div className="flex items-end gap-2">
+								<input
+									type="color"
+									aria-label="Pick the accent color"
+									value={accentValid && style.accent.length === 7 ? style.accent : DEFAULT_ACCENT}
+									onChange={(e) => setStyle((cur) => ({ ...cur, accent: e.target.value }))}
+									className="h-9 w-12 shrink-0 cursor-pointer rounded border border-kumo-line bg-transparent p-0.5"
+								/>
+								<div className="min-w-0 flex-1">
+									<Input
+										label="Accent color (rating badge)"
+										value={style.accent}
+										aria-invalid={!accentValid}
+										onChange={(e: React.ChangeEvent<HTMLInputElement>) => setStyle((cur) => ({ ...cur, accent: e.target.value.trim() }))}
+									/>
+								</div>
+								<Button
+									variant="secondary"
+									icon={<ArrowCounterClockwise />}
+									disabled={style.accent === DEFAULT_ACCENT}
+									onClick={() => setStyle((cur) => ({ ...cur, accent: DEFAULT_ACCENT }))}
+								>
+									Default
+								</Button>
+							</div>
+							{!accentValid && (
+								<p className="text-sm text-kumo-danger" role="alert">
+									Use a hex color like {DEFAULT_ACCENT}.
+								</p>
+							)}
+							<p className="text-xs text-kumo-subtle">Badge text is white; pick a color dark enough to read it.</p>
+						</div>
+
+						<div className="space-y-2">
+							<InputArea
+								label="Custom CSS"
+								rows={10}
+								value={style.css}
+								placeholder={EXAMPLE_CSS}
+								spellCheck={false}
+								className="font-mono text-xs"
+								onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setStyle((cur) => ({ ...cur, css: e.target.value }))}
+							/>
+							<p className={`text-xs ${tooLong ? "text-kumo-danger" : "text-kumo-subtle"}`}>
+								{style.css.length.toLocaleString()} / {MAX_CUSTOM_CSS.toLocaleString()} characters. Added after the built-in styles on pages
+								with a review. Start rules with <code>.cw-review</code> and set the <code>--cw-review-*</code> properties (see the README) to
+								change colors and layout.
+							</p>
+						</div>
+					</div>
+
+					<section aria-labelledby="cw-review-preview-title" className="min-w-0">
+						<div className="mb-2 flex items-center justify-between gap-2">
+							<h2 id="cw-review-preview-title" className="text-sm font-medium">
+								Preview
+							</h2>
+							<div className="flex gap-1" role="group" aria-label="Preview width">
+								<Button size="sm" variant={width === "wide" ? "primary" : "secondary"} aria-pressed={width === "wide"} onClick={() => setWidth("wide")}>
+									Wide
+								</Button>
+								<Button size="sm" variant={width === "phone" ? "primary" : "secondary"} aria-pressed={width === "phone"} onClick={() => setWidth("phone")}>
+									Phone
+								</Button>
+							</div>
+						</div>
+						{!mainOn && <p className="mb-2 text-sm text-kumo-subtle">Review blocks are off, so the site doesn't show them yet.</p>}
+						<Preview style={style} width={width} />
+						<p className="mt-2 text-xs text-kumo-subtle">
+							The preview uses this page's fonts and your computer's light or dark setting; on the site the box inherits your theme's
+							fonts and text color.
+						</p>
+					</section>
+				</div>
+			)}
+		</div>
+	);
+}

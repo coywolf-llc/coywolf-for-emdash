@@ -396,6 +396,11 @@ export async function schemaContributions(
 		});
 		// Videos: from the Videos module, and any the theme passes as page.coywolf.videos.
 		await attachPageVideos(ctx, page, graph as { "@graph": Node[] }, site.origin, on);
+		// Reviews: coywolf-review blocks in the entry, and any the theme passes as page.coywolf.reviews.
+		if (isOn(on, "reviews.schema")) {
+			const { attachPageReviews } = await import("../reviews/schema.js");
+			await attachPageReviews(ctx, page, graph as { "@graph": Node[] }, site.origin);
+		}
 		// AI Enrichment's Wikidata-grounded entities, when that feature is on.
 		if (page.content && isOn(on, "ai.entities")) await attachEntities(ctx, page.content, graph);
 		// Same id as EmDash's own JSON-LD, so this graph replaces it (first contribution wins).

@@ -15,6 +15,7 @@ import { redirectsMiddleware, redirectsPack } from "./redirects/pack.js";
 import { schemaPack } from "./schema/pack.js";
 import { searchPack, searchRateLimitMiddleware } from "./search/pack.js";
 import { robotsMiddleware, robotsPack } from "./robots/pack.js";
+import { reviewsPack } from "./reviews/pack.js";
 import type { CoywolfOptions } from "./options.js";
 import { videosCaptionsMiddleware, videosPack, videosSitemapMiddleware } from "./videos/pack.js";
 
@@ -33,6 +34,7 @@ export const MODULES: Factory[] = [
 	(o) => (o.links === false ? null : linksPack()),
 	(o) => (o.videos === false ? null : videosPack(o.videos ?? {})),
 	(o) => (o.robots === false ? null : robotsPack(o.robots ?? {})),
+	(o) => (o.reviews === false ? null : reviewsPack(o.reviews ?? {})),
 ];
 
 export const MIDDLEWARE: PackMiddleware[] = [redirectsMiddleware, robotsMiddleware, filesMiddleware, searchRateLimitMiddleware, ...discoveryMiddleware, videosSitemapMiddleware, videosCaptionsMiddleware];
