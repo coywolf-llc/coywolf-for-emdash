@@ -9,9 +9,12 @@ export type ProviderId = "workers-ai" | "anthropic" | "openai" | "gemini";
 
 export const PROVIDERS: Array<{ id: ProviderId; label: string; textModel: string; visionModel: string }> = [
 	{ id: "workers-ai", label: "Cloudflare Workers AI", textModel: "@cf/meta/llama-4-scout-17b-16e-instruct", visionModel: "@cf/meta/llama-4-scout-17b-16e-instruct" },
-	{ id: "anthropic", label: "Anthropic (Claude)", textModel: "claude-haiku-4-5", visionModel: "claude-haiku-4-5" },
-	{ id: "openai", label: "OpenAI", textModel: "gpt-4o-mini", visionModel: "gpt-4o-mini" },
-	{ id: "gemini", label: "Google Gemini", textModel: "gemini-2.5-flash", visionModel: "gemini-2.5-flash" },
+	// Checked 2026-10-03 against each provider's model docs: Claude Haiku 4.5 is only committed through
+	// Oct 15, 2026, so Sonnet 5.5 (through at least Sep 28, 2027) is the smallest Claude with a long runway;
+	// Gemini 2.5 is closed to new keys, Google recommends 3.8 Flash; GPT-6 Luna is OpenAI's efficient model.
+	{ id: "anthropic", label: "Anthropic (Claude)", textModel: "claude-sonnet-5-5", visionModel: "claude-sonnet-5-5" },
+	{ id: "openai", label: "OpenAI", textModel: "gpt-6-luna", visionModel: "gpt-6-luna" },
+	{ id: "gemini", label: "Google Gemini", textModel: "gemini-3.8-flash", visionModel: "gemini-3.8-flash" },
 ];
 
 export const PROVIDER_HOSTS = ["api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com"];
@@ -187,8 +190,12 @@ async function gemini(cfg: ProviderConfig, req: ChatRequest): Promise<ChatResult
 	return { text, inputTokens: data.usageMetadata?.promptTokenCount ?? 0, outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0 };
 }
 
-export async function chat(cfg: ProviderConfig, req: ChatRequest): Promise<ChatResult> {
+/** Current hosted models may reason before answering, and that counts against the output limit; leave room. Billing is per token used. */
+const MIN_OUTPUT_TOKENS = 4096;
+
+export async function chat(cfg: ProviderConfig, input: ChatRequest): Promise<ChatResult> {
 	if (cfg.provider !== "workers-ai" && !cfg.apiKey) throw new ProviderError("Add an API key for the selected AI provider on the AI page.");
+	const req = cfg.provider === "workers-ai" ? input : { ...input, maxTokens: Math.max(MIN_OUTPUT_TOKENS, input.maxTokens) };
 	switch (cfg.provider) {
 		case "workers-ai":
 			return workersAi(cfg, req);

@@ -13,6 +13,7 @@ import { PROVIDER_HOSTS } from "./providers.js";
 import { aiRoutes } from "./routes.js";
 import { type AiOptions, SETTINGS_SCHEMA, STORAGE, col, enqueue, entryKey, readSettings, type EntryRecord } from "./store.js";
 import { WIKIDATA_HOST } from "./wikidata.js";
+import { queueId } from "./logic.js";
 import { entryText, targetCollections, tick } from "./worker.js";
 
 export type { AiOptions } from "./store.js";
@@ -57,11 +58,14 @@ export const AI_TASK = "ai-queue";
 export function aiPack(options: AiOptions = {}): PackModule {
 	/** Queue an entry when its text changed since the last analysis (debounced). Never makes a model call. */
 	async function onContent(event: { content: Record<string, unknown>; collection: string }, ctx: PluginContext) {
-		const features = await ctxFeatures(ctx);
-		if (!isOn(features, "ai.entities") && !isOn(features, "ai.descriptions")) return;
 		const content = event.content;
 		const id = typeof content.id === "string" ? content.id : null;
+		// Only live content: skip unpublished entries and draft saves (autosaves) of published ones,
+		// whose pending draft differs from the live revision. Publishing the draft fires afterPublish.
 		if (!id || content.status !== "published") return;
+		if (typeof content.draftRevisionId === "string" && content.draftRevisionId && content.draftRevisionId !== content.liveRevisionId) return;
+		const features = await ctxFeatures(ctx);
+		if (!isOn(features, "ai.entities") && !isOn(features, "ai.descriptions")) return;
 		const s = await readSettings(ctx, options);
 		if (!(await targetCollections(ctx, s)).includes(event.collection)) return;
 		const data = (content.data && typeof content.data === "object" ? content.data : content) as Record<string, unknown>;
@@ -80,6 +84,12 @@ export function aiPack(options: AiOptions = {}): PackModule {
 		hooks: {
 			"content:afterSave": onContent,
 			"content:afterPublish": onContent,
+			"content:afterRestore": onContent,
+			/** Forget a deleted (or trashed) entry: its analysis and any queued job. A restore queues it again. */
+			"content:afterDelete": async (event: { id: string; collection: string }, ctx: PluginContext) => {
+				await col<EntryRecord>(ctx, "aiEntries").delete(entryKey(event.collection, event.id));
+				await col(ctx, "aiQueue").delete(queueId({ kind: "entry", collection: event.collection, entryId: event.id }));
+			},
 			"media:afterUpload": async (event: { media: { id: string; mimeType: string } }, ctx: PluginContext) => {
 				const { id, mimeType } = event.media;
 				if (!mimeType?.startsWith("image/") || mimeType === "image/svg+xml") return;

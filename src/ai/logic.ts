@@ -23,6 +23,71 @@ export const CAPTION_MAX = 300;
 const DISAMBIGUATION = "Q4167410";
 const HUMAN = "Q5";
 
+/**
+ * Common `instance of` classes for creative works and publications. An
+ * entity the article calls a Person, Organization, or Place must not resolve
+ * to one of these (e.g. the band's album instead of the band).
+ */
+const CREATIVE_WORKS = new Set([
+	"Q7725634", // literary work
+	"Q571", // book
+	"Q47461344", // written work
+	"Q11424", // film
+	"Q5398426", // television series
+	"Q21191270", // television series episode
+	"Q482994", // album
+	"Q134556", // single
+	"Q7366", // song
+	"Q105543609", // musical work/composition
+	"Q7889", // video game
+	"Q13442814", // scholarly article
+	"Q191067", // article
+	"Q3305213", // painting
+	"Q838948", // work of art
+	"Q17537576", // creative work
+	"Q87167", // manuscript
+	"Q1004", // comics
+	"Q25379", // play
+	"Q24862", // short film
+	"Q506240", // television film
+	"Q63952888", // anime television series
+	"Q4167836", // Wikimedia category
+	"Q11266439", // Wikimedia template
+	"Q13406463", // Wikimedia list article
+	"Q17633526", // Wikinews article
+]);
+
+/** Geographic classes an Organization must not resolve to. */
+const GEOGRAPHIC = new Set([
+	"Q515", // city
+	"Q1549591", // big city
+	"Q5119", // capital
+	"Q6256", // country
+	"Q3624078", // sovereign state
+	"Q35657", // U.S. state
+	"Q486972", // human settlement
+	"Q532", // village
+	"Q3957", // town
+	"Q23442", // island
+	"Q8502", // mountain
+	"Q4022", // river
+	"Q23397", // lake
+	"Q1620908", // historical region
+	"Q82794", // geographic region
+	"Q5107", // continent
+]);
+
+/** Lowercase, strip diacritics and punctuation, collapse whitespace: "Café-Müller, Inc." → "cafe muller inc". */
+export function normalizeName(value: string): string {
+	return value
+		.normalize("NFKD")
+		.replace(/\p{M}+/gu, "")
+		.toLowerCase()
+		.replace(/[\p{P}\p{S}]+/gu, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
 export interface Mention {
 	surface: string;
 	name: string;
@@ -35,6 +100,8 @@ export interface Candidate {
 	id: string;
 	label: string;
 	description: string;
+	/** Aliases and the matched text wbsearchentities reports, for the name check. */
+	aliases?: string[];
 }
 
 export interface GroundedMention extends Mention {
@@ -185,10 +252,15 @@ export function parseSearch(body: unknown): Candidate[] {
 	for (const hit of search) {
 		const id = (hit as { id?: unknown })?.id;
 		if (typeof id !== "string" || !/^Q\d+$/.test(id)) continue;
+		const h = hit as { label?: unknown; description?: unknown; aliases?: unknown; match?: { text?: unknown } };
+		const aliases = [...(Array.isArray(h.aliases) ? h.aliases : []), h.match?.text]
+			.filter((a): a is string => typeof a === "string" && a.trim().length > 0)
+			.map((a) => cleanText(a, 200));
 		out.push({
 			id,
-			label: cleanText((hit as { label?: unknown }).label, 200),
-			description: cleanText((hit as { description?: unknown }).description, 300),
+			label: cleanText(h.label, 200),
+			description: cleanText(h.description, 300),
+			...(aliases.length ? { aliases: [...new Set(aliases)] } : {}),
 		});
 	}
 	return out;
@@ -220,11 +292,22 @@ export function parseDetails(body: unknown, language: string): Record<string, Wi
 	return out;
 }
 
-/** Stage 2: attach candidates; a single candidate resolves immediately, several go to disambiguation. Mentions with none are dropped later. */
+/** Whether a candidate's label or one of its aliases is the mention's name (or its surface form), after normalization. */
+export function nameMatches(mention: Pick<Mention, "name" | "surface">, candidate: Candidate): boolean {
+	const wanted = new Set([normalizeName(mention.name), normalizeName(mention.surface ?? "")].filter(Boolean));
+	return [candidate.label, ...(candidate.aliases ?? [])].some((text) => wanted.has(normalizeName(text)));
+}
+
+/**
+ * Stage 2: keep only candidates whose label or alias matches the mention's
+ * name (search hits on a description or a partial word don't count). One
+ * match resolves immediately; several go to disambiguation; none drops the
+ * mention.
+ */
 export function attachCandidates(mentions: Mention[], candidates: Candidate[][]): { mentions: GroundedMention[]; ambiguous: number[] } {
 	const ambiguous: number[] = [];
 	const grounded = mentions.map((m, i) => {
-		const list = candidates[i] ?? [];
+		const list = (candidates[i] ?? []).filter((c) => nameMatches(m, c));
 		if (list.length > 1) ambiguous.push(i);
 		return { ...m, candidates: list, qid: list.length === 1 ? list[0].id : "" };
 	});
@@ -244,20 +327,39 @@ export function applyChoices(mentions: GroundedMention[], ambiguous: number[], c
 	return out;
 }
 
-/** Stage 4: drop unresolved mentions, disambiguation pages, and type mismatches (Person ⇔ human Q5). */
+/** Whether an item's P31 classes fit the type the article gave the entity. */
+export function typeCompatible(type: EntityType, p31: string[]): boolean {
+	if (p31.includes(DISAMBIGUATION)) return false;
+	const human = p31.includes(HUMAN);
+	const creative = p31.some((q) => CREATIVE_WORKS.has(q));
+	switch (type) {
+		case "Person":
+			return human; // An item with no P31 can't be confirmed as a person.
+		case "Organization":
+			return p31.length > 0 && !human && !creative && !p31.some((q) => GEOGRAPHIC.has(q));
+		case "Place":
+			return p31.length > 0 && !human && !creative;
+		default:
+			return !human && !p31.some((q) => q === "Q4167836" || q === "Q11266439" || q === "Q13406463");
+	}
+}
+
+/**
+ * Stage 4: drop unresolved mentions, items Wikidata didn't return, and type
+ * mismatches. The entity's name is Wikidata's label (the canonical name),
+ * falling back to the model's name.
+ */
 export function verifyEntities(mentions: GroundedMention[], details: Record<string, WikidataDetails>): Entity[] {
 	const out: Entity[] = [];
 	const seen = new Set<string>();
 	for (const m of mentions) {
 		if (!m.qid || seen.has(m.qid)) continue;
-		const info = details[m.qid] ?? { p31: [], wikipedia: "", website: "" };
-		if (info.p31.includes(DISAMBIGUATION)) continue;
-		const human = info.p31.includes(HUMAN);
-		if (m.type === "Person" && info.p31.length > 0 && !human) continue;
-		if (m.type !== "Person" && human) continue;
+		const info = details[m.qid];
+		if (!info || !typeCompatible(m.type, info.p31)) continue;
 		seen.add(m.qid);
+		const label = m.candidates.find((c) => c.id === m.qid)?.label;
 		out.push({
-			name: m.name,
+			name: label || m.name,
 			type: m.type,
 			description: m.description,
 			qid: m.qid,
@@ -352,6 +454,15 @@ export interface QueueJob {
 	force?: boolean;
 	enqueuedAt: number;
 	lastError?: string;
+	/** Model outputs already paid for, so a retry resumes after them. Valid only for the same text hash. */
+	cache?: StageCache;
+}
+
+export interface StageCache {
+	hash: string;
+	mentions?: Mention[];
+	choices?: Record<string, string | null>;
+	description?: string;
 }
 
 export const MAX_ATTEMPTS = 3;
@@ -361,28 +472,58 @@ export function queueId(job: Pick<QueueJob, "kind" | "collection" | "entryId" | 
 }
 
 /**
- * Pick the jobs to run this tick: due jobs in due order, at most `perTick`,
- * and never more model calls than the day's remaining allowance (each job
- * costs up to `callsPerJob` calls).
+ * Pick the jobs to run this tick: due jobs, at most `perTick`, taking entries
+ * and images in turns (so a backlog of one kind can't starve the other), each
+ * kind in due order, and never more model calls than the day's remaining
+ * allowance (a job costs up to `callsPerJob` calls) or outbound requests than
+ * `subrequests` (a job costs up to `subrequestsPerJob`). When a kind's next
+ * job doesn't fit, that kind stops (its later jobs don't jump the line).
  */
 export function planBatch(
 	jobs: Array<{ id: string; data: QueueJob }>,
-	opts: { now: number; perTick: number; remainingCalls: number; callsPerJob: (job: QueueJob) => number },
+	opts: {
+		now: number;
+		perTick: number;
+		remainingCalls: number;
+		callsPerJob: (job: QueueJob) => number;
+		subrequests?: number;
+		subrequestsPerJob?: (job: QueueJob) => number;
+	},
 ): Array<{ id: string; data: QueueJob }> {
-	const due = jobs.filter((j) => j.data.due <= opts.now).sort((a, b) => a.data.due - b.data.due || a.id.localeCompare(b.id));
+	const byDue = (a: { id: string; data: QueueJob }, b: { id: string; data: QueueJob }) => a.data.due - b.data.due || a.id.localeCompare(b.id);
+	const lanes = (["entry", "media"] as const)
+		.map((kind) => jobs.filter((j) => j.data.kind === kind && j.data.due <= opts.now).sort(byDue))
+		.filter((lane) => lane.length)
+		.sort((a, b) => byDue(a[0], b[0])); // The lane with the oldest job goes first.
 	const out: Array<{ id: string; data: QueueJob }> = [];
-	let budget = Math.max(0, opts.remainingCalls);
-	for (const job of due) {
-		if (out.length >= opts.perTick) break;
-		const cost = opts.callsPerJob(job.data);
-		if (cost > budget) break; // Keep order: don't let a cheaper later job jump the line.
-		budget -= cost;
-		out.push(job);
+	let calls = Math.max(0, opts.remainingCalls);
+	let requests = opts.subrequests ?? Number.POSITIVE_INFINITY;
+	const open = lanes.map(() => true);
+	const next = lanes.map(() => 0);
+	while (out.length < opts.perTick && open.some(Boolean)) {
+		for (let lane = 0; lane < lanes.length && out.length < opts.perTick; lane++) {
+			if (!open[lane]) continue;
+			const job = lanes[lane][next[lane]];
+			if (!job) {
+				open[lane] = false;
+				continue;
+			}
+			const cost = opts.callsPerJob(job.data);
+			const reqs = opts.subrequestsPerJob?.(job.data) ?? 0;
+			if (cost > calls || reqs > requests) {
+				open[lane] = false;
+				continue;
+			}
+			calls -= cost;
+			requests -= reqs;
+			next[lane]++;
+			out.push(job);
+		}
 	}
 	return out;
 }
 
-/** Retry schedule after a failure: 5, 20, 80 minutes; null when the job should be dropped. */
+/** Retry schedule after a failure: 5, then 20 minutes; null after MAX_ATTEMPTS (3) tries, when the job should be dropped. */
 export function retryAt(job: QueueJob, now: number): number | null {
 	const attempts = job.attempts + 1;
 	if (attempts >= MAX_ATTEMPTS) return null;

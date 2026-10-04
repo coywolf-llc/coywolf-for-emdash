@@ -145,3 +145,59 @@ test("Portable Text → plain text", () => {
 	assert.ok(text.includes("Hello world."));
 	assert.equal(logic.entryPlainText({ body: pt }, [{ slug: "body", type: "portableText" }], 5), "Hello");
 });
+
+test("normalizeName and nameMatches ignore case, diacritics, and punctuation", () => {
+	assert.equal(logic.normalizeName("  Café-Müller, Inc. "), "cafe muller inc");
+	const c = { id: "Q1", label: "Beyoncé", description: "", aliases: ["Beyoncé Knowles"] };
+	assert.equal(logic.nameMatches({ name: "beyonce", surface: "" }, c), true);
+	assert.equal(logic.nameMatches({ name: "Queen B", surface: "Beyoncé Knowles" }, c), true);
+	assert.equal(logic.nameMatches({ name: "Beyoncé tour", surface: "" }, c), false);
+});
+
+test("attachCandidates drops search hits whose label/alias doesn't match, even a single one", () => {
+	const m = [
+		{ surface: "", name: "Acme Widgets", type: "Organization", description: "", primary: true },
+		{ surface: "the Met", name: "Metropolitan Museum of Art", type: "Organization", description: "", primary: false },
+	] as never;
+	const { mentions, ambiguous } = logic.attachCandidates(m, [
+		[{ id: "Q5", label: "Acme Corporation", description: "fictional company" }],
+		[
+			{ id: "Q160236", label: "Metropolitan Museum of Art", description: "art museum" },
+			{ id: "Q99", label: "Metropolitan Opera", description: "opera company", aliases: ["the Met"] },
+		],
+	]);
+	assert.equal(mentions[0].qid, "");
+	assert.equal(mentions[0].candidates.length, 0);
+	assert.deepEqual(ambiguous, [1]); // both match (label and alias): the model must choose
+});
+
+test("parseSearch keeps aliases and the matched text", () => {
+	const out = logic.parseSearch({ search: [{ id: "Q1", label: "A", aliases: ["Alpha"], match: { type: "alias", text: "Alef" } }] });
+	assert.deepEqual(out[0].aliases, ["Alpha", "Alef"]);
+});
+
+test("verifyEntities uses the Wikidata label as the name and rejects unverifiable items", () => {
+	const g = (name: string, type: string, qid: string, label: string) =>
+		({ surface: "", name, type, description: "", primary: true, qid, candidates: [{ id: qid, label, description: "" }] }) as never;
+	const out = logic.verifyEntities([g("nyc", "Place", "Q60", "New York City"), g("Ghost", "Thing", "Q404", "Ghost")], {
+		Q60: { p31: ["Q515"], wikipedia: "", website: "" },
+	});
+	assert.deepEqual(
+		out.map((e) => e.name),
+		["New York City"],
+	); // Q404 wasn't returned by Wikidata: dropped
+});
+
+test("typeCompatible: Person needs Q5; Organization/Place reject creative works; Organization rejects places", () => {
+	assert.equal(logic.typeCompatible("Person", []), false);
+	assert.equal(logic.typeCompatible("Person", ["Q5"]), true);
+	assert.equal(logic.typeCompatible("Organization", ["Q482994"]), false); // album, not the band
+	assert.equal(logic.typeCompatible("Organization", ["Q515"]), false); // city
+	assert.equal(logic.typeCompatible("Organization", ["Q4830453"]), true); // business
+	assert.equal(logic.typeCompatible("Organization", []), false);
+	assert.equal(logic.typeCompatible("Place", ["Q11424"]), false); // film
+	assert.equal(logic.typeCompatible("Place", ["Q515"]), true);
+	assert.equal(logic.typeCompatible("Thing", ["Q11424"]), true); // a film is a fine Thing
+	assert.equal(logic.typeCompatible("Thing", ["Q5"]), false);
+	assert.equal(logic.typeCompatible("Thing", ["Q4167410"]), false);
+});

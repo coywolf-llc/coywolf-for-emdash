@@ -10,6 +10,7 @@ import {
 	type Entity,
 	type GroundedMention,
 	type QueueJob,
+	type StageCache,
 	applyChoices,
 	attachCandidates,
 	cleanDescription,
@@ -105,7 +106,23 @@ export async function entryText(ctx: PluginContext, collection: string, data: Re
 
 const language = (ctx: PluginContext) => (ctx.site?.locale || "en").slice(0, 2).toLowerCase() || "en";
 const userAgent = (ctx: PluginContext) => `CoywolfPack/1 (EmDash plugin; ${ctx.site?.url || "unknown site"})`;
-const fetcher = (ctx: PluginContext) => (url: string, init?: RequestInit) => (ctx.http ? ctx.http.fetch(url, init) : fetch(url, init));
+/**
+ * Outbound requests (model calls and Wikidata lookups) per invocation. The
+ * Workers Free plan allows 50 subrequests; this leaves room for the host's own.
+ */
+export const SUBREQUEST_BUDGET = 40;
+/** Worst case for one job: entry = extraction + disambiguation + description + 12 searches + 1 details; image = 1 call. */
+export const WORST_CASE_SUBREQUESTS = { entry: 16, media: 1 } as const;
+
+export interface Budget {
+	used: number;
+	max: number;
+}
+
+const fetcher = (ctx: PluginContext, budget: Budget) => (url: string, init?: RequestInit) => {
+	budget.used++;
+	return ctx.http ? ctx.http.fetch(url, init) : fetch(url, init);
+};
 
 function base64(bytes: Uint8Array): string {
 	let binary = "";
@@ -121,8 +138,10 @@ async function callModel(
 	feature: UsageRow["feature"],
 	req: ChatRequest,
 	ref: string,
+	budget: Budget,
 ): Promise<string> {
 	if (!(await takeCall(ctx, s.maxCallsPerDay))) throw new DailyLimitError();
+	budget.used++;
 	const cfg = await providerConfig(ctx, options, s, Boolean(req.image));
 	try {
 		const result = await chat(cfg, req);
@@ -136,11 +155,15 @@ async function callModel(
 
 // ── Entries ──────────────────────────────────────────────────────
 
-async function groundEntities(ctx: PluginContext, options: AiOptions, s: Settings, t: EntryText, ref: string): Promise<Entity[]> {
-	const mentions = parseMentions(await callModel(ctx, options, s, "entities", { system: EXTRACT_SYSTEM, user: articlePrompt(t.title, t.text), maxTokens: 2000 }, ref));
+async function groundEntities(ctx: PluginContext, options: AiOptions, s: Settings, t: EntryText, ref: string, cache: StageCache, budget: Budget): Promise<Entity[]> {
+	// Stage 1 (cached on the job, so a retry doesn't pay for it twice).
+	cache.mentions ??= parseMentions(
+		await callModel(ctx, options, s, "entities", { system: EXTRACT_SYSTEM, user: articlePrompt(t.title, t.text), maxTokens: 2000 }, ref, budget),
+	);
+	const mentions = cache.mentions;
 	if (!mentions.length) return [];
 	const lang = language(ctx);
-	const f = fetcher(ctx);
+	const f = fetcher(ctx, budget);
 	const ua = userAgent(ctx);
 	// Stage 2: real candidates, a few lookups at a time.
 	const candidates = [];
@@ -151,8 +174,10 @@ async function groundEntities(ctx: PluginContext, options: AiOptions, s: Setting
 	// Stage 3: the model chooses among real candidates only.
 	if (ambiguous.length) {
 		const subset: GroundedMention[] = ambiguous.map((i) => grounded[i]);
-		const choices = parseChoices(await callModel(ctx, options, s, "entities", { system: DISAMBIGUATE_SYSTEM, user: disambiguatePrompt(subset, t.title, t.text), maxTokens: 1000 }, ref));
-		grounded = applyChoices(grounded, ambiguous, choices);
+		cache.choices ??= parseChoices(
+			await callModel(ctx, options, s, "entities", { system: DISAMBIGUATE_SYSTEM, user: disambiguatePrompt(subset, t.title, t.text), maxTokens: 1000 }, ref, budget),
+		);
+		grounded = applyChoices(grounded, ambiguous, cache.choices);
 	}
 	// Stage 4: type verification against P31.
 	const resolved = grounded.filter((m) => m.qid);
@@ -162,7 +187,7 @@ async function groundEntities(ctx: PluginContext, options: AiOptions, s: Setting
 	return verifyEntities(resolved, details);
 }
 
-export async function analyzeEntry(ctx: PluginContext, options: AiOptions, s: Settings, features: FeatureMap, job: QueueJob): Promise<"done" | "skipped"> {
+export async function analyzeEntry(ctx: PluginContext, options: AiOptions, s: Settings, features: FeatureMap, job: QueueJob, budget: Budget): Promise<"done" | "skipped"> {
 	const collection = job.collection!;
 	const id = job.entryId!;
 	const item = await ctx.content?.get(collection, id);
@@ -176,16 +201,22 @@ export async function analyzeEntry(ctx: PluginContext, options: AiOptions, s: Se
 	if (!job.force && previous?.status === "ok" && previous.hash === t.hash) return "skipped";
 
 	const ref = key;
+	// Outputs from an earlier failed attempt on the same text are reused (the job is saved with them on failure).
+	if (job.cache?.hash !== t.hash) job.cache = { hash: t.hash };
+	const cache = job.cache;
 	const wantEntities = isOn(features, "ai.entities");
 	const hasDescription = Boolean(item.seo?.description?.trim());
 	const wantDescription = isOn(features, "ai.descriptions") && t.info.hasSeo && !hasDescription;
 
-	const entities = wantEntities ? await groundEntities(ctx, options, s, t, ref) : (previous?.entities ?? []);
+	const entities = wantEntities ? await groundEntities(ctx, options, s, t, ref, cache, budget) : (previous?.entities ?? []);
 
 	let description = previous?.description ?? "";
 	let descriptionStatus: EntryRecord["descriptionStatus"] = hasDescription && previous?.descriptionStatus !== "applied" ? "none" : (previous?.descriptionStatus ?? "none");
 	if (wantDescription) {
-		description = cleanDescription(await callModel(ctx, options, s, "descriptions", { system: DESCRIBE_SYSTEM, user: articlePrompt(t.title, t.text), maxTokens: 300 }, ref));
+		cache.description ??= cleanDescription(
+			await callModel(ctx, options, s, "descriptions", { system: DESCRIBE_SYSTEM, user: articlePrompt(t.title, t.text), maxTokens: 300 }, ref, budget),
+		);
+		description = cache.description;
 		descriptionStatus = description ? "suggested" : "none";
 		if (description && s.descriptionsMode === "apply") {
 			descriptionStatus = (await applyDescription(ctx, collection, id, description, false)) ? "applied" : "none";
@@ -249,7 +280,7 @@ async function imagePayload(ctx: PluginContext, options: AiOptions, media: { id:
 	return { mimeType, base64: base64(bytes) };
 }
 
-export async function analyzeMedia(ctx: PluginContext, options: AiOptions, s: Settings, job: QueueJob): Promise<"done" | "skipped"> {
+export async function analyzeMedia(ctx: PluginContext, options: AiOptions, s: Settings, job: QueueJob, budget: Budget): Promise<"done" | "skipped"> {
 	const id = job.mediaId!;
 	const media = await ctx.media?.get(id);
 	const records = col<MediaRecord>(ctx, "aiMedia");
@@ -286,6 +317,7 @@ export async function analyzeMedia(ctx: PluginContext, options: AiOptions, s: Se
 			maxTokens: 1024,
 		},
 		`media:${id}`,
+		budget,
 	);
 	const suggestion = parseImageText(raw);
 
@@ -394,28 +426,35 @@ export async function tick(ctx: PluginContext, options: AiOptions, opts: { maxJo
 		}
 
 		const queue = col<QueueJob>(ctx, "aiQueue");
-		const page = await queue.query({ where: { due: { lte: Date.now() } }, orderBy: { due: "asc" }, limit: 50 });
+		// Each enabled kind is read separately, so a backlog of one can't hide the other.
 		// Jobs for switched-off features wait in the queue until they're back on.
-		const runnable = page.items.filter((j) => (j.data.kind === "media" ? imagesOn : entriesOn));
+		const kinds = [entriesOn && "entry", imagesOn && "media"].filter(Boolean) as Array<QueueJob["kind"]>;
+		const pages = await Promise.all(kinds.map((kind) => queue.query({ where: { kind, due: { lte: Date.now() } }, orderBy: { due: "asc" }, limit: 25 })));
+		const runnable = pages.flatMap((p) => p.items);
+		const budget: Budget = { used: 0, max: SUBREQUEST_BUDGET };
 		const batch = planBatch(runnable, {
 			now: Date.now(),
 			perTick: opts.maxJobs ?? s.jobsPerTick,
 			remainingCalls: s.maxCallsPerDay - (await callsToday(ctx)),
 			callsPerJob: callsPerJob(features),
+			subrequests: budget.max,
+			subrequestsPerJob: (job) => WORST_CASE_SUBREQUESTS[job.kind],
 		});
 		if (runnable.length && !batch.length) out.stoppedForLimit = true;
 
 		for (const { id, data: job } of batch) {
 			if (Date.now() - started > opts.budgetMs) break;
+			if (budget.used + WORST_CASE_SUBREQUESTS[job.kind] > budget.max) break;
 			try {
-				const status = job.kind === "media" ? await analyzeMedia(ctx, options, s, job) : await analyzeEntry(ctx, options, s, features, job);
+				const status = job.kind === "media" ? await analyzeMedia(ctx, options, s, job, budget) : await analyzeEntry(ctx, options, s, features, job, budget);
 				await queue.delete(id);
 				if (status === "done") out.processed++;
 				else out.skipped++;
 			} catch (error) {
 				if (error instanceof DailyLimitError) {
 					out.stoppedForLimit = true;
-					break; // The job stays queued for tomorrow.
+					await queue.put(id, job); // Stays queued for tomorrow, with any outputs already paid for.
+					break;
 				}
 				out.failed++;
 				const message = String((error as Error)?.message ?? error).slice(0, 500);
@@ -425,6 +464,7 @@ export async function tick(ctx: PluginContext, options: AiOptions, opts: { maxJo
 					await queue.delete(id);
 					await recordFailure(ctx, job, message);
 				} else {
+					// job.cache holds the stage outputs this attempt already paid for.
 					await queue.put(id, { ...job, attempts: job.attempts + 1, due: next, lastError: message });
 				}
 			}
