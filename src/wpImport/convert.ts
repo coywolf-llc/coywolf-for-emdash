@@ -10,11 +10,11 @@
  *
  * Produces `coywolf-video`, `coywolf-review`, `coywolf-toc` and
  * `coywolf-file` blocks, plus `coywolf-note`, `coywolf-details`,
- * `coywolf-quote` and `coywolf-disclosure` (Content Blocks, each only while
- * its switch is on), moves "anchor" markers onto the next heading's `anchor`
- * field, and maps Prism language names on code blocks to the editor's
- * (markup → html). Other template markers (testimonial, related links) stay
- * HTML blocks. Anything else is left exactly as it is, and running it again
+ * `coywolf-quote`, `coywolf-disclosure`, `coywolf-testimonial` and
+ * `coywolf-podcast` (Custom Blocks, each only while its switch is on), moves
+ * "anchor" markers onto the next heading's `anchor` field, and maps Prism
+ * language names on code blocks to the editor's (markup → html). Other
+ * template markers (related links, Gravity Forms) stay HTML blocks. Anything else is left exactly as it is, and running it again
  * changes nothing.
  *
  * Pure, no I/O.
@@ -62,19 +62,23 @@ export interface FileDefaults {
 
 export const FILES_DEFAULTS: FileDefaults = { showIcon: true, showDescription: true, showMeta: true, showDownload: true, showCopyLink: true };
 
-/** Which Content Blocks are on. A block that's off isn't converted to (its marker stays an HTML block until it's on). */
-export interface ContentBlockSwitches {
+/** Which Custom Blocks are on. A block that's off isn't converted to (its marker stays an HTML block until it's on). */
+export interface CustomBlockSwitches {
 	note: boolean;
 	details: boolean;
 	disclosure: boolean;
 	quote: boolean;
+	testimonial: boolean;
+	podcast: boolean;
 }
 
 export interface ConvertOptions {
 	videoDefaults?: Partial<VideoDefaults>;
 	fileDefaults?: Partial<FileDefaults>;
 	/** Defaults to all on. */
-	contentBlocks?: Partial<ContentBlockSwitches>;
+	customBlocks?: Partial<CustomBlockSwitches>;
+	/** @deprecated The 0.10/0.11 name of `customBlocks`. */
+	contentBlocks?: Partial<CustomBlockSwitches>;
 	/** Key generator for new blocks (defaults to a random one). */
 	key?: () => string;
 }
@@ -339,7 +343,7 @@ export function fileBlock(a: Record<string, unknown>, d: FileDefaults): Block | 
 	return block;
 }
 
-// ── Notes, details, quotes, disclosures (Content Blocks) ─────────
+// ── Notes, details, quotes, disclosures (Custom Blocks) ─────────
 
 const NOTE_TITLES: Record<string, string> = { sidenote: "\u{1F4CC} Sidenote", editorsnote: "\u{1F4DD} Editor's Note" };
 
@@ -397,6 +401,48 @@ export function disclosureBlock(attrs: Record<string, unknown>): Block {
 	return { _type: "coywolf-disclosure", kind: attrs.block === "coywolf-custom-blocks/amazon" ? "amazon" : "affiliate" };
 }
 
+/**
+ * Coywolf Custom Blocks' testimonial → coywolf-testimonial. Reads the marker's
+ * fields, or (markers from 0.10/0.11, which held only WordPress's markup) the
+ * fallback HTML. The headshot keeps its WordPress URL.
+ */
+export function testimonialBlock(attrs: Record<string, unknown>, inner = ""): Block | null {
+	let f: { quote: string; name: string; title: string; photo: string; nameUrl: string; titleUrl: string };
+	if (typeof attrs.quote === "string") {
+		f = { quote: attrs.quote, name: str(attrs.name), title: str(attrs.title), photo: str(attrs.photo), nameUrl: str(attrs.nameUrl), titleUrl: str(attrs.titleUrl) };
+	} else {
+		const m = inner.match(
+			/^\s*<blockquote class="testimonial"><div class="quote"><p><q>([\s\S]*?)<\/q><\/p><\/div><div class="influencer">(?:<img alt="[^"]*" height="60" width="60" src="([^"]*)">)?<p>(?:<a href="([^"]*)">([\s\S]*?)<\/a>|([\s\S]*?))<\/p><p>(?:<a href="([^"]*)">([\s\S]*?)<\/a>|([\s\S]*?))<\/p><\/div><\/blockquote>\s*$/,
+		);
+		if (!m) return null;
+		f = {
+			quote: m[1] as string,
+			photo: unescapeAttr(m[2] ?? ""),
+			nameUrl: unescapeAttr(m[3] ?? ""),
+			name: m[4] ?? m[5] ?? "",
+			titleUrl: unescapeAttr(m[6] ?? ""),
+			title: m[7] ?? m[8] ?? "",
+		};
+	}
+	if (!f.quote.trim()) return null;
+	const block: Block = { _type: "coywolf-testimonial", quote: f.quote.trim() };
+	// Name and title were printed as HTML on WordPress; the block's fields are plain text.
+	const name = textOf(f.name);
+	if (name) block.name = name;
+	const title = textOf(f.title);
+	if (title) block.title = title;
+	const url = (v: string) => (/^https?:\/\/\S+$/i.test(v.trim()) ? v.trim() : "");
+	if (url(f.photo)) block.photo = url(f.photo);
+	if (url(f.nameUrl)) block.nameUrl = url(f.nameUrl);
+	if (url(f.titleUrl)) block.titleUrl = url(f.titleUrl);
+	return block;
+}
+
+/** The podcast links block had no fields (its template printed the show's links): it uses the site's links. */
+export function podcastBlock(): Block {
+	return { _type: "coywolf-podcast", source: "site" };
+}
+
 // ── Walking ──────────────────────────────────────────────────────
 
 /** Prism names (Code Block Enhancer) the editor's language list spells differently. */
@@ -406,7 +452,7 @@ const isHeading = (b: Block) => b._type === "block" && typeof b.style === "strin
 const validAnchor = (id: string) => id.length <= 120 && /^[\p{L}][\p{L}\p{N}_-]*$/u.test(id);
 
 interface Walk {
-	opts: Required<Pick<ConvertOptions, "key">> & { videoDefaults: VideoDefaults; fileDefaults: FileDefaults; contentBlocks: ContentBlockSwitches };
+	opts: Required<Pick<ConvertOptions, "key">> & { videoDefaults: VideoDefaults; fileDefaults: FileDefaults; customBlocks: CustomBlockSwitches };
 	changes: Change[];
 	videos: VideoFact[];
 	leftovers: Record<string, number>;
@@ -446,15 +492,19 @@ function convertHtmlBlock(block: Block, w: Walk): Block | null | undefined | { a
 			return fileBlock(attrs, w.opts.fileDefaults) ?? undefined;
 		case "sidenote":
 		case "editorsnote":
-			return w.opts.contentBlocks.note ? (noteBlock(name, attrs, marker?.inner) ?? leftover(name, w)) : leftover(name, w);
+			return w.opts.customBlocks.note ? (noteBlock(name, attrs, marker?.inner) ?? leftover(name, w)) : leftover(name, w);
 		case "transcript":
 		case "accordion":
 		case "details":
-			return w.opts.contentBlocks.details ? (detailsBlock(name, attrs, marker?.inner) ?? leftover(name, w)) : leftover(name, w);
+			return w.opts.customBlocks.details ? (detailsBlock(name, attrs, marker?.inner) ?? leftover(name, w)) : leftover(name, w);
 		case "blockquote":
-			return w.opts.contentBlocks.quote ? (quoteBlock(attrs, marker?.inner) ?? leftover(name, w)) : leftover(name, w);
+			return w.opts.customBlocks.quote ? (quoteBlock(attrs, marker?.inner) ?? leftover(name, w)) : leftover(name, w);
 		case "disclosure":
-			return w.opts.contentBlocks.disclosure ? disclosureBlock(attrs) : leftover(name, w);
+			return w.opts.customBlocks.disclosure ? disclosureBlock(attrs) : leftover(name, w);
+		case "testimonial":
+			return w.opts.customBlocks.testimonial ? (testimonialBlock(attrs, marker?.inner) ?? leftover(name, w)) : leftover(name, w);
+		case "podcast-links":
+			return w.opts.customBlocks.podcast ? podcastBlock() : leftover(name, w);
 		case "anchor": {
 			const id = decodeHtml(str(attrs.id));
 			return validAnchor(id) ? { anchor: id } : null;
@@ -556,7 +606,7 @@ function walkFor(opts: ConvertOptions): Walk {
 			key: opts.key ?? randomKey,
 			videoDefaults: { ...VIDEO_MANAGER_DEFAULTS, ...opts.videoDefaults },
 			fileDefaults: { ...FILES_DEFAULTS, ...opts.fileDefaults },
-			contentBlocks: { note: true, details: true, disclosure: true, quote: true, ...opts.contentBlocks },
+			customBlocks: { note: true, details: true, disclosure: true, quote: true, testimonial: true, podcast: true, ...opts.contentBlocks, ...opts.customBlocks },
 		},
 		changes: [],
 		videos: [],

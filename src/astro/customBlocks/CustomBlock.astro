@@ -1,0 +1,56 @@
+---
+/**
+ * Renders one Custom Blocks block (Note, Details, Affiliate disclosure,
+ * Quote, Testimonial, Podcast links) when its feature is on; nothing
+ * otherwise. The shared CSS goes out once per page, before the first block.
+ * Markup comes from customBlocks/render.ts, which the admin previews use too.
+ * Rendered here (not as an HTML block) so <details>, <aside> and <figure>
+ * aren't stripped by EmDash's HTML sanitizer.
+ */
+import { siteFeatureOn } from "../../core/features.js";
+import {
+	CUSTOM_BLOCKS_CSS,
+	blockId,
+	normalizeDetails,
+	normalizeDisclosure,
+	normalizeNote,
+	normalizePodcast,
+	normalizeQuote,
+	normalizeTestimonial,
+	renderDetailsHtml,
+	renderDisclosureHtml,
+	renderNoteHtml,
+	renderPodcastHtml,
+	renderQuoteHtml,
+	renderTestimonialHtml,
+} from "../../customBlocks/render.js";
+import { siteDisclosureSettings, sitePodcastSettings } from "../../customBlocks/settings.js";
+
+interface Props {
+	kind: "note" | "details" | "disclosure" | "quote" | "testimonial" | "podcast";
+	node: Record<string, unknown>;
+}
+
+const { kind, node } = Astro.props as Props;
+
+// Claim the per-page CSS synchronously, before any await, so the first block
+// in document order carries it even when siblings render in parallel.
+const locals = (Astro.locals ?? {}) as Record<string, unknown>;
+const first = !locals.__cwCustomBlocksCss;
+locals.__cwCustomBlocksCss = true;
+
+let html = "";
+if (node && (await siteFeatureOn(`customBlocks.${kind}`))) {
+	if (kind === "note") html = renderNoteHtml(normalizeNote(node), blockId("cw-note", node._key));
+	else if (kind === "details") html = renderDetailsHtml(normalizeDetails(node));
+	else if (kind === "disclosure") html = renderDisclosureHtml(normalizeDisclosure(node), await siteDisclosureSettings());
+	else if (kind === "testimonial") html = renderTestimonialHtml(normalizeTestimonial(node));
+	else if (kind === "podcast") html = renderPodcastHtml(normalizePodcast(node), await sitePodcastSettings(), blockId("cw-podcast", node._key));
+	else html = renderQuoteHtml(normalizeQuote(node));
+}
+if (!html && first) locals.__cwCustomBlocksCss = false;
+const css = html && first ? CUSTOM_BLOCKS_CSS : "";
+---
+
+{css && <style is:inline set:html={css} />}
+{html && <Fragment set:html={html} />}

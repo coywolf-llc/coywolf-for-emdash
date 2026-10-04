@@ -17,16 +17,20 @@
  * - Coywolf Custom Blocks that were templates: sidenotes and editor's notes,
  *   transcripts and accordions, blockquotes, and core Details blocks (EmDash
  *   would drop the summary) into markers with their exact content, which
- *   become Note, Details and Quote blocks (Content Blocks module); affiliate
+ *   become Note, Details and Quote blocks (Custom Blocks module); affiliate
  *   disclosures (ftc, amazon, Genesis disclosure) into markers that become
- *   Affiliate disclosure blocks. Each marker also holds the HTML WordPress
- *   rendered, so the content shows even if it isn't converted;
- * - testimonials and Yoast's related links into Custom HTML with the markup
- *   WordPress rendered, so their content isn't lost;
+ *   Affiliate disclosure blocks; testimonials into markers that become
+ *   Testimonial blocks; the podcast links block (it had no fields: the
+ *   template printed the show's links) into a marker that becomes a Podcast
+ *   links block using the site's links. Each marker also holds the HTML
+ *   WordPress rendered (where it had content of its own), so the content shows
+ *   even if it isn't converted;
+ * - Yoast's related links into Custom HTML with the markup WordPress
+ *   rendered, so their content isn't lost;
  * - Code Block Enhancer's bold markup and WordPress's &#91; inside code
  *   blocks, which would otherwise show up as literal text;
- * - blocks with nothing to import (the podcast links, Gravity Forms) into
- *   empty markers a theme can find.
+ * - blocks with nothing to import (Gravity Forms) into empty markers a theme
+ *   can find.
  *
  * Everything else is left byte for byte. Pure (no imports beyond siblings), so
  * it runs in the admin (browser), a Node script, and tests.
@@ -53,6 +57,8 @@ export type PrepareAction =
 	| "details"
 	| "quote"
 	| "disclosure"
+	| "testimonial"
+	| "podcast"
 	| "html"
 	| "flag"
 	| "code"
@@ -80,7 +86,6 @@ const REMOVE = new Set(["coywolf-custom-blocks/newsletter"]);
 const DISCLOSURES = new Set(["coywolf-custom-blocks/ftc", "coywolf-custom-blocks/amazon", "genesis-custom-blocks/disclosure"]);
 /** Blocks kept as empty markers for the theme (their output came from the theme or another plugin). */
 const FLAG: Record<string, string> = {
-	"coywolf-custom-blocks/podcast-rss": "podcast-links",
 	"gravityforms/form": "gravity-form",
 };
 
@@ -127,13 +132,30 @@ export function coreDetailsFields(block: GBlock): { summary: string; body: strin
 	return { summary: (m?.[1] ?? "").trim(), body: (m?.[2] ?? html).trim(), open: block.attrs.showContent === true };
 }
 
-function testimonialHtml(attrs: Record<string, unknown>, attachments?: Map<number, string>): string {
-	const name = str(attrs["t-name"]);
-	const image = attachments?.get(Number(attrs["t-image"]));
+/** The testimonial's fields (Name, Title, Quote, Headshot, Social URL, Work URL); the headshot's URL comes from the export's attachments. */
+export function testimonialFields(
+	attrs: Record<string, unknown>,
+	attachments?: Map<number, string>,
+): { quote: string; name: string; title: string; photo: string; photoId: number | null; nameUrl: string; titleUrl: string } {
+	const id = Number(attrs["t-image"]);
+	const photoId = Number.isInteger(id) && id > 0 ? id : null;
+	return {
+		quote: repairUnicodeEscapes(str(attrs["t-quote"])).trim(),
+		name: str(attrs["t-name"]).trim(),
+		title: str(attrs["t-title"]).trim(),
+		photo: photoId ? (attachments?.get(photoId) ?? "") : "",
+		photoId,
+		nameUrl: str(attrs["t-social"]).trim(),
+		titleUrl: str(attrs["t-work"]).trim(),
+	};
+}
+
+/** What WordPress's template printed (without its onclick handlers). */
+function testimonialHtml(f: ReturnType<typeof testimonialFields>): string {
 	const link = (href: string, text: string) => (href ? `<a href="${escapeAttr(href)}">${text}</a>` : text);
-	return `<blockquote class="testimonial"><div class="quote"><p><q>${str(attrs["t-quote"])}</q></p></div><div class="influencer">${
-		image ? `<img alt="${escapeAttr(name)}" height="60" width="60" src="${escapeAttr(image)}">` : ""
-	}<p>${link(str(attrs["t-social"]), name)}</p><p>${link(str(attrs["t-work"]), str(attrs["t-title"]))}</p></div></blockquote>`;
+	return `<blockquote class="testimonial"><div class="quote"><p><q>${f.quote}</q></p></div><div class="influencer">${
+		f.photo ? `<img alt="${escapeAttr(f.name)}" height="60" width="60" src="${escapeAttr(f.photo)}">` : ""
+	}<p>${link(f.nameUrl, f.name)}</p><p>${link(f.titleUrl, f.title)}</p></div></blockquote>`;
 }
 
 /**
@@ -186,8 +208,13 @@ function replacement(block: GBlock, opts: PrepareOptions): { blocks: GBlock[]; a
 			const body = repairUnicodeEscapes(str(a.details)).trim();
 			return { blocks: [WRAP(markerHtml(kind, { summary, body }, detailsHtml(summary, body, kind)))], action: "details" };
 		}
-		case "coywolf-custom-blocks/testimonial":
-			return { blocks: [WRAP(markerHtml("testimonial", {}, testimonialHtml(a, opts.attachments)))], action: "html" };
+		case "coywolf-custom-blocks/testimonial": {
+			const f = testimonialFields(a, opts.attachments);
+			return { blocks: [WRAP(markerHtml("testimonial", f, testimonialHtml(f)))], action: "testimonial" };
+		}
+		case "coywolf-custom-blocks/podcast-rss":
+			// Same marker name and attrs as 0.10/0.11 (then a theme placeholder), so older markers convert too.
+			return { blocks: [WRAP(markerHtml("podcast-links", { block: block.name, ...a }))], action: "podcast" };
 		case "core/details":
 			return { blocks: [WRAP(markerHtml("details", coreDetailsFields(block), blockHtml(block).trim()))], action: "details" };
 		case "yoast-seo/related-links":

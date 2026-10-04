@@ -6,7 +6,7 @@
 import { aiPack } from "./ai/pack.js";
 import { backupsDownloadMiddleware, backupsPack } from "./backups/pack.js";
 import { codeBlocksPack } from "./codeBlocks/pack.js";
-import { contentBlocksPack } from "./contentBlocks/pack.js";
+import { customBlocksPack } from "./customBlocks/pack.js";
 import type { PackMiddleware, PackModule } from "./core/module.js";
 import { headingsPack } from "./headings/pack.js";
 import { breadcrumbsPack } from "./breadcrumbs/pack.js";
@@ -41,7 +41,7 @@ export const MODULES: Factory[] = [
 	(o) => (o.videos === false ? null : videosPack(o.videos ?? {})),
 	(o) => (o.robots === false ? null : robotsPack(o.robots ?? {})),
 	(o) => (o.reviews === false ? null : reviewsPack(o.reviews ?? {})),
-	(o) => (o.contentBlocks === false ? null : contentBlocksPack()),
+	(o) => (o.customBlocks === false || o.contentBlocks === false ? null : customBlocksPack()),
 ];
 
 export const MIDDLEWARE: PackMiddleware[] = [backupsDownloadMiddleware, redirectsMiddleware, robotsMiddleware, filesMiddleware, searchRateLimitMiddleware, ...discoveryMiddleware, videosSitemapMiddleware, videosCaptionsMiddleware];

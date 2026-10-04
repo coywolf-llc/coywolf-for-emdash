@@ -1,5 +1,6 @@
-// Run: node --test test/content-blocks.test.mjs
-// test/fixtures/wp/content-blocks.html is verbatim block markup from coywolf.com.
+// Run: node --test test/custom-blocks.test.mjs
+// test/fixtures/wp/custom-blocks.html and testimonials-podcast.html are verbatim block markup from coywolf.com
+// (testimonials-podcast.html: all 13 testimonial blocks, from pages 7297 and 1690, and the podcast-rss block all 16 uses share).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -8,10 +9,10 @@ import { gutenbergToPortableText } from "@emdash-cms/gutenberg-to-portable-text"
 
 import "./ts-resolve.mjs";
 
-const { renderRich, plainText, safeUrl, cleanStyle } = await import("../src/contentBlocks/rich.ts");
-const R = await import("../src/contentBlocks/render.ts");
+const { renderRich, plainText, safeUrl, cleanStyle } = await import("../src/customBlocks/rich.ts");
+const R = await import("../src/customBlocks/render.ts");
 const { prepareContent, prepareWxr } = await import("../src/wpImport/prepare.ts");
-const { convertPortableText, noteBlock, detailsBlock, quoteBlock } = await import("../src/wpImport/convert.ts");
+const { convertPortableText, noteBlock, detailsBlock, quoteBlock, testimonialBlock } = await import("../src/wpImport/convert.ts");
 const { markerHtml } = await import("../src/wpImport/markers.ts");
 const { wxrGuestAuthors, groupGuests, bylineSlug, bioText, collectionFor, sameName } = await import("../src/wpImport/guests.ts");
 
@@ -116,9 +117,9 @@ test("Quote: figure with blockquote cite and a cited caption; unsafe source URLs
 });
 
 test("the shared CSS is theme-agnostic (currentColor mixes) and has dark-mode accents", () => {
-	assert.match(R.CONTENT_BLOCKS_CSS, /color-mix\(in srgb,currentColor/);
-	assert.match(R.CONTENT_BLOCKS_CSS, /prefers-color-scheme:dark/);
-	assert.ok(!R.CONTENT_BLOCKS_CSS.includes("</style"));
+	assert.match(R.CUSTOM_BLOCKS_CSS, /color-mix\(in srgb,currentColor/);
+	assert.match(R.CUSTOM_BLOCKS_CSS, /prefers-color-scheme:dark/);
+	assert.ok(!R.CUSTOM_BLOCKS_CSS.includes("</style"));
 });
 
 // ── WordPress import ─────────────────────────────────────────────
@@ -128,8 +129,8 @@ function importFixture(name, opts = {}) {
 	return { prepared, result: convertPortableText(gutenbergToPortableText(prepared.content), { key: keys(), ...opts }) };
 }
 
-test("coywolf.com disclosures, notes and quotes convert to Content Blocks, content exact", () => {
-	const { prepared, result } = importFixture("content-blocks.html");
+test("coywolf.com disclosures, notes and quotes convert to Custom Blocks, content exact", () => {
+	const { prepared, result } = importFixture("custom-blocks.html");
 	assert.deepEqual(prepared.counts, {
 		"coywolf-custom-blocks/ftc → disclosure": 1,
 		"coywolf-custom-blocks/amazon → disclosure": 1,
@@ -233,4 +234,168 @@ test("guests group into bylines by name, with a valid slug and the avatar's file
 	assert.equal(collectionFor("post"), "posts");
 	assert.equal(collectionFor("page"), "pages");
 	assert.equal(bioText("<p>One &amp; <strong>two</strong></p><p>Three</p>"), "One & two\nThree");
+});
+
+// ── Renamed from Content Blocks (0.12.0) ─────────────────────────
+
+test("saved Content Blocks switches carry over to the Custom Blocks feature ids", async () => {
+	const { resolveFeatures, featureCatalog } = await import("../src/core/features.ts");
+	const { FEATURES, customBlocksPack } = await import("../src/customBlocks/pack.ts");
+	assert.deepEqual(
+		FEATURES.map((f) => [f.id, f.replaces ?? null]),
+		[
+			["customBlocks", ["contentBlocks"]],
+			["customBlocks.note", ["contentBlocks.note"]],
+			["customBlocks.details", ["contentBlocks.details"]],
+			["customBlocks.disclosure", ["contentBlocks.disclosure"]],
+			["customBlocks.quote", ["contentBlocks.quote"]],
+			["customBlocks.testimonial", null],
+			["customBlocks.podcast", null],
+		],
+	);
+	assert.ok(FEATURES.every((f) => f.default === false), "new features default off");
+	assert.ok(!featureCatalog().some((f) => f.id.startsWith("contentBlocks")), "the old ids are gone from the Features page");
+
+	const stored = { contentBlocks: true, "contentBlocks.note": true, "contentBlocks.details": true, "contentBlocks.disclosure": false };
+	const on = resolveFeatures(stored);
+	assert.deepEqual(
+		[on.customBlocks, on["customBlocks.note"], on["customBlocks.details"], on["customBlocks.disclosure"], on["customBlocks.quote"], on["customBlocks.testimonial"], on["customBlocks.podcast"]],
+		[true, true, true, false, false, false, false],
+	);
+	// Module off before: its blocks stay off.
+	assert.equal(resolveFeatures({ contentBlocks: false, "contentBlocks.note": true })["customBlocks.note"], false);
+	// A choice saved under the new id wins over the old one.
+	assert.equal(resolveFeatures({ ...stored, "customBlocks.note": false })["customBlocks.note"], false);
+	assert.equal(resolveFeatures({}).customBlocks, false);
+
+	const pack = customBlocksPack();
+	assert.equal(pack.id, "customBlocks");
+	assert.equal(pack.label, "Custom Blocks");
+	assert.deepEqual(pack.adminPages, [{ path: "/custom-blocks", label: "Custom Blocks", icon: "squares-four" }]);
+	assert.deepEqual(
+		pack.portableTextBlocks.map((b) => b.type),
+		["coywolf-note", "coywolf-details", "coywolf-disclosure", "coywolf-quote", "coywolf-testimonial", "coywolf-podcast"],
+		"shipped block types are unchanged",
+	);
+	assert.ok(pack.routes["customBlocks/settings"] && pack.routes["customBlocks/settings/save"] && pack.routes["customBlocks/podcast/save"]);
+	const { SETTINGS_KEY } = await import("../src/customBlocks/settings.ts");
+	assert.equal(SETTINGS_KEY, "contentBlocks", "the disclosure wording keeps its storage key");
+});
+
+// ── Testimonial ──────────────────────────────────────────────────
+
+test("testimonial: figure, blockquote and figcaption; fields escaped; unsafe links dropped", () => {
+	const t = R.normalizeTestimonial({
+		quote: "Great <script>x</script>work & **really** good.",
+		name: 'Ann "A" <b>Lee</b>',
+		title: "CEO & founder",
+		photo: "https://example.com/a.jpg?x=1&y=2",
+		nameUrl: "javascript:alert(1)",
+		titleUrl: "https://example.com/co/",
+	});
+	assert.equal(t.nameUrl, "", "javascript: links are dropped");
+	const html = R.renderTestimonialHtml(t);
+	assert.equal(
+		html,
+		'<figure class="cw-testimonial"><blockquote class="cw-testimonial__quote"><p>Great work &amp; <strong>really</strong> good.</p></blockquote><figcaption class="cw-testimonial__person"><img class="cw-testimonial__photo" src="https://example.com/a.jpg?x=1&amp;y=2" alt="" width="64" height="64" loading="lazy" decoding="async"><span class="cw-testimonial__who"><span class="cw-testimonial__name">Ann &quot;A&quot; &lt;b&gt;Lee&lt;/b&gt;</span><span class="cw-testimonial__title"><a href="https://example.com/co/">CEO &amp; founder</a></span></span></figcaption></figure>',
+	);
+	assert.equal(R.renderTestimonialHtml(R.normalizeTestimonial({ name: "No quote" })), "", "nothing to show without a quote");
+	assert.equal(R.renderTestimonialHtml(R.normalizeTestimonial({ quote: "Just this." })), '<figure class="cw-testimonial"><blockquote class="cw-testimonial__quote"><p>Just this.</p></blockquote></figure>');
+	// media_picker values may be objects with a url; site-relative works too.
+	assert.equal(R.normalizeTestimonial({ quote: "q", photo: { url: "/_emdash/api/media/file/a.jpg" } }).photo, "/_emdash/api/media/file/a.jpg");
+	assert.equal(R.normalizeTestimonial({ quote: "q", photo: "//evil.example/a.jpg" }).photo, "");
+	assert.equal(R.normalizeTestimonial({ quote: "q", photo: 'https://x.com/a.jpg" onerror="x' }).photo, "", "no spaces or quotes in URLs");
+	assert.match(R.CUSTOM_BLOCKS_CSS, /\.cw-testimonial \.cw-testimonial__quote>:first-child::before\{content:"\\201C";content:"\\201C"\/""\}/);
+});
+
+// ── Podcast links ────────────────────────────────────────────────
+
+test("podcast links: site links by default, the block's own on request, accessible names, escaped", () => {
+	const site = R.normalizePodcastSettings({
+		heading: "Subscribe to <Coywolf> Podcast",
+		headingTag: "h3",
+		links: { apple: "https://podcasts.apple.com/us/podcast/coywolf/id1441274044", spotify: "javascript:alert(1)", rss: "/feed.xml?a=1&b=2", bogus: "https://x.com/" },
+	});
+	assert.equal(site.links.spotify, "");
+	assert.equal(site.showIcons, true);
+	assert.ok(!("bogus" in site.links));
+	const html = R.renderPodcastHtml(R.normalizePodcast({}), site, "cw-podcast-k1");
+	assert.equal(
+		html.replace(/<svg[\s\S]*?<\/svg>/g, "[icon]"),
+		'<section class="cw-podcast" aria-labelledby="cw-podcast-k1"><h3 class="cw-podcast__title" id="cw-podcast-k1">Subscribe to &lt;Coywolf&gt; Podcast</h3><ul class="cw-podcast__links" role="list"><li><a class="cw-podcast__link cw-podcast__link--apple" href="https://podcasts.apple.com/us/podcast/coywolf/id1441274044">[icon]<span>Apple Podcasts</span></a></li><li><a class="cw-podcast__link cw-podcast__link--rss" href="/feed.xml?a=1&amp;b=2" type="application/rss+xml">[icon]<span>RSS feed</span></a></li></ul></section>',
+	);
+	assert.ok(/<svg[^>]*aria-hidden="true" focusable="false"/.test(html), "icons are hidden from assistive tech");
+	// The block's own links (and heading) replace the site's entirely.
+	const own = R.renderPodcastHtml(R.normalizePodcast({ source: "block", heading: "Listen", spotify: "https://open.spotify.com/show/x", apple: "" }), { ...site, showIcons: false }, "p");
+	assert.equal(own, '<section class="cw-podcast" aria-labelledby="p"><h3 class="cw-podcast__title" id="p">Listen</h3><ul class="cw-podcast__links" role="list"><li><a class="cw-podcast__link cw-podcast__link--spotify" href="https://open.spotify.com/show/x"><span>Spotify</span></a></li></ul></section>');
+	// No links: nothing at all.
+	assert.equal(R.renderPodcastHtml(R.normalizePodcast({}), R.DEFAULT_PODCAST, "x"), "");
+	assert.equal(R.normalizePodcastSettings(null).heading, "Subscribe to the podcast");
+	assert.equal(R.normalizePodcastSettings({ headingTag: "h1" }).headingTag, "h2");
+});
+
+// ── WordPress import: testimonials and podcast links ─────────────
+
+test("coywolf.com's 13 testimonials and the podcast links block convert, content exact", () => {
+	const attachments = new Map([[712, "https://coywolf.com/wp-content/uploads/2020/05/aj-kohn.jpg"]]);
+	const prepared = prepareContent(fixture("testimonials-podcast.html"), { attachments });
+	assert.deepEqual(prepared.counts, { "coywolf-custom-blocks/testimonial → testimonial": 13, "coywolf-custom-blocks/podcast-rss → podcast": 1 });
+	const result = convertPortableText(gutenbergToPortableText(prepared.content), { key: keys() });
+	const v = result.value;
+	assert.deepEqual(v.map((b) => b._type), [...Array(13).fill("coywolf-testimonial"), "coywolf-podcast"]);
+	assert.deepEqual(v[0], {
+		_type: "coywolf-testimonial",
+		_key: v[0]._key,
+		quote: "Coywolf is an island oasis of intelligent and actionable content amidst a cookie-cutter firehose of digital hype.",
+		name: "AJ Kohn",
+		title: "Digital Marketing Executive and Start-Up Advisor",
+		photo: "https://coywolf.com/wp-content/uploads/2020/05/aj-kohn.jpg",
+		nameUrl: "https://www.linkedin.com/in/ajkohn/",
+		titleUrl: "https://www.blindfiveyearold.com",
+	});
+	assert.equal(v[1].photo, undefined, "no attachment URL: no photo");
+	assert.equal(v[10].title, "Marketing & SEO veteran, Founder of De9eR Media", "WordPress's \\u0026 is decoded");
+	assert.equal(v[2].quote, "From all the topics I’ve read and interacted with via Coywolf, I’ve always come out learning something new. Jon goes out of his way to share exclusive and valuable materials with the community.");
+	assert.equal(v[11].nameUrl, "https://mastodon.social/@mihm");
+	assert.deepEqual(v[13], { _type: "coywolf-podcast", _key: v[13]._key, source: "site" });
+	assert.deepEqual(result.leftovers, {});
+
+	const html = R.renderTestimonialHtml(R.normalizeTestimonial(v[10]));
+	assert.match(html, /<span class="cw-testimonial__title"><a href="https:\/\/www\.linkedin\.com\/company\/de9er-media\/">Marketing &amp; SEO veteran, Founder of De9eR Media<\/a><\/span>/);
+
+	assert.equal(convertPortableText(v).changed, false, "converting twice changes nothing");
+	assert.equal(prepareContent(prepared.content).changed, false, "preparing twice changes nothing");
+
+	// Switched off: the markers stay HTML (testimonials with WordPress's markup) and convert later.
+	const off = convertPortableText(gutenbergToPortableText(prepared.content), { key: keys(), customBlocks: { testimonial: false, podcast: false } });
+	assert.deepEqual(off.leftovers, { "marker:testimonial": 13, "marker:podcast-links": 1 });
+	assert.equal(convertPortableText(off.value, { key: keys() }).changes.length, 14);
+});
+
+test("0.10/0.11 testimonial and podcast markers (WordPress's markup only) convert too", () => {
+	// Exactly what 0.11.0's prepare step wrote for these two blocks.
+	const testimonial = markerHtml(
+		"testimonial",
+		{},
+		'<blockquote class="testimonial"><div class="quote"><p><q>Coywolf goes down the rabbit holes so I don\'t have to.</q></p></div><div class="influencer"><img alt="Rob Kerry" height="60" width="60" src="https://coywolf.com/wp-content/uploads/rob.jpg"><p><a href="https://www.linkedin.com/in/robkerry/">Rob Kerry</a></p><p><a href="https://resignal.com/?a=1&amp;b=2">Commercial Director at Re:signal</a></p></div></blockquote>',
+	);
+	const bare = markerHtml("testimonial", {}, '<blockquote class="testimonial"><div class="quote"><p><q>Q &amp; A</q></p></div><div class="influencer"><p>Debra &amp; Co</p><p></p></div></blockquote>');
+	const podcast = markerHtml("podcast-links", { block: "coywolf-custom-blocks/podcast-rss" });
+	const out = convertPortableText([testimonial, bare, podcast].map((html, i) => ({ _type: "htmlBlock", _key: `h${i}`, html })));
+	assert.deepEqual(out.value, [
+		{
+			_type: "coywolf-testimonial",
+			_key: "h0",
+			quote: "Coywolf goes down the rabbit holes so I don't have to.",
+			name: "Rob Kerry",
+			title: "Commercial Director at Re:signal",
+			photo: "https://coywolf.com/wp-content/uploads/rob.jpg",
+			nameUrl: "https://www.linkedin.com/in/robkerry/",
+			titleUrl: "https://resignal.com/?a=1&b=2",
+		},
+		{ _type: "coywolf-testimonial", _key: "h1", quote: "Q &amp; A", name: "Debra & Co" },
+		{ _type: "coywolf-podcast", _key: "h2", source: "site" },
+	]);
+	assert.equal(testimonialBlock({}, "<p>other</p>"), null);
+	assert.equal(testimonialBlock({ quote: " " }), null);
 });

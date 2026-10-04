@@ -1,0 +1,8 @@
+---
+/** Portable Text `coywolf-testimonial` block (Custom Blocks module). */
+import CustomBlock from "./CustomBlock.astro";
+
+const { node } = Astro.props as { node: Record<string, unknown> };
+---
+
+<CustomBlock kind="testimonial" node={node} />

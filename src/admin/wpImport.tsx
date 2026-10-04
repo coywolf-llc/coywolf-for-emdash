@@ -137,8 +137,8 @@ function PrepareStep({ onGuests }: { onGuests: (guests: GuestAuthor[]) => void }
 			{result && (
 				<div className="space-y-2" role="status">
 					<p className="text-sm">
-						{result.posts.length.toLocaleString()} {result.posts.length === 1 ? "entry" : "entries"} changed. Blocks marked “→ note”, “→ details”, “→ quote” and
-						“→ disclosure” become Content Blocks, “→ html” keep their content as HTML blocks, “→ flag” leaves an empty marker for the theme, and “→ removed” rendered nothing on WordPress.
+						{result.posts.length.toLocaleString()} {result.posts.length === 1 ? "entry" : "entries"} changed. Blocks marked “→ note”, “→ details”, “→ quote”,
+						“→ disclosure”, “→ testimonial” and “→ podcast” become Custom Blocks, “→ html” keep their content as HTML blocks, “→ flag” leaves an empty marker for the theme, and “→ removed” rendered nothing on WordPress.
 						{result.guestAuthors.length ? ` ${result.guestAuthors.length} ${result.guestAuthors.length === 1 ? "post has" : "posts have"} a guest author: credit them in step 4 after importing.` : ""}
 					</p>
 					<CountsTable counts={result.counts} />
@@ -330,9 +330,9 @@ function ConvertStep() {
 						<div>
 							<h3 className="mb-1 text-sm font-medium">Kept as HTML blocks</h3>
 							<p className="mb-1 text-xs text-kumo-subtle">
-								No Coywolf Pack block for these (yet), or the block is turned off (notes, transcripts, quotes and disclosures convert once their
-								Content Blocks switch is on: run this again). Their content is kept; “marker:podcast-links” and “marker:gravity-form” are empty
-								placeholders for the theme. See the README.
+								No Coywolf Pack block for these (yet), or the block is turned off (notes, transcripts, quotes, disclosures, testimonials and podcast
+								links convert once their Custom Blocks switch is on: run this again). Their content is kept; “marker:gravity-form” is an empty
+								placeholder for the theme. See the README.
 							</p>
 							<CountsTable counts={report.leftovers} />
 						</div>
@@ -785,9 +785,10 @@ export function WpImportPage() {
 				<h1 className="flex min-h-9 items-center text-2xl font-semibold leading-tight">WordPress import</h1>
 				<p className="text-sm leading-5 text-pretty text-kumo-subtle">
 					Move content that used Coywolf's WordPress plugins: Cloudflare Stream and Video Manager videos become Coywolf Video blocks, reviews become
-					Coywolf Review blocks, sidenotes, transcripts, quotes and affiliate disclosures become Note, Details, Quote and Affiliate disclosure blocks,
+					Coywolf Review blocks, sidenotes, transcripts, quotes, affiliate disclosures, testimonials and podcast links become Note, Details, Quote,
+					Affiliate disclosure, Testimonial and Podcast links blocks,
 					tables of contents and heading ids carry over, guest authors get their own bylines, and Coywolf Files downloads keep their links. Turn on
-					Videos, Reviews, Content Blocks (and each block), Headings &amp; TOC and File Downloads on the Coywolf Pack page before importing. The
+					Videos, Reviews, Custom Blocks (and each block), Headings &amp; TOC and File Downloads on the Coywolf Pack page before importing. The
 					README has the full checklist.
 				</p>
 			</header>

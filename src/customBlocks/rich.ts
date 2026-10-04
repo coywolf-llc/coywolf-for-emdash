@@ -1,5 +1,5 @@
 /**
- * Rich text for the Content Blocks' text fields. EmDash block fields are
+ * Rich text for the Custom Blocks' text fields. EmDash block fields are
  * plain text inputs, so a field holds simple markup that's turned into safe
  * HTML here:
  *

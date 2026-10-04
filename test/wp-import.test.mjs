@@ -36,7 +36,7 @@ const ofType = (blocks, type) => blocks.filter((b) => b._type === type);
 // ── Parser ───────────────────────────────────────────────────────
 
 test("the block parser round-trips every fixture byte for byte and agrees with WordPress's parser", () => {
-	for (const name of ["cloudflare-stream.html", "stream-embeds.html", "video-manager.html", "reviews.html", "toc.html", "file.html", "templates.html", "details.html", "code.html"]) {
+	for (const name of ["cloudflare-stream.html", "stream-embeds.html", "video-manager.html", "reviews.html", "toc.html", "file.html", "templates.html", "details.html", "code.html", "testimonials-podcast.html", "custom-blocks.html"]) {
 		const raw = fixture(name);
 		const ours = parseBlocks(raw);
 		assert.equal(serializeBlocks(ours), raw, name);
@@ -273,12 +273,12 @@ test("Coywolf Files records parse from wp db query output", () => {
 
 // ── Template blocks, code, others ────────────────────────────────
 
-test("template blocks become Content Blocks; testimonials stay HTML; forms leave markers; the newsletter block goes", () => {
+test("template blocks become Custom Blocks; forms leave markers; the newsletter block goes", () => {
 	const { prepared, result } = importFixture("templates.html");
 	assert.equal(prepared.counts["coywolf-custom-blocks/newsletter → removed"], 1);
 	assert.deepEqual(
 		result.value.filter((b) => b._type !== "block").map((b) => (b._type === "htmlBlock" ? `html:${parseMarker(b.html).name}` : b._type)),
-		["coywolf-quote", "coywolf-note", "coywolf-note", "coywolf-details", "html:testimonial", "coywolf-disclosure", "html:gravity-form"],
+		["coywolf-quote", "coywolf-note", "coywolf-note", "coywolf-details", "coywolf-testimonial", "coywolf-disclosure", "html:gravity-form"],
 	);
 	const [quote, sidenote, editorsnote, transcript] = result.value.filter((b) => b._type.startsWith("coywolf-"));
 	assert.equal(quote.sourceUrl, "https://web.archive.org/web/20200912191950/https://twitter.com/joncooperseo/status/1131615301123039232");
@@ -294,19 +294,19 @@ test("template blocks become Content Blocks; testimonials stay HTML; forms leave
 	assert.match(transcript.body, /^<p>Jon Henshaw: I'm with Paul Jarvis/);
 	assert.ok(!transcript.body.includes("u003c"));
 	const markers = ofType(result.value, "htmlBlock").map((b) => parseMarker(b.html));
-	assert.deepEqual(markers[1].attrs, { block: "gravityforms/form", formId: "1", title: false });
-	assert.equal(result.leftovers["marker:testimonial"], 1);
+	assert.deepEqual(markers[0].attrs, { block: "gravityforms/form", formId: "1", title: false });
+	assert.equal(result.leftovers["marker:testimonial"], undefined);
 });
 
-test("with a Content Block switched off, its markers stay HTML (with WordPress's markup) and convert later", () => {
-	const { result } = importFixture("templates.html", { contentBlocks: { note: false, quote: false } });
+test("with a Custom Block switched off, its markers stay HTML (with WordPress's markup) and convert later", () => {
+	const { result } = importFixture("templates.html", { customBlocks: { note: false, quote: false, testimonial: false } });
 	const html = ofType(result.value, "htmlBlock").map((b) => parseMarker(b.html));
 	assert.deepEqual(html.map((m) => m.name), ["blockquote", "sidenote", "editorsnote", "testimonial", "gravity-form"]);
 	assert.match(html[0].inner, /<figcaption><cite>Jon Cooper, Senior Interaction Designer, Twitter<\/cite><\/figcaption>/);
 	assert.match(html[1].inner, /<aside class="sidenote"><h2>&#x1F4CC; Sidenote<\/h2><p><a href=/);
 	assert.equal(result.leftovers["marker:sidenote"], 1);
 	const later = convertPortableText(result.value, { key: keys() });
-	assert.deepEqual(later.changes.map((c) => c.to), ["coywolf-quote", "coywolf-note", "coywolf-note"]);
+	assert.deepEqual(later.changes.map((c) => c.to), ["coywolf-quote", "coywolf-note", "coywolf-note", "coywolf-testimonial"]);
 });
 
 test("testimonial headshots come from the WXR's attachments", () => {

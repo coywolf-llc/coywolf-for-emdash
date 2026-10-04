@@ -34,7 +34,9 @@ export interface CoywolfOptions {
 	videos?: VideosOptions | false;
 	robots?: RobotsOptions | false;
 	reviews?: ReviewsOptions | false;
-	/** Note, Details, Affiliate disclosure and Quote blocks (no options yet). `false` leaves the module out. */
+	/** Custom Blocks: Note, Details, Affiliate disclosure, Quote, Testimonial and Podcast links blocks (no options yet). `false` leaves the module out. */
+	customBlocks?: Record<string, never> | false;
+	/** @deprecated Until 0.12.0 the Custom Blocks module was called Content Blocks; `contentBlocks: false` still leaves it out. */
 	contentBlocks?: Record<string, never> | false;
 	/** WordPress import tools (no options yet). `false` leaves the module out. */
 	wpImport?: Record<string, never> | false;
