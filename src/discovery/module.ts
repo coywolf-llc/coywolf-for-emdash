@@ -8,18 +8,7 @@ import { z } from "zod";
 
 import { ctxFeatures, isOn, requireFeature } from "../core/features.js";
 import { parseInput } from "../shared.js";
-import {
-	LLMS_CACHE,
-	LLMS_TTL_MS,
-	NEWS_CACHE,
-	NEWS_TTL_MS,
-	type CachedDocument,
-	buildLlms,
-	buildMarkdown,
-	buildNews,
-	cached,
-	invalidateCaches,
-} from "./build.js";
+import { LLMS_CACHE, NEWS_CACHE, type CachedDocument, type DocKind, buildMarkdown, readDoc, rebuildNow, scheduleRebuild } from "./build.js";
 import { INDEXNOW_ENDPOINTS, IndexNowBatcher, buildPayload, generateKey } from "./indexnow.js";
 import { markdownUrl } from "./markdown.js";
 import {
@@ -127,7 +116,8 @@ async function onContentChange(ctx: PluginContext, collection: string, id: strin
 	const features = await ctxFeatures(ctx);
 	const llms = isOn(features, FEATURE.llms);
 	const news = isOn(features, FEATURE.news);
-	if (llms || news) await invalidateCaches(ctx, { llms, news });
+	const kinds: DocKind[] = [...(llms ? (["llms"] as const) : []), ...(news ? (["news"] as const) : [])];
+	if (kinds.length) scheduleRebuild(ctx, kinds);
 	if (id && isOn(features, FEATURE.indexnow)) await queueIndexNow(ctx, await loadSettings(ctx), collection, id, kind, permanent);
 }
 
@@ -189,16 +179,14 @@ export function discoveryModule(_options: DiscoveryOptions) {
 			public: true,
 			handler: async (ctx: PluginContext) => {
 				await requireFeature(ctx, FEATURE.news);
-				const settings = await loadSettings(ctx);
-				return { body: (await cached(ctx, NEWS_CACHE, NEWS_TTL_MS, () => buildNews(ctx, settings))).body };
+				return { body: (await readDoc(ctx, "news")).body };
 			},
 		},
 		"discovery/public/llms": {
 			public: true,
 			handler: async (ctx: PluginContext) => {
 				await requireFeature(ctx, FEATURE.llms);
-				const settings = await loadSettings(ctx);
-				return { body: (await cached(ctx, LLMS_CACHE, LLMS_TTL_MS, () => buildLlms(ctx, settings))).body };
+				return { body: (await readDoc(ctx, "llms")).body };
 			},
 		},
 		"discovery/public/markdown": {
@@ -251,7 +239,10 @@ export function discoveryModule(_options: DiscoveryOptions) {
 				const settings = parseInput(settingsSchema, ctx.input);
 				await ctx.settings.set(SETTINGS_KEY, settings);
 				settingsMemo = null;
-				await invalidateCaches(ctx);
+				// Rebuild in the background; the old copies keep serving until then.
+				const features = await ctxFeatures(ctx);
+				const kinds: DocKind[] = [...(isOn(features, FEATURE.llms) ? (["llms"] as const) : []), ...(isOn(features, FEATURE.news) ? (["news"] as const) : [])];
+				if (kinds.length) scheduleRebuild(ctx, kinds, 0);
 				return { settings };
 			},
 		}),
@@ -287,26 +278,16 @@ export function discoveryModule(_options: DiscoveryOptions) {
 			},
 		}),
 
-		/** Drop the cached llms.txt and news sitemap and build them again. */
+		/** Build llms.txt and the news sitemap again now (replacing the stored copies). */
 		"discovery/rebuild": definePluginRoute({
 			permission: "plugins:manage",
 			methods: ["POST"],
 			request: { body: "json" },
 			handler: async (ctx) => {
 				const features = await ctxFeatures(ctx);
-				const settings = await loadSettings(ctx);
-				await invalidateCaches(ctx);
 				const out: { llms?: number; news?: number } = {};
-				if (isOn(features, FEATURE.llms)) {
-					const doc = await buildLlms(ctx, settings);
-					await ctx.kv.set(LLMS_CACHE, doc);
-					out.llms = doc.count;
-				}
-				if (isOn(features, FEATURE.news)) {
-					const doc = await buildNews(ctx, settings);
-					await ctx.kv.set(NEWS_CACHE, doc);
-					out.news = doc.count;
-				}
+				if (isOn(features, FEATURE.llms)) out.llms = (await rebuildNow(ctx, "llms")).count;
+				if (isOn(features, FEATURE.news)) out.news = (await rebuildNow(ctx, "news")).count;
 				return out;
 			},
 		}),

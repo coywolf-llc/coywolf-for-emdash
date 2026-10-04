@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 // @ts-ignore -- Node's type stripping needs the .ts extension.
-import { escapeText, estimateTokens, frontmatter, markdownUrl, pagePathFromMarkdownPath, portableTextToMarkdown } from "./markdown.ts";
+import { escapeLineStart, escapeText, estimateTokens, frontmatter, markdownUrl, pagePathFromMarkdownPath, portableTextToMarkdown } from "./markdown.ts";
 
 const span = (text: string, marks: string[] = []) => ({ _type: "span", _key: Math.random().toString(36).slice(2), text, marks });
 const block = (children: unknown[], extra: Record<string, unknown> = {}) => ({ _type: "block", _key: "b", style: "normal", markDefs: [], children, ...extra });
@@ -91,6 +91,21 @@ test("text that looks like Markdown is escaped", () => {
 	assert.equal(escapeText("a*b_c [d]"), "a\\*b\\_c \\[d\\]");
 	assert.equal(portableTextToMarkdown([block([span("# not a heading")])]), "\\# not a heading");
 	assert.equal(portableTextToMarkdown([block([span("1. not a list")])]), "1\\. not a list");
+});
+
+test("fences, thematic breaks and setext underlines at line start are escaped", () => {
+	assert.equal(escapeLineStart("~~~ts"), "\\~~~ts");
+	assert.equal(escapeLineStart("  ~~~"), "  \\~~~");
+	assert.equal(escapeLineStart("---"), "\\---");
+	assert.equal(escapeLineStart("- - -"), "\\- - -");
+	assert.equal(escapeLineStart("==="), "\\===");
+	assert.equal(escapeLineStart("___"), "\\___");
+	assert.equal(escapeLineStart("* * *"), "\\* * *");
+	assert.equal(escapeLineStart("~~ok~~"), "~~ok~~");
+	assert.equal(escapeLineStart("--> arrow"), "--> arrow");
+	assert.equal(escapeLineStart("a --- b"), "a --- b");
+	// End to end: escapeText already escapes * and _, the rest are caught here.
+	assert.equal(portableTextToMarkdown([block([span("Title\n===\n---\n~~~\n***")])]), "Title  \n\\===  \n\\---  \n\\~~~  \n\\*\\*\\*");
 });
 
 test("frontmatter, tokens, and .md URLs", () => {

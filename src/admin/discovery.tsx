@@ -141,7 +141,7 @@ export function DiscoveryPage() {
 	const save = () =>
 		run("save", async () => {
 			await post("save", draft);
-			return "Settings saved. llms.txt and the news sitemap will rebuild on their next request.";
+			return "Settings saved. llms.txt and the news sitemap rebuild in the background within a few seconds.";
 		});
 	const rebuild = () =>
 		run("rebuild", async () => {
@@ -312,7 +312,7 @@ export function DiscoveryPage() {
 				<Section
 					title="llms.txt and Markdown"
 					on={status.features.llms}
-					description="An llms.txt index (llmstxt.org) linking your entries, and a Markdown version of each entry at its URL + index.html.md, also served to requests that ask for text/markdown."
+					description="An llms.txt index (llmstxt.org) linking your entries, and a Markdown version of each entry at its URL + index.html.md."
 					actions={
 						<Button type="button" variant="secondary" icon={<ArrowClockwise />} disabled={busy !== null} onClick={() => void rebuild()}>
 							{busy === "rebuild" ? "Rebuilding…" : "Rebuild now"}

@@ -2,12 +2,12 @@
  * Builds llms.txt, the news sitemap, and per-entry Markdown from EmDash
  * content (inside the plugin context), with KV caching for the two lists.
  */
-import { type CollectionSchemaInfo, type PluginContentItem, type PluginContext, getEmDashEntry, getSiteSetting, resolveEmDashPath } from "emdash";
+import { type CollectionSchemaInfo, type PluginContentItem, type PluginContext, after, getEmDashEntry, getSiteSetting, resolveEmDashPath } from "emdash";
 
 import { buildLlmsTxt, type LlmsSection } from "./llms.js";
 import { estimateTokens, frontmatter, markdownUrl, portableTextToMarkdown } from "./markdown.js";
 import { NEWS_LIMIT, NEWS_WINDOW_MS, buildNewsSitemap, parseDate, selectNewsArticles, type NewsArticle } from "./news.js";
-import { type DiscoverySettings, selected } from "./settings.js";
+import { type DiscoverySettings, loadSettings, selected } from "./settings.js";
 import { createUrlResolver, siteOrigin } from "./urls.js";
 
 export const LLMS_CACHE = "cache:discovery:llms";
@@ -110,24 +110,68 @@ export async function buildNews(ctx: PluginContext, settings: DiscoverySettings,
 	return { body, count: selectedArticles.length, builtAt: new Date(now).toISOString() };
 }
 
-// ── Caching ──────────────────────────────────────────────────────
+// ── Caching (stale-while-revalidate) ─────────────────────────────
+//
+// Visitor requests only read the last good copy from plugin KV. Content
+// hooks, settings saves and stale reads schedule a rebuild with after(),
+// debounced per isolate, which overwrites the copy when it's done. The one
+// exception is a cold start (nothing stored yet), which builds inline once.
 
-export async function cached(
-	ctx: PluginContext,
-	key: string,
-	ttlMs: number,
-	build: () => Promise<CachedDocument>,
-): Promise<CachedDocument> {
-	const hit = await ctx.kv.get<CachedDocument>(key);
-	if (hit?.body && Date.now() - Date.parse(hit.builtAt) < ttlMs) return hit;
-	const fresh = await build();
-	await ctx.kv.set(key, fresh);
-	return fresh;
+export type DocKind = "llms" | "news";
+const DOC_KEY: Record<DocKind, string> = { llms: LLMS_CACHE, news: NEWS_CACHE };
+const DOC_TTL: Record<DocKind, number> = { llms: LLMS_TTL_MS, news: NEWS_TTL_MS };
+/** Wait this long after a change for more changes before rebuilding. */
+const REBUILD_DEBOUNCE_MS = 5000;
+
+async function buildDoc(ctx: PluginContext, kind: DocKind): Promise<CachedDocument> {
+	const settings = await loadSettings(ctx);
+	const doc = kind === "llms" ? await buildLlms(ctx, settings) : await buildNews(ctx, settings);
+	await ctx.kv.set(DOC_KEY[kind], doc);
+	return doc;
 }
 
-export async function invalidateCaches(ctx: PluginContext, which: { llms?: boolean; news?: boolean } = { llms: true, news: true }) {
-	if (which.llms) await ctx.kv.delete(LLMS_CACHE);
-	if (which.news) await ctx.kv.delete(NEWS_CACHE);
+const pendingRebuild = new Set<DocKind>();
+let rebuildScheduled = false;
+const coldBuilds = new Map<DocKind, Promise<CachedDocument>>();
+
+/** Rebuild these documents in the background, after the response (debounced). */
+export function scheduleRebuild(ctx: PluginContext, kinds: DocKind[], delayMs = REBUILD_DEBOUNCE_MS): void {
+	for (const kind of kinds) pendingRebuild.add(kind);
+	if (rebuildScheduled || !pendingRebuild.size) return;
+	rebuildScheduled = true;
+	after(async () => {
+		await new Promise((resolve) => setTimeout(resolve, delayMs));
+		const kinds = [...pendingRebuild];
+		pendingRebuild.clear();
+		rebuildScheduled = false;
+		for (const kind of kinds) {
+			try {
+				await buildDoc(ctx, kind);
+			} catch (error) {
+				ctx.log.error(`Discovery: rebuilding ${kind} failed`, { error: String(error) });
+			}
+		}
+	});
+}
+
+/** The stored document; a stale one is served while a rebuild is scheduled. */
+export async function readDoc(ctx: PluginContext, kind: DocKind): Promise<CachedDocument> {
+	const hit = await ctx.kv.get<CachedDocument>(DOC_KEY[kind]);
+	if (hit?.body) {
+		if (Date.now() - Date.parse(hit.builtAt) >= DOC_TTL[kind]) scheduleRebuild(ctx, [kind], 0);
+		return hit;
+	}
+	let cold = coldBuilds.get(kind);
+	if (!cold) {
+		cold = buildDoc(ctx, kind).finally(() => coldBuilds.delete(kind));
+		coldBuilds.set(kind, cold);
+	}
+	return cold;
+}
+
+/** Rebuild now (admin "Rebuild now"). */
+export async function rebuildNow(ctx: PluginContext, kind: DocKind): Promise<CachedDocument> {
+	return buildDoc(ctx, kind);
 }
 
 // ── Per-entry Markdown ───────────────────────────────────────────

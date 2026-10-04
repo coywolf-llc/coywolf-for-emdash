@@ -32,8 +32,16 @@ export function escapeText(text: string): string {
 	return text.replace(/([\\`*_[\]<>])/g, "\\$1");
 }
 
-/** Escape a line's leading characters that would start a block (heading, quote, list). */
-function escapeLineStart(line: string): string {
+/**
+ * Escape a line's leading characters that would start a block: headings,
+ * quotes, list markers, code fences (``` or ~~~), and thematic breaks or
+ * setext underlines (runs of 3+ "-", "*", "_" or "=", optionally spaced).
+ */
+export function escapeLineStart(line: string): string {
+	// Thematic break / setext underline: the whole line is one repeated marker.
+	if (/^\s*([-*_=])(\s*\1){2,}\s*$/.test(line)) return line.replace(/^(\s*)(\S)/, "$1\\$2");
+	// Fenced code: ``` is already escaped by escapeText; ~~~ is not.
+	if (/^\s*~{3,}/.test(line)) return line.replace(/^(\s*)~/, "$1\\~");
 	return line.replace(/^(\s*)([#>+-]|\d+[.)])(?=\s|$)/, (_m, space: string, marker: string) => `${space}${marker.replace(/([#>+\-.)])/, "\\$1")}`);
 }
 

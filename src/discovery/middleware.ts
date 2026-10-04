@@ -5,12 +5,15 @@
  * - `/news-sitemap.xml`                Google News sitemap (also `/coywolf-news-sitemap.xml`, Coywolf SEO's name)
  * - `/llms.txt`                        llms.txt
  * - `<entry-url>/index.html.md`        Markdown source of an entry
- * - any entry URL with `Accept: text/markdown`  the same Markdown (content negotiation)
  *
  * The work happens in the module's public plugin routes (so it runs in the
  * plugin context, with EmDash's URL resolution and the plugin's KV cache);
  * this file dispatches to them through EmDash's public route handler and
  * keeps results briefly in isolate memory.
+ *
+ * There is deliberately no `Accept: text/markdown` negotiation on entry
+ * URLs: Cloudflare's cache key ignores Accept, so a single such request
+ * could put Markdown into the cached HTML page.
  */
 import type { MiddlewareHandler } from "astro";
 
@@ -18,6 +21,7 @@ import { PLUGIN_ID } from "../core/features.js";
 import type { PackMiddleware } from "../core/module.js";
 import { keyFromPath } from "./indexnow.js";
 import { pagePathFromMarkdownPath } from "./markdown.js";
+import { MemoryCache } from "./memory-cache.js";
 import { FEATURE } from "./module.js";
 
 type Context = Parameters<MiddlewareHandler>[0];
@@ -28,15 +32,14 @@ interface PublicRouteResult {
 }
 type PublicRouteHandler = (pluginId: string, method: string, path: string, request: Request) => Promise<PublicRouteResult>;
 
-const ISOLATE_TTL_MS = 60_000;
-const MAX_CACHED = 200;
-const memory = new Map<string, { value: unknown; expires: number }>();
+/** About 2 MB of documents per isolate; bodies over 256 KB and all but 32 misses aren't kept. */
+const memory = new MemoryCache({ ttlMs: 60_000, maxBytes: 2 * 1024 * 1024, maxEntryBytes: 256 * 1024, maxMisses: 32 });
 
 /** Call one of the module's public routes. Null when it isn't available or answers with an error (e.g. 404). */
-async function callRoute<T>(context: Context, route: string, query: Record<string, string> = {}, ttlMs = ISOLATE_TTL_MS): Promise<T | null> {
+async function callRoute<T>(context: Context, route: string, query: Record<string, string> = {}): Promise<T | null> {
 	const cacheKey = `${route}?${new URLSearchParams(query)}`;
 	const hit = memory.get(cacheKey);
-	if (hit && hit.expires > Date.now()) return hit.value as T | null;
+	if (hit !== undefined) return hit as T | null;
 
 	const locals = context.locals as { emdash?: { handlePublicPluginApiRoute?: PublicRouteHandler } };
 	const dispatch = locals.emdash?.handlePublicPluginApiRoute;
@@ -46,8 +49,7 @@ async function callRoute<T>(context: Context, route: string, query: Record<strin
 	const result = await dispatch(PLUGIN_ID, "GET", route, new Request(url, { method: "GET" }));
 	const value = result.success ? ((result.data ?? null) as T | null) : null;
 
-	if (memory.size >= MAX_CACHED) memory.delete(memory.keys().next().value as string);
-	memory.set(cacheKey, { value, expires: Date.now() + ttlMs });
+	memory.set(cacheKey, value);
 	return value;
 }
 
@@ -97,9 +99,6 @@ export const newsSitemapMiddleware: PackMiddleware = {
 
 // ── llms.txt and Markdown sources ────────────────────────────────
 
-/** Paths that are never entry pages (assets, APIs, files with an extension other than .html). */
-const NOT_A_PAGE = /^\/(_emdash|_astro|_image|_actions|_server-islands)\/|\.(?!html?$)[a-z0-9]{1,8}$/i;
-
 interface MarkdownDoc {
 	body: string;
 	tokens: number;
@@ -135,21 +134,6 @@ export const llmsMiddleware: PackMiddleware = {
 			});
 		}
 
-		// Content negotiation on the entry's own URL.
-		const accept = context.request.headers.get("accept")?.toLowerCase() ?? "";
-		if (accept.includes("text/markdown") && !NOT_A_PAGE.test(pathname)) {
-			const doc = await callRoute<MarkdownDoc>(context, "discovery/public/markdown", { path: pathname });
-			if (!doc?.body) return undefined;
-			return respond(context, doc.body, {
-				"Content-Type": "text/markdown; charset=utf-8",
-				// Never let a URL-keyed cache store the Markdown variant under the HTML URL.
-				"Cache-Control": "private, no-store",
-				"Content-Location": doc.markdownUrl,
-				Vary: "Accept",
-				"X-Markdown-Tokens": String(doc.tokens),
-				"X-Content-Type-Options": "nosniff",
-			});
-		}
 		return undefined;
 	},
 };

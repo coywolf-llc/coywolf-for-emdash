@@ -8,7 +8,7 @@
 
 /** Links per collection in the main lists; the rest move to "## Optional". */
 export const MAIN_LIMIT = 100;
-export const DEFAULT_MAX_ENTRIES = 1000;
+export const DEFAULT_MAX_ENTRIES = 500;
 
 export interface LlmsEntry {
 	title: string;
@@ -32,7 +32,7 @@ export interface LlmsInput {
 	/** Whether links point at Markdown sources (changes the default intro). */
 	markdownLinks: boolean;
 	sections: LlmsSection[];
-	/** Total links across the file. Default 1,000. */
+	/** Total links across the file. Default 500. */
 	maxEntries?: number;
 }
 
