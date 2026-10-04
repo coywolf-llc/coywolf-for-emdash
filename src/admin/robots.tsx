@@ -616,29 +616,6 @@ export function RobotsPage() {
 				</div>
 			</header>
 
-			<section aria-labelledby="robots-summary" className="rounded-lg border border-kumo-line p-4">
-				<h2 id="robots-summary" className="text-base font-semibold">
-					Rules summary
-				</h2>
-				<ul className="mt-2 space-y-1 text-sm">
-					{summary.map((s) => (
-						<li key={s.who} className="flex items-start gap-2">
-							{s.tone === "open" ? (
-								<CheckCircle className="mt-0.5 shrink-0 text-kumo-success" aria-hidden="true" />
-							) : s.tone === "closed" ? (
-								<XCircle className="mt-0.5 shrink-0 text-kumo-danger" aria-hidden="true" />
-							) : (
-								<Warning className="mt-0.5 shrink-0 text-kumo-warning" aria-hidden="true" />
-							)}
-							<span>
-								<strong>{s.who}</strong> {s.text}.
-							</span>
-						</li>
-					))}
-				</ul>
-				{config.emdashLines && <p className="mt-2 text-xs text-kumo-subtle">EmDash's admin and API always stay private.</p>}
-			</section>
-
 			{data.groupChanges.length > 0 && (
 				<Banner
 					variant="default"
@@ -680,6 +657,28 @@ export function RobotsPage() {
 
 			{tab === "rules" && (
 				<div className="space-y-6">
+					<section aria-labelledby="robots-summary" className="rounded-lg border border-kumo-line p-4">
+						<h2 id="robots-summary" className="text-base font-semibold">
+							Rules summary
+						</h2>
+						<ul className="mt-2 space-y-1 text-sm">
+							{summary.map((s) => (
+								<li key={s.who} className="flex items-start gap-2">
+									{s.tone === "open" ? (
+										<CheckCircle className="mt-0.5 shrink-0 text-kumo-success" aria-hidden="true" />
+									) : s.tone === "closed" ? (
+										<XCircle className="mt-0.5 shrink-0 text-kumo-danger" aria-hidden="true" />
+									) : (
+										<Warning className="mt-0.5 shrink-0 text-kumo-warning" aria-hidden="true" />
+									)}
+									<span>
+										<strong>{s.who}</strong> {s.text}.
+									</span>
+								</li>
+							))}
+						</ul>
+						{config.emdashLines && <p className="mt-2 text-xs text-kumo-subtle">EmDash's admin and API always stay private.</p>}
+					</section>
 					<SitemapOption
 						config={config}
 						siteUrl={data.siteUrl}
