@@ -119,7 +119,7 @@ function BotPicker(props: { bots: BotEntry[]; selected: string[]; onChange: (age
 	const byToken = tokenIndex(props.bots);
 
 	return (
-		<fieldset className="space-y-3">
+		<fieldset className="space-y-3" style={{ minWidth: 0 }}>
 			<legend className="text-sm font-medium">Crawlers</legend>
 			<div className="flex flex-wrap gap-1" aria-live="polite">
 				{props.selected.length === 0 && <span className="text-sm text-kumo-subtle">None picked yet.</span>}

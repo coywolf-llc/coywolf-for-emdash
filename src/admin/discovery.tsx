@@ -83,7 +83,7 @@ function CollectionPicker(props: {
 	onChange: (value: string[]) => void;
 }) {
 	return (
-		<fieldset>
+		<fieldset style={{ minWidth: 0 }}>
 			<legend className="text-sm font-medium">{props.legend}</legend>
 			<p className="mt-0.5 text-sm text-kumo-subtle">{props.hint}</p>
 			<div className="mt-2 flex flex-wrap gap-x-6 gap-y-2">

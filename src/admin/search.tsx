@@ -104,7 +104,7 @@ function CollectionCard(props: {
 						if (!invalid) void props.onSave(parsed, tokenize);
 					}}
 				>
-					<fieldset>
+					<fieldset style={{ minWidth: 0 }}>
 						<legend className="text-sm font-medium">Field weights</legend>
 						<p className="mt-0.5 text-sm text-kumo-subtle">
 							How much a match in each field counts toward ranking. 1 is normal; 0 ignores the field for ranking.
