@@ -15,7 +15,7 @@ import { definePlugin } from "emdash";
 
 import { composeHooks, hookCapabilities } from "./core/compose.js";
 import { configureContentUrls } from "./core/content-url.js";
-import { PLUGIN_ID } from "./core/features.js";
+import { PLUGIN_ID, isOn, knownFeatures } from "./core/features.js";
 import { featuresRoutes } from "./core/features-module.js";
 import type { PackModule } from "./core/module.js";
 import { MODULES } from "./modules.js";
@@ -28,8 +28,10 @@ export type { RobotsOptions } from "./robots/module.js";
 export type { CoywolfOptions } from "./options.js";
 export type { ContentUrlOptions, TrailingSlash } from "./core/content-url.js";
 
-const VERSION = "0.4.2";
+const VERSION = "0.4.3";
 const PACKAGE = "@coywolf/emdash";
+
+const FEATURES_PAGE = { path: "/features", label: "Features", icon: "toggle-right" };
 
 function buildModules(options: CoywolfOptions): PackModule[] {
 	// Module-level, like the search rate limit: createPlugin() runs when the Worker isolate
@@ -40,7 +42,7 @@ function buildModules(options: CoywolfOptions): PackModule[] {
 
 function surfaces(modules: PackModule[]) {
 	return {
-		pages: [{ path: "/features", label: "Features", icon: "toggle-right" }, ...modules.flatMap((m) => m.adminPages ?? [])],
+		pages: [FEATURES_PAGE, ...modules.flatMap((m) => m.adminPages ?? [])],
 		widgets: modules.flatMap((m) => m.widgets ?? []),
 		blocks: modules.flatMap((m) => m.portableTextBlocks ?? []),
 		settingsSchema: Object.assign({}, ...modules.map((m) => m.settingsSchema ?? {})),
@@ -67,6 +69,30 @@ export function coywolfPlugin(options: CoywolfOptions = {}): PluginDescriptor<Co
 	};
 }
 
+/**
+ * The admin definition, with `pages` and `widgets` computed on read: EmDash
+ * builds the admin manifest (sidebar, dashboard) from them on every admin
+ * request, so a module whose main feature is off drops out of the sidebar.
+ * The Features page always stays. Before the switches have been read in this
+ * isolate, everything is listed.
+ */
+function liveAdmin<T extends object>(modules: PackModule[], base: T) {
+	const on = (module: PackModule) => {
+		const features = knownFeatures();
+		return !features || isOn(features, module.features[0]?.id ?? module.id);
+	};
+	return Object.defineProperties(base, {
+		pages: {
+			enumerable: true,
+			get: () => [FEATURES_PAGE, ...modules.filter(on).flatMap((m) => m.adminPages ?? [])],
+		},
+		widgets: {
+			enumerable: true,
+			get: () => modules.filter(on).flatMap((m) => m.widgets ?? []),
+		},
+	}) as T & { pages: PackModule["adminPages"]; widgets: PackModule["widgets"] };
+}
+
 export function createPlugin(options: CoywolfOptions = {}) {
 	const modules = buildModules(options);
 	const s = surfaces(modules);
@@ -78,13 +104,11 @@ export function createPlugin(options: CoywolfOptions = {}) {
 		...(s.capabilities.length ? { capabilities: s.capabilities } : {}),
 		...(s.allowedHosts.length ? { allowedHosts: s.allowedHosts } : {}),
 		storage: s.storage,
-		admin: {
+		admin: liveAdmin(modules, {
 			entry: `${PACKAGE}/admin`,
-			pages: s.pages,
-			widgets: s.widgets,
 			settingsSchema: s.settingsSchema,
 			...(s.blocks.length ? { portableTextBlocks: s.blocks } : {}),
-		},
+		}),
 		// biome-ignore lint/suspicious/noExplicitAny: composed handlers match EmDash's hook types at runtime.
 		hooks: hooks as any,
 		routes: Object.assign({}, featuresRoutes(modules, tasks), ...modules.map((m) => m.routes ?? {})),
