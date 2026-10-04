@@ -6,6 +6,50 @@ import type { PluginContext } from "emdash";
 import { type FeatureMap, cachedCtxFeatures, ctxFeatures, isOn } from "./features.js";
 import type { PackModule, TaskDef } from "./module.js";
 
+/**
+ * Capability EmDash requires before it registers each hook
+ * (emdash/src/plugins/hooks.ts HOOK_REQUIRED_CAPABILITY). A hook without its
+ * capability is silently skipped, so the pack declares these automatically.
+ */
+const HOOK_CAPABILITY: Record<string, string> = {
+	"email:beforeSend": "hooks.email-events:register",
+	"email:afterSend": "hooks.email-events:register",
+	"email:deliver": "hooks.email-transport:register",
+	"content:beforeSave": "content:write",
+	"content:afterSave": "content:read",
+	"content:beforeDelete": "content:read",
+	"content:afterDelete": "content:read",
+	"content:beforePublish": "hooks.content-policy:register",
+	"content:beforeSchedule": "hooks.content-policy:register",
+	"content:beforeUnpublish": "hooks.content-policy:register",
+	"content:afterPublish": "content:read",
+	"content:afterUnpublish": "content:read",
+	"content:afterRestore": "content:read",
+	"content:afterSchedule": "content:read",
+	"content:afterUnschedule": "content:read",
+	"media:beforeUpload": "media:write",
+	"media:afterUpload": "media:read",
+	"comment:beforeCreate": "users:read",
+	"comment:moderate": "users:read",
+	"comment:afterCreate": "users:read",
+	"comment:afterModerate": "users:read",
+	"byline:afterSave": "bylines:read",
+	"byline:afterDelete": "bylines:read",
+	"page:fragments": "hooks.page-fragments:register",
+};
+
+/** Capabilities the modules' hooks need. */
+export function hookCapabilities(modules: PackModule[]): string[] {
+	const caps = new Set<string>();
+	for (const module of modules) {
+		for (const name of Object.keys(module.hooks ?? {})) {
+			const cap = HOOK_CAPABILITY[name];
+			if (cap) caps.add(cap);
+		}
+	}
+	return [...caps];
+}
+
 /** Hooks whose results are collected from every module. */
 const COLLECTING = new Set(["page:metadata", "page:fragments"]);
 /** Scheduled jobs can take far longer than EmDash's 5-second hook default (Workers cron allows 15 minutes). */
