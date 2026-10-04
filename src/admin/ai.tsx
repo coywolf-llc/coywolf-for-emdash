@@ -148,7 +148,7 @@ function BulkRow(props: { kind: "entries" | "media"; label: string; enabled: boo
 				<div className="text-sm font-medium">{props.label}</div>
 				<div className="mt-0.5 text-sm text-kumo-subtle">
 					{!props.enabled
-						? "Turn the feature on under Features first."
+						? "Turn the feature on under Plugins → Coywolf Pack first."
 						: props.bulk
 							? `${props.bulk.finished ? "Scanned" : "Scanning"}: ${props.bulk.queued} queued, ${props.bulk.skipped} already done or not needed${props.bulk.finished ? ` (finished ${dateTime.format(new Date(props.bulk.finished))})` : "…"}`
 							: "No bulk run yet."}
@@ -823,7 +823,7 @@ export function AiPage() {
 				{error && <Banner variant="error" role="alert" title="Something went wrong" description={error} />}
 			</div>
 
-			{status && !status.features.ai && <Banner variant="default" title="AI Enrichment is off. Turn it and its features on under Plugins → Features." />}
+			{status && !status.features.ai && <Banner variant="default" title="AI Enrichment is off. Turn it and its features on under Plugins → Coywolf Pack." />}
 
 			{!status && !error ? (
 				<div className="flex justify-center py-12">

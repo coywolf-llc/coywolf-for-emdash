@@ -79,7 +79,7 @@ export function FeaturesPage() {
 	return (
 		<div className="space-y-6">
 			<header className="grid min-w-0 gap-4 border-b border-kumo-line pb-4">
-				<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Features</h1>
+				<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Coywolf Pack</h1>
 				<p className="text-sm leading-5 text-pretty text-kumo-subtle">
 					Turn Coywolf Pack features on or off. A feature that's off stops running everywhere: on the site, in the editor, and in
 					scheduled jobs, and its pages leave the sidebar. Its settings and data are kept.

@@ -87,7 +87,7 @@ export function HeadingsPage() {
 			<header className="grid min-w-0 gap-4 border-b border-kumo-line pb-4">
 				<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Headings &amp; TOC</h1>
 				<p className="text-sm leading-5 text-pretty text-kumo-subtle">
-					Defaults for heading anchors and the Table of Contents block. Turn each one on under Features. Anchors
+					Defaults for heading anchors and the Table of Contents block. Turn each one on under Plugins → Coywolf Pack. Anchors
 					are saved with the content, so they stay the same when a heading is reworded.
 				</p>
 			</header>

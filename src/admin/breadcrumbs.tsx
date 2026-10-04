@@ -392,7 +392,7 @@ export function BreadcrumbsPage() {
 
 			<Section
 				title="Add the breadcrumb nav to your Astro theme"
-				description="Put the Breadcrumbs component in a layout once and every page that uses the layout gets a trail. Nothing renders while Breadcrumb Nav is turned off under Features."
+				description="Put the Breadcrumbs component in a layout once and every page that uses the layout gets a trail. Nothing renders while Breadcrumb Nav is turned off under Plugins → Coywolf Pack."
 			>
 				<ol className="space-y-8">
 					<Step n={1} title="Import the component">
