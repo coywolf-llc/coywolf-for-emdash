@@ -11,15 +11,16 @@ import { registerFeatures } from "../core/features.js";
 import type { PackModule } from "../core/module.js";
 import { parseInput } from "../shared.js";
 import {
-	BEST_RATING,
 	BLOCK_TYPE,
 	DEFAULT_ACCENT,
 	DEFAULT_CONS_HEADING,
 	DEFAULT_PROS_HEADING,
 	ITEM_TYPES,
 	MAX_CUSTOM_CSS,
+	RATING_OPTIONS,
 	STYLE_SETTING,
 	isAccent,
+	normalizeReviewRatings,
 	normalizeStyle,
 	sanitizeCustomCss,
 } from "./lib.js";
@@ -42,17 +43,18 @@ export const FEATURES = [
 ];
 registerFeatures(FEATURES);
 
-const RATINGS = Array.from({ length: BEST_RATING * 2 + 1 }, (_, i) => BEST_RATING - i / 2).map((n) => ({
-	value: String(n),
-	label: `${Number.isInteger(n) ? n : n.toFixed(1)} out of ${BEST_RATING}`,
-}));
+/** Store ratings as the menu's values ("4" → "4.0"), so older reviews show their rating in the editor. */
+async function beforeSave(event: { content: Record<string, unknown> }) {
+	if (!event.content || !JSON.stringify(event.content).includes(`"${BLOCK_TYPE}"`)) return undefined;
+	return normalizeReviewRatings(event.content) ?? undefined;
+}
 
 export function reviewsPack(_options: ReviewsOptions): PackModule {
 	return {
 		id: "reviews",
 		label: "Reviews",
 		features: FEATURES,
-		hooks: { "page:metadata": reviewsMetadata },
+		hooks: { "page:metadata": reviewsMetadata, "content:beforeSave": beforeSave },
 		hookFeature: { "page:metadata": F.schema },
 		adminPages: [{ path: "/reviews", label: "Reviews", icon: "star" }],
 		capabilities: ["content:read"],
@@ -109,7 +111,7 @@ export function reviewsPack(_options: ReviewsOptions): PackModule {
 					{ type: "text_input", action_id: "copyrightYear", label: "Copyright year (books only, for schema)" },
 					{ type: "text_input", action_id: "operatingSystem", label: "Operating systems (software only, e.g. macOS, Windows)" },
 					{ type: "text_input", action_id: "applicationCategory", label: "App category (software only, e.g. Utilities)" },
-					{ type: "select", action_id: "rating", label: "Rating", options: RATINGS },
+					{ type: "select", action_id: "rating", label: "Rating (0 to 5, in tenths)", options: RATING_OPTIONS },
 					{ type: "text_input", action_id: "prosHeading", label: "Pros heading", initial_value: DEFAULT_PROS_HEADING },
 					{ type: "text_input", action_id: "pros", label: "Pros (one per line)", multiline: true },
 					{ type: "text_input", action_id: "consHeading", label: "Cons heading", initial_value: DEFAULT_CONS_HEADING },

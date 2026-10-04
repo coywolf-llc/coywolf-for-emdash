@@ -34,6 +34,8 @@ export interface CoywolfOptions {
 	videos?: VideosOptions | false;
 	robots?: RobotsOptions | false;
 	reviews?: ReviewsOptions | false;
+	/** Note, Details, Affiliate disclosure and Quote blocks (no options yet). `false` leaves the module out. */
+	contentBlocks?: Record<string, never> | false;
 	/** WordPress import tools (no options yet). `false` leaves the module out. */
 	wpImport?: Record<string, never> | false;
 	/**

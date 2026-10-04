@@ -369,3 +369,17 @@ test("theme videos become VideoObjects linked from the Article", () => {
 	assert.equal(videos[0]["@id"], `${ORIGIN}/p/#video-${uid}`);
 	assert.deepEqual(graph["@graph"][1].video, { "@id": `${ORIGIN}/p/#video-${uid}` });
 });
+
+test("a guest byline (imported from Coywolf Guest Author) becomes the article's author Person with its website, bio and avatar", () => {
+	const byline = { id: "b1", slug: "david-rosenthal", displayName: "David Rosenthal", bio: "Computer scientist.", websiteUrl: "https://blog.dshr.org/", avatarUrl: "/_emdash/api/media/file/abc.jpg" };
+	const id = g.authorId({ bylineId: "b1", slug: byline.slug, origin: ORIGIN });
+	const node = g.personNode({ byline, origin: ORIGIN, defaultId: id });
+	assert.deepEqual(node, {
+		"@type": "Person",
+		"@id": `${ORIGIN}/#person-david-rosenthal`,
+		name: "David Rosenthal",
+		url: "https://blog.dshr.org/",
+		description: "Computer scientist.",
+		image: `${ORIGIN}/_emdash/api/media/file/abc.jpg`,
+	});
+});

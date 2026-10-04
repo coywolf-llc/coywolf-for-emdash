@@ -15,9 +15,10 @@ One plugin with [Coywolf](https://coywolf.com)'s features for [EmDash](https://e
 | **Link Manager** | Every link in your content with its HTTP status, where it's used, and bulk replace, unlink, and ignore |
 | **Videos** | Cloudflare Stream library and uploads, the Coywolf Video block, VideoObject schema, a video sitemap, plays and likes, captions |
 | **Reviews** | The Coywolf Review block (rating badge, pros and cons) with custom CSS, and Review schema with pros and cons |
+| **Content Blocks** | Note (callout), Details (expandable, with a transcript style), Affiliate disclosure and Quote blocks |
 | **Schema & Social** | One Schema.org graph per page (publisher, typed pages and articles, authors), breadcrumbs, robots directives, Open Graph extras |
 | **Robots.txt Rules** | Plain-English robots.txt rules with a guided editor, live checks and a self-check, a verified crawler directory kept current from Cloudflare Radar, version history, and a URL tester |
-| **WordPress import** | Turns what Coywolf's WordPress plugins left in content (Stream and Video Manager videos, reviews, tables of contents, file downloads, heading ids) into Coywolf Pack blocks during and after an EmDash import |
+| **WordPress import** | Turns what Coywolf's WordPress plugins left in content (Stream and Video Manager videos, reviews, tables of contents, file downloads, heading ids, sidenotes, transcripts, quotes, disclosures) into Coywolf Pack blocks during and after an EmDash import, and gives guest authors their own bylines |
 | **AI Enrichment** | Wikidata-grounded entities for schema, meta-description suggestions, and image alt text, with Workers AI or your own key |
 
 Every feature can be turned on or off under **Plugins → Coywolf Pack**, like Coywolf SEO's feature switches. New features start off, so installing or updating changes nothing on the site until you turn them on. A module that is off also leaves the admin sidebar and dashboard.
@@ -33,7 +34,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.10.0
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.11.0
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -746,7 +747,8 @@ The module declares `network:request` for `api.cloudflare.com` only.
 
 The review box Coywolf uses on WordPress (Coywolf Custom Blocks' review block): a rating badge with "4.5 out of 5" under it, then **What I liked most** and **Could be better** lists side by side, stacking on narrow screens. It adds Review schema that Google can read for review snippets and product pros and cons.
 
-- **Coywolf Review block** (slash menu → Content): item name, item type (the types Google accepts for reviews: Product, Software application, Book, Course, Movie, Game, Event, Recipe, Local business, Organization, and a few more), brand, item URL, item image (for schema only), book details (author, ISBN, publisher, genre, copyright year) and software details (operating systems, app category) for schema, rating (0–5 in half steps), the two headings (defaults above), pros and cons (one per line), an optional summary or verdict, and the heading level (H2 by default, like WordPress). It's server-rendered plain HTML with no script. Its CSS is about 2 KB, inlined once per page before the first box, so nothing shifts.
+- **Coywolf Review block** (slash menu → Content): item name, item type (the types Google accepts for reviews: Product, Software application, Book, Course, Movie, Game, Event, Recipe, Local business, Organization, and a few more), brand, item URL, item image (for schema only), book details (author, ISBN, publisher, genre, copyright year) and software details (operating systems, app category) for schema, rating (0–5 in tenths, e.g. 4.7), the two headings (defaults above), pros and cons (one per line), an optional summary or verdict, and the heading level (H2 by default, like WordPress). It's server-rendered plain HTML with no script. Its CSS is about 2 KB, inlined once per page before the first box, so nothing shifts.
+- **Ratings** are picked from a menu of 5.0 down to 0.0 in steps of 0.1 (EmDash's number field only takes whole numbers). The badge and caption show the rating as stored ("4.7 out of 5", "5 out of 5"), and Review schema's `ratingValue` is the same number. Reviews saved before 0.11.0 with half steps keep working; saving the entry stores them in the new format (`"4"` becomes `"4.0"`) so the menu shows them.
 - **Reviews page** (**Plugins → Coywolf Pack → Reviews**): the badge's accent color (default `#2C8452`; badge text is white), **Custom CSS**, and a live preview of a sample review, wide or at phone width. The preview runs in a sandboxed frame, so your CSS can't restyle the admin.
 - **Accessible**: the box is a `<section>` labeled "Review of <item>". The badge number is hidden from screen readers, which read "Rated 4.5 out of 5" instead. The lists are real headings and lists.
 
@@ -829,13 +831,33 @@ const page = { ...createPublicPageContext({ /* … */ }), coywolf: { videos, rev
 
 `reviews: false` leaves the module out.
 
+## Content Blocks
+
+Four editor blocks (slash menu → Content), each with its own switch. They're server-rendered plain HTML with no script, accessible (landmarks with names, native disclosure widgets, real quotations), and share one small stylesheet (about 2 KB) inlined once per page before the first block. They're rendered by the pack's components rather than stored as HTML, so EmDash's HTML sanitizer doesn't strip `<details>`, `<summary>`, `<aside>` or `<figure>`.
+
+| Feature | Default | Block | Fields |
+| --- | --- | --- | --- |
+| `contentBlocks` | off | (module switch; the Content Blocks page) | |
+| `contentBlocks.note` | off | **Note**: a callout in an `<aside>` labeled by its title | Kind (Note, Editor's note, Tip, Warning), title (empty = the kind's name), hide title, title style (bold text or an H2–H4), text |
+| `contentBlocks.details` | off | **Details**: native `<details>`/`<summary>` | Style (Details, or Transcript: the hidden text sits in a tinted panel), summary (default "Details" / "Read the transcript"), hidden text, open when the page loads |
+| `contentBlocks.disclosure` | off | **Affiliate disclosure**: small, muted text in an `<aside>` labeled "Affiliate disclosure" | Disclosure (Affiliate links or Amazon Associates), wording for this page (optional; empty uses the site's) |
+| `contentBlocks.quote` | off | **Quote**: `<figure><blockquote cite>…</blockquote><figcaption><cite>…</cite></figcaption></figure>` | Quote, who said it, source URL (the `cite` attribute) |
+
+**Text fields** are plain text: a blank line starts a new paragraph, a single line break is a line break, `[link text](https://…)` is a link and `**text**` is bold. Simple HTML works too, so imported WordPress content keeps its exact markup: links (`href`, `title`, `rel` limited to `nofollow`, `sponsored`, `ugc` and the like), bold, italics, `<code>`, `<abbr title>`, `<q cite>`, `<mark>`, `<sub>`/`<sup>`, lists, paragraphs, H2–H6, `<figure>` and `<img>`, and text styling in `style` (color, font size and weight, …). Everything else is dropped (its text stays), links are limited to http(s), mailto, tel and site-relative URLs, and tags left open are closed, so a block can't break the page around it. Titles, summaries and citations are one line (no paragraphs or block tags).
+
+**Content Blocks page** (**Plugins → Coywolf Pack → Content Blocks**): the site's disclosure wording for affiliate links and for Amazon Associates (Amazon requires "As an Amazon Associate I earn from qualifying purchases."), an optional disclosure page linked after it ("Learn more" by default), and live previews of all four blocks.
+
+**Styling**: colors are mixed from the theme's text color (`currentColor`), so the blocks follow light and dark themes; notes add a hue per kind, a little stronger in dark mode. Override with the theme's CSS: `--cw-note-accent` on `.cw-note` (or `.cw-note--tip`, …), and the classes `.cw-note`, `__title`, `__body`; `.cw-details`, `--transcript`, `__summary`, `__body`; `.cw-disclosure`, `__text`, `__link`; `.cw-quote`, `__text`, `__caption`.
+
+`contentBlocks: false` leaves the module out.
+
 ## Migrating from WordPress
 
 The **WordPress import** module (**Plugins → WordPress import**, off until you turn it on under **Plugins → Coywolf Pack**) moves content that used Coywolf's WordPress plugins into Coywolf Pack blocks.
 
 ### Why a prepare step
 
-EmDash's importer converts Gutenberg with `@emdash-cms/gutenberg-to-portable-text`, which plugins can't extend. Blocks it doesn't know become an HTML block of their saved HTML, and blocks that save no HTML (self-closing blocks such as Coywolf Custom Blocks' review, Cloudflare Stream schema, blockquote and sidenote, and Coywolf SEO's table of contents) are dropped without a trace. Heading ids are dropped too. So the export is prepared first: **Prepare the WordPress export** on the WordPress import page (in the browser; the file isn't uploaded), or from a checkout of this repository:
+EmDash's importer converts Gutenberg with `@emdash-cms/gutenberg-to-portable-text`, which plugins can't extend. Blocks it doesn't know become an HTML block of their saved HTML, and blocks that save no HTML (self-closing blocks such as Coywolf Custom Blocks' review, Cloudflare Stream schema, blockquote, sidenote, transcript and disclosures, and Coywolf SEO's table of contents) are dropped without a trace. Heading ids are dropped too. So the export is prepared first: **Prepare the WordPress export** on the WordPress import page (in the browser; the file isn't uploaded), or from a checkout of this repository:
 
 ```bash
 node scripts/wp-prepare.mjs export.xml export-prepared.xml
@@ -855,24 +877,40 @@ It rewrites those blocks into HTML blocks holding a marker (`<div data-coywolf-w
 | Heading `id`s | the heading's anchor | Kept as written (no `jump-` prefix), so old `#links` work. Turn on Headings & TOC's anchors. |
 | `coywolf/file` (Coywolf Files) | File download | Keeps the WordPress file id; see "Files" below |
 | `code` (Code Block Enhancer) | EmDash code block | Language kept (Prism's `markup` → `html`); bold markup and `&#91;` inside code are cleaned |
-| `coywolf-custom-blocks/blockquote`, `sidenote`, `editorsnote`, `transcript`, `accordion`, `testimonial`, core `details`, Yoast related links | HTML block | The markup WordPress rendered, so nothing is lost (testimonial headshots use the export's attachment URLs). EmDash's HTML sanitizer drops `<details>`/`<summary>` tags (the text stays) and inline styles; style `.sidenote`, `.testimonial` and `.wp-custom-blockquote` in the theme. |
-| `coywolf-custom-blocks/ftc`, `amazon`, `genesis-custom-blocks/disclosure` | empty marker (`data-coywolf-wp="disclosure"`) | They printed the theme's affiliate disclosure; have the theme print it for entries with the marker (or by category) |
+| `coywolf-custom-blocks/sidenote`, `editorsnote` | Note | The text exactly as written (links, bold, `rel="sponsored"`, …). Sidenotes are Note-kind with WordPress's title "📌 Sidenote", editor's notes Editor's-note-kind with "📝 Editor's Note", both as H2 like WordPress. |
+| `coywolf-custom-blocks/transcript`, `accordion`, core `details` | Details | Summary (the transcript's default was "Read the audio transcript") and the hidden HTML exactly; transcripts use the Transcript style; core Details keeps "open by default" |
+| `coywolf-custom-blocks/blockquote` | Quote | The quote (paragraphs and lists), who said it (with its link) and the source URL from the `cite` field. A pack block rather than EmDash's quote: that's a single paragraph with no citation or source URL. |
+| `coywolf-custom-blocks/ftc`, `genesis-custom-blocks/disclosure` / `amazon` | Affiliate disclosure (affiliate / Amazon Associates) | They had no text of their own (the theme printed it), so they use the wording on the Content Blocks page. Set it to your old wording. |
+| `coywolf-custom-blocks/testimonial`, Yoast related links | HTML block | The markup WordPress rendered (testimonial headshots use the export's attachment URLs). EmDash's HTML sanitizer drops inline styles; style `.testimonial` in the theme. |
 | `coywolf-custom-blocks/podcast-rss` | empty marker (`podcast-links`) | Static links; render them from the theme |
 | `gravityforms/form` | empty marker (`gravity-form`, with `formId`) | Rebuild the form (EmDash forms plugin or theme) |
 | `coywolf-custom-blocks/newsletter` | removed | Rendered nothing on WordPress |
 
 Everything else goes through EmDash's importer unchanged. wellbeing.io's older `data-wb-block` markers (`cloudflare-stream`, `review`) convert too.
 
+Notes, details, quotes and disclosures convert only while their Content Blocks switch is on. Otherwise their markers stay HTML blocks (with WordPress's markup, so the text shows) and convert when you turn the block on and run **Convert imported content** again. Markers from 0.10.0 (which held only that markup) convert too. Ratings import exactly (4.7 stays 4.7).
+
+### Guest authors
+
+The Coywolf Guest Author plugin stores one guest per post in post meta (`_guest_author` name, `_guest_author_url`, `_guest_author_bio`, `_guest_author_avatar_id`), with no WordPress user, and swaps the byline on the page. EmDash's importer credits those posts to their WordPress user instead. Plugins can only read EmDash bylines, so **Guest author bylines** (step 4 on the WordPress import page) does it from your browser with EmDash's own byline and content API, as you:
+
+1. It reads the guests from the export (the one prepared in step 1, or choose it again) and groups them by name.
+2. **Dry run** looks up, for each guest, a byline with the same name, the avatar image in the media library (by file name; present when the importer imported the attachments), and each imported post (by its WordPress slug) with its current byline.
+3. **Create bylines and credit posts** creates a guest byline (name, website, bio as plain text, avatar) where none exists, and sets it as the post's only byline, replacing the WordPress user. Posts already credited are skipped, so running it again changes nothing. You need permission to manage bylines and edit any entry.
+
+Schema & Social's author Person and Review schema then name the guest (with their website as `url`, bio as `description` and avatar as `image`, and Author profiles on the Schema page lists them). What stays manual: an avatar that isn't in the media library (upload it, then pick it on the byline under **Bylines**); a post whose slug changed on import ("Not found" in the dry run; credit it in the editor); and guest bylines get the author-page URL pattern in schema like any byline, so set the byline's website if the theme has no page for guests.
+
 ### Order of operations
 
-1. Install this version and turn on, under **Plugins → Coywolf Pack**: **WordPress import**, **Videos** (and Video schema, sitemap, plays and likes as wanted), **Reviews** and **Review schema**, **Headings & TOC** with **Heading anchors** and **Table of Contents block**, **File Downloads**, and **Code Blocks**. Connect Stream on the Videos page (same account) or at least set the customer subdomain.
+1. Install this version and turn on, under **Plugins → Coywolf Pack**: **WordPress import**, **Videos** (and Video schema, sitemap, plays and likes as wanted), **Reviews** and **Review schema**, **Content Blocks** with the Note, Details, Affiliate disclosure and Quote blocks, **Headings & TOC** with **Heading anchors** and **Table of Contents block**, **File Downloads**, and **Code Blocks**. Set your disclosure wording on the Content Blocks page. Connect Stream on the Videos page (same account) or at least set the customer subdomain.
 2. On **WordPress import**, paste Video Manager's and Coywolf Files' settings (step 2) so converted blocks keep the site-wide choices.
 3. Export from WordPress (**Tools → Export → All content**), prepare the file (step 1), and import the prepared file under **Settings → Import**.
-4. Run **Convert imported content → Dry run**. It should list nothing left to convert; if the module was off during the import, run **Convert**.
-5. Files: copy each Coywolf Files object into the bucket bound as `FILES` (or `MEDIA`) under the same key (`coywolf-files/YYYY/MM/<id>-<name>`), paste `wp db query "SELECT file_id, object_key, filename, mime, size, downloads, created FROM wp_coywolf_files"` into step 4, and set **Files → Settings → Download URL base** to WordPress's link base (`coywolf-file` by default) so old download links keep working. Download counts carry over.
-6. Videos: paste the output of `wp option get coywolf_cvm_descriptions --format=json` (and the same for `coywolf_cvm_posters` and `coywolf_cvm_downloads`) into step 5 for per-video descriptions, posters and MP4 links. On the Videos page, **Refresh** the library (with the token) and **Rebuild embed index**.
-7. Redirects: import Coywolf SEO's redirects (see Redirects) and add a rule for `/wp-content/uploads/(.*)` if media URLs moved.
-8. Run the Headings & TOC, Schema and Videos checks on a few entries (Rich Results Test for a review and a video page), then turn **WordPress import** off.
+4. Run **Convert imported content → Dry run**. It should list nothing left to convert; if the module (or a block) was off during the import, run **Convert**.
+5. Guest authors: run **Guest author bylines → Dry run**, then **Create bylines and credit posts** (step 4).
+6. Files: copy each Coywolf Files object into the bucket bound as `FILES` (or `MEDIA`) under the same key (`coywolf-files/YYYY/MM/<id>-<name>`), paste `wp db query "SELECT file_id, object_key, filename, mime, size, downloads, created FROM wp_coywolf_files"` into step 5, and set **Files → Settings → Download URL base** to WordPress's link base (`coywolf-file` by default) so old download links keep working. Download counts carry over.
+7. Videos: paste the output of `wp option get coywolf_cvm_descriptions --format=json` (and the same for `coywolf_cvm_posters` and `coywolf_cvm_downloads`) into step 6 for per-video descriptions, posters and MP4 links. On the Videos page, **Refresh** the library (with the token) and **Rebuild embed index**.
+8. Redirects: import Coywolf SEO's redirects (see Redirects) and add a rule for `/wp-content/uploads/(.*)` if media URLs moved.
+9. Run the Headings & TOC, Schema and Videos checks on a few entries (Rich Results Test for a review and a video page), then turn **WordPress import** off.
 
 Without a Stream token, converted videos still play and have VideoObject schema: the name, length, upload date and size come from WordPress and are stored as the video's details until Stream's own data replaces them. Captions, plays from Stream, MP4 links found via the API, and the library listing need the token.
 

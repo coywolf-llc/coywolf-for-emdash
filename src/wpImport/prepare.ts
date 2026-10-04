@@ -14,20 +14,25 @@
  *   File download blocks;
  * - heading ids into "anchor" markers, so imported headings keep their ids and
  *   old #links keep working;
- * - Coywolf Custom Blocks that are only templates (blockquote, sidenote,
- *   editor's note, transcript, accordion, testimonial) and Yoast's related
- *   links into Custom HTML with
- *   the markup WordPress rendered, so their content isn't lost;
+ * - Coywolf Custom Blocks that were templates: sidenotes and editor's notes,
+ *   transcripts and accordions, blockquotes, and core Details blocks (EmDash
+ *   would drop the summary) into markers with their exact content, which
+ *   become Note, Details and Quote blocks (Content Blocks module); affiliate
+ *   disclosures (ftc, amazon, Genesis disclosure) into markers that become
+ *   Affiliate disclosure blocks. Each marker also holds the HTML WordPress
+ *   rendered, so the content shows even if it isn't converted;
+ * - testimonials and Yoast's related links into Custom HTML with the markup
+ *   WordPress rendered, so their content isn't lost;
  * - Code Block Enhancer's bold markup and WordPress's &#91; inside code
  *   blocks, which would otherwise show up as literal text;
- * - blocks with nothing to import (affiliate disclosures, the podcast links,
- *   Gravity Forms) into empty markers a theme can find, and core Details
- *   blocks into HTML (EmDash would drop the summary).
+ * - blocks with nothing to import (the podcast links, Gravity Forms) into
+ *   empty markers a theme can find.
  *
  * Everything else is left byte for byte. Pure (no imports beyond siblings), so
  * it runs in the admin (browser), a Node script, and tests.
  */
 import { type GBlock, blockHtml, htmlBlock, parseBlocks, serializeBlocks } from "./gutenberg.js";
+import { type GuestAuthor, wxrGuestAuthors } from "./guests.js";
 import { escapeAttr, markerHtml, parseMarker } from "./markers.js";
 import { hasStreamPlayer, parseStreamEmbed } from "./stream.js";
 
@@ -44,6 +49,10 @@ export type PrepareAction =
 	| "toc"
 	| "file"
 	| "anchor"
+	| "note"
+	| "details"
+	| "quote"
+	| "disclosure"
 	| "html"
 	| "flag"
 	| "code"
@@ -62,13 +71,15 @@ export interface PrepareResult {
 
 const WRAP = (html: string) => htmlBlock(html);
 
+/** The transcript block's default Summary on coywolf.com. */
+export const TRANSCRIPT_SUMMARY = "Read the audio transcript";
+
 /** Blocks that render nothing on WordPress and are removed. */
 const REMOVE = new Set(["coywolf-custom-blocks/newsletter"]);
+/** Affiliate disclosures: no content of their own (the theme printed the wording); they become Affiliate disclosure blocks. */
+const DISCLOSURES = new Set(["coywolf-custom-blocks/ftc", "coywolf-custom-blocks/amazon", "genesis-custom-blocks/disclosure"]);
 /** Blocks kept as empty markers for the theme (their output came from the theme or another plugin). */
 const FLAG: Record<string, string> = {
-	"coywolf-custom-blocks/ftc": "disclosure",
-	"coywolf-custom-blocks/amazon": "disclosure",
-	"genesis-custom-blocks/disclosure": "disclosure",
 	"coywolf-custom-blocks/podcast-rss": "podcast-links",
 	"gravityforms/form": "gravity-form",
 };
@@ -84,12 +95,19 @@ export function repairUnicodeEscapes(html: string): string {
 /** Wrap bare text (no block-level tags) in a paragraph. */
 const asParagraphs = (html: string) => (/<(p|ul|ol|div|blockquote|figure|h[1-6]|table|pre)\b/i.test(html) ? html : `<p>${html}</p>`);
 
-function blockquoteHtml(attrs: Record<string, unknown>): string {
-	const cite = str(attrs["block-url"]).match(/cite\s*=\s*"([^"]*)"/)?.[1] ?? "";
-	const quote = str(attrs["block-quote"]).trim();
-	const by = str(attrs["block-cite"]).trim();
-	return `<figure class="wp-custom-blockquote"><blockquote${cite ? ` cite="${escapeAttr(cite)}"` : ""}>${asParagraphs(quote)}</blockquote>${
-		by ? `<figcaption><cite>${by}</cite></figcaption>` : ""
+/** The custom blockquote's fields: the quote, who said it, and the URL from its ` cite="…"` field. */
+export function blockquoteFields(attrs: Record<string, unknown>): { quote: string; cite: string; url: string } {
+	return {
+		quote: repairUnicodeEscapes(str(attrs["block-quote"])).trim(),
+		cite: repairUnicodeEscapes(str(attrs["block-cite"])).trim(),
+		// Some lost their backslashes: ` cite=u0022https://…u0022`.
+		url: str(attrs["block-url"]).replace(/\\?u0022/g, '"').match(/cite\s*=\s*"([^"]*)"/)?.[1]?.trim() ?? "",
+	};
+}
+
+function blockquoteHtml(f: { quote: string; cite: string; url: string }): string {
+	return `<figure class="wp-custom-blockquote"><blockquote${f.url ? ` cite="${escapeAttr(f.url)}"` : ""}>${asParagraphs(f.quote)}</blockquote>${
+		f.cite ? `<figcaption><cite>${f.cite}</cite></figcaption>` : ""
 	}</figure>`;
 }
 
@@ -99,7 +117,14 @@ function noteHtml(kind: "sidenote" | "editorsnote", text: string): string {
 }
 
 function detailsHtml(summary: string, body: string, className: string): string {
-	return `<details class="${className}"><summary>${summary}</summary><div class="${className}__body">${repairUnicodeEscapes(body).trim()}</div></details>`;
+	return `<details class="${className}"><summary>${summary}</summary><div class="${className}__body">${body}</div></details>`;
+}
+
+/** A core Details block's summary (HTML), body (its inner blocks' HTML) and whether it starts open. */
+export function coreDetailsFields(block: GBlock): { summary: string; body: string; open: boolean } {
+	const html = blockHtml(block).trim();
+	const m = html.match(/^<details\b[^>]*>\s*<summary\b[^>]*>([\s\S]*?)<\/summary>([\s\S]*?)<\/details>$/i);
+	return { summary: (m?.[1] ?? "").trim(), body: (m?.[2] ?? html).trim(), open: block.attrs.showContent === true };
 }
 
 function testimonialHtml(attrs: Record<string, unknown>, attachments?: Map<number, string>): string {
@@ -143,28 +168,34 @@ function replacement(block: GBlock, opts: PrepareOptions): { blocks: GBlock[]; a
 			return { blocks: [WRAP(markerHtml("toc", a))], action: "toc" };
 		case "coywolf/file":
 			return { blocks: [WRAP(markerHtml("file", a, block.innerHTML.trim()))], action: "file" };
-		case "coywolf-custom-blocks/blockquote":
-			return { blocks: [WRAP(markerHtml("blockquote", {}, blockquoteHtml(a)))], action: "html" };
+		case "coywolf-custom-blocks/blockquote": {
+			const f = blockquoteFields(a);
+			return { blocks: [WRAP(markerHtml("blockquote", f, blockquoteHtml(f)))], action: "quote" };
+		}
 		case "coywolf-custom-blocks/sidenote":
-			return { blocks: [WRAP(markerHtml("sidenote", {}, noteHtml("sidenote", str(a.sidenote))))], action: "html" };
-		case "coywolf-custom-blocks/editorsnote":
-			return { blocks: [WRAP(markerHtml("editorsnote", {}, noteHtml("editorsnote", str(a.editorsnote))))], action: "html" };
+		case "coywolf-custom-blocks/editorsnote": {
+			const kind = block.name === "coywolf-custom-blocks/sidenote" ? "sidenote" : "editorsnote";
+			const text = repairUnicodeEscapes(str(a[kind])).trim();
+			return { blocks: [WRAP(markerHtml(kind, { text }, noteHtml(kind, text)))], action: "note" };
+		}
 		case "coywolf-custom-blocks/transcript":
-			return {
-				blocks: [WRAP(markerHtml("transcript", {}, detailsHtml(str(a.summary) || "Read the audio transcript", str(a.details), "transcript")))],
-				action: "html",
-			};
-		case "coywolf-custom-blocks/accordion":
-			return { blocks: [WRAP(markerHtml("accordion", {}, detailsHtml(str(a.summary), str(a.details), "accordion")))], action: "html" };
+		case "coywolf-custom-blocks/accordion": {
+			const kind = block.name === "coywolf-custom-blocks/transcript" ? "transcript" : "accordion";
+			// The transcript's Summary field defaulted to "Read the audio transcript" (not saved when left as is).
+			const summary = str(a.summary).trim() || (kind === "transcript" ? TRANSCRIPT_SUMMARY : "");
+			const body = repairUnicodeEscapes(str(a.details)).trim();
+			return { blocks: [WRAP(markerHtml(kind, { summary, body }, detailsHtml(summary, body, kind)))], action: "details" };
+		}
 		case "coywolf-custom-blocks/testimonial":
 			return { blocks: [WRAP(markerHtml("testimonial", {}, testimonialHtml(a, opts.attachments)))], action: "html" };
 		case "core/details":
-			return { blocks: [WRAP(markerHtml("details", {}, blockHtml(block).trim()))], action: "html" };
+			return { blocks: [WRAP(markerHtml("details", coreDetailsFields(block), blockHtml(block).trim()))], action: "details" };
 		case "yoast-seo/related-links":
 			// EmDash would turn each list item into its own HTML block.
 			return { blocks: [WRAP(markerHtml("related-links", {}, blockHtml(block).trim()))], action: "html" };
 		default:
 			if (block.name && REMOVE.has(block.name)) return { blocks: [], action: "removed" };
+			if (block.name && DISCLOSURES.has(block.name)) return { blocks: [WRAP(markerHtml("disclosure", { block: block.name, ...a }))], action: "disclosure" };
 			if (block.name && FLAG[block.name]) return { blocks: [WRAP(markerHtml(FLAG[block.name] as string, { block: block.name, ...a }))], action: "flag" };
 			return null;
 	}
@@ -323,6 +354,8 @@ export interface PrepareWxrResult {
 	posts: PreparedPost[];
 	/** Totals over every post. */
 	counts: PrepareCounts;
+	/** Posts with a guest author (Coywolf Guest Author plugin), for the guest bylines step. */
+	guestAuthors: GuestAuthor[];
 }
 
 /** Prepare a whole WXR export. Only `content:encoded` bodies change. */
@@ -344,5 +377,5 @@ export function prepareWxr(xml: string, opts: PrepareOptions = {}): PrepareWxrRe
 		for (const [k, v] of Object.entries(result.counts)) totals[k] = (totals[k] ?? 0) + v;
 		return `<item>${item.replace(m[0], () => `<content:encoded>${toCdata(result.content)}</content:encoded>`)}</item>`;
 	});
-	return { xml: out, posts, counts: totals };
+	return { xml: out, posts, counts: totals, guestAuthors: wxrGuestAuthors(xml, attachments) };
 }

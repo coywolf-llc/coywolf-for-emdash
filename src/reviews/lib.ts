@@ -58,7 +58,7 @@ export interface Review {
 	itemUrl?: string;
 	/** Absolute http(s) URL or a root-relative path (resolved against the site for schema). */
 	image?: string;
-	/** 0–5 in 0.5 steps; null when missing (the box shows no badge and there's no schema). */
+	/** 0–5 in 0.1 steps; null when missing (the box shows no badge and there's no schema). */
 	rating: number | null;
 	prosHeading: string;
 	pros: string[];
@@ -135,17 +135,82 @@ export function listFromLines(value: unknown): string[] {
 		.slice(0, MAX_ITEMS);
 }
 
-/** A rating on the 0–5 scale, rounded to the nearest half; null when missing or not a number. */
+/**
+ * A rating on the 0–5 scale, clamped and rounded to one decimal (4.7 stays
+ * 4.7, 4.25 becomes 4.3); null when missing or not a number. Half steps saved
+ * before 0.11.0 ("4.5", "4") read the same as before.
+ */
 export function parseRating(value: unknown): number | null {
-	if (value === null || value === undefined || value === "") return null;
-	const n = typeof value === "number" ? value : typeof value === "string" ? Number(value.trim().replace(",", ".")) : Number.NaN;
+	if (value === null || value === undefined) return null;
+	const text = typeof value === "string" ? value.trim().replace(",", ".") : null;
+	if (text === "") return null;
+	const n = typeof value === "number" ? value : text !== null ? Number(text) : Number.NaN;
 	if (!Number.isFinite(n)) return null;
-	return Math.round(Math.min(BEST_RATING, Math.max(WORST_RATING, n)) * 2) / 2;
+	return Math.round(Math.min(BEST_RATING, Math.max(WORST_RATING, n)) * 10) / 10;
 }
 
-/** "4.5", "5" — no trailing ".0". */
+/** "4.7", "5" — no trailing ".0". */
 export function formatRating(rating: number): string {
 	return Number.isInteger(rating) ? String(rating) : rating.toFixed(1);
+}
+
+/**
+ * The block's stored rating value: one decimal, always with the ".0"
+ * ("4.7", "5.0"), or "" when there's no rating. The editor's rating menu uses
+ * these values; whole numbers need the ".0" because the menu lists integer-like
+ * values out of order ("0" … "5" before "4.9").
+ */
+export function ratingValue(value: unknown): string {
+	const rating = parseRating(value);
+	return rating === null ? "" : rating.toFixed(1);
+}
+
+/** The editor's rating menu: 5.0 down to 0.0 in 0.1 steps. */
+export const RATING_OPTIONS: Array<{ value: string; label: string }> = Array.from({ length: BEST_RATING * 10 + 1 }, (_, i) => (BEST_RATING * 10 - i) / 10).map((n) => ({
+	value: n.toFixed(1),
+	label: `${formatRating(n)} out of ${BEST_RATING}`,
+}));
+
+/**
+ * Rewrite each `coywolf-review` block's rating to its menu value ("4" →
+ * "4.0", 4.7 → "4.7"), so reviews saved with the old half-step menu (or
+ * imported) show their rating in the editor. Returns null when nothing changed.
+ */
+export function normalizeReviewRatings<T>(data: T): T | null {
+	let changed = false;
+	const visit = (value: unknown, depth: number): unknown => {
+		if (depth > 12 || !value || typeof value !== "object") return value;
+		if (Array.isArray(value)) {
+			let out: unknown[] | null = null;
+			value.forEach((v, i) => {
+				const next = visit(v, depth + 1);
+				if (next !== v) {
+					out ??= value.slice();
+					out[i] = next;
+				}
+			});
+			return out ?? value;
+		}
+		const obj = value as Record<string, unknown>;
+		if (obj._type === BLOCK_TYPE) {
+			const next = ratingValue(obj.rating);
+			// Leave missing or unreadable values alone.
+			if (!next || next === obj.rating) return obj;
+			changed = true;
+			return { ...obj, rating: next };
+		}
+		let out: Record<string, unknown> | null = null;
+		for (const [k, v] of Object.entries(obj)) {
+			const next = visit(v, depth + 1);
+			if (next !== v) {
+				out ??= { ...obj };
+				out[k] = next;
+			}
+		}
+		return out ?? obj;
+	};
+	const result = visit(data, 0) as T;
+	return changed ? result : null;
 }
 
 /** An absolute http(s) URL (no credentials), or undefined. */

@@ -13,6 +13,10 @@ import TableOfContents from "./headings/TableOfContents.astro";
 import CoywolfVideo from "./videos/CoywolfVideo.astro";
 import CoywolfReview from "./reviews/CoywolfReview.astro";
 import Review from "./reviews/Review.astro";
+import Note from "./contentBlocks/Note.astro";
+import Details from "./contentBlocks/Details.astro";
+import Disclosure from "./contentBlocks/Disclosure.astro";
+import Quote from "./contentBlocks/Quote.astro";
 
 export const blockComponents = {
 	"coywolf-toc": TableOfContents,
@@ -21,6 +25,10 @@ export const blockComponents = {
 	"coywolf-file": FileCard,
 	"coywolf-video": CoywolfVideo,
 	"coywolf-review": CoywolfReview,
+	"coywolf-note": Note,
+	"coywolf-details": Details,
+	"coywolf-disclosure": Disclosure,
+	"coywolf-quote": Quote,
 };
 
 /** Videos module: the Stream player, for theme code. */

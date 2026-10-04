@@ -21,3 +21,7 @@ const result = prepareWxr(xml);
 await writeFile(output, result.xml);
 console.log(`${result.posts.length} entries changed.`);
 for (const [key, count] of Object.entries(result.counts).sort((a, b) => b[1] - a[1])) console.log(`${String(count).padStart(6)}  ${key}`);
+if (result.guestAuthors.length) {
+	console.log(`\n${result.guestAuthors.length} ${result.guestAuthors.length === 1 ? "post has a guest author" : "posts have guest authors"} (credit them on the WordPress import page, step "Guest author bylines"):`);
+	for (const g of result.guestAuthors) console.log(`  ${g.name}: ${g.title || g.slug}`);
+}
