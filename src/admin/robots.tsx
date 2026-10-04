@@ -320,7 +320,7 @@ function Tester(props: { robotsTxt: string; bots: BotEntry[]; siteUrl: string })
 	const [url, setUrl] = React.useState("/");
 	const tokens = React.useMemo(() => [...new Set(props.bots.map((b) => b.token))].sort((a, b) => a.localeCompare(b)), [props.bots]);
 	const token = agent.trim();
-	const verdict = token && url.trim() ? evaluate(props.robotsTxt, [token], url.trim()) : null;
+	const verdict = token && url.trim() ? evaluate(props.robotsTxt, [token], url.trim(), { encodePath: true }) : null;
 	const lines = props.robotsTxt.split("\n");
 
 	return (

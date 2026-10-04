@@ -531,7 +531,7 @@ node --test test/*.test.mjs  # unit tests (Node 22.15+; runs the TypeScript sour
 
 ## Robots.txt Rules
 
-Write `robots.txt` as named, plain-English rules instead of a text box: **Block AI training crawlers**, **Block AI search and assistants**, **Allow search engines**, **Block SEO tool crawlers**, or a custom path rule (a folder, a prefix, one page, an exact URL, a file type, a query parameter, a wildcard, or "block a folder but allow one item in it"). Pick crawlers by category or search from a directory of about 720 bots, see the generated file as you edit, and test it: **Can GPTBot fetch /2026/my-post/?** The tester runs a TypeScript port of Google's open-source robots.txt matcher (RFC 9309: a bot's own groups are merged and shadow `*`, longest match wins, Allow wins ties, `*` and `$` wildcards), against exactly what will be served.
+Write `robots.txt` as named, plain-English rules instead of a text box: **Block AI training crawlers**, **Block AI search and assistants**, **Allow search engines**, **Block SEO tool crawlers**, or a custom path rule (a folder, a prefix, one page, an exact URL, a file type, a query parameter, a wildcard, or "block a folder but allow one item in it"). Pick crawlers by category or search from a directory of about 700 bots, see the generated file as you edit, and test it: **Can GPTBot fetch /2026/my-post/?** The tester runs a TypeScript port of Google's open-source robots.txt matcher (RFC 9309: a bot's own groups are merged and shadow `*`, longest match wins, Allow wins ties, `*` and `$` wildcards), against exactly what will be served.
 
 The pack middleware serves `/robots.txt` while the feature is on, so turning it off falls straight back to EmDash's own robots.txt (and until you first save rules, EmDash's keeps being served). We serve it rather than writing into EmDash's **SEO → robots.txt** setting because that setting is capped at 5,000 characters (an AI-crawler blocklist outgrows it), and because a generated file has to keep EmDash's required lines in every group: crawlers obey only the groups that name them, so a bot with its own rule would otherwise skip `Disallow: /_emdash/`. The generated file adds a group for `*` and every bot named in a rule with `Allow: /_emdash/api/media/` (EmDash serves uploaded images there) and `Disallow: /_emdash/`, leaves the media Allow out for bots blocked from the whole site, and ends with `Sitemap: <site URL>/sitemap.xml` plus any sitemaps you add. If EmDash has a custom robots.txt, the page offers to copy its lines into **Extra lines**.
 
@@ -549,7 +549,13 @@ A robots.txt `User-agent:` line takes a product token (`GPTBot`, `Claude-SearchB
 - **verified, user agent**: the token appears in the user-agent string Radar publishes for the bot.
 - **unverified**: derived from a pattern or name, or a legacy token the operator no longer documents (for example `anthropic-ai`, `Claude-Web`, `FacebookBot`, `cohere-ai`). These still work in robots.txt if the crawler uses them, and are flagged in the picker.
 
-Signed agents that identify only cryptographically (Web Bot Auth) and have no token, such as ChatGPT agent, are left out.
+Signed agents that identify only cryptographically (Web Bot Auth) and have no token, such as ChatGPT agent, are left out. Bots that share a token (for example the nine regional Amazon Bedrock AgentCore browsers) are one entry, and hash-like identifiers that aren't product tokens are flagged unverified.
+
+To rebuild the list, run `scripts/build-bots.mjs`. It reads Cloudflare Radar's directory (`RADAR_API_TOKEN`, or a snapshot saved earlier with `--save-snapshot` and passed back with `--radar-snapshot`), Coywolf SEO's curated tokens (`--wp <dir>`, or fetched with `gh api` from coywolf-llc/coywolf-seo), and the hand-verified tokens in `src/robots/data/verified.json`. To verify a token, add it to `verified.json` with the operator's documentation URL and the date you checked it, then rerun:
+
+```bash
+RADAR_API_TOKEN=… node scripts/build-bots.mjs
+```
 
 ### Weekly refresh from Cloudflare Radar
 

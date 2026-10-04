@@ -230,8 +230,39 @@ export interface Verdict {
 }
 
 /** Evaluate a URL against a whole robots.txt for one or more user-agent tokens. */
-export function evaluate(body: string, userAgents: string[], url: string): Verdict {
-	const path = pathParamsQuery(url);
+/**
+ * The product token at the start of a `User-agent:` value, for matching
+ * directory tokens: Google's ExtractUserAgent() stops at the first byte
+ * outside [a-zA-Z_-] ("MJ12bot" → "MJ"), which suits callers that pass
+ * pre-extracted tokens; this accepts digits and dots too so tokens such as
+ * MJ12bot or archive.org_bot match their own groups.
+ */
+export function extractProductToken(userAgent: string): string {
+	const m = /^[A-Za-z0-9._-]*/.exec(userAgent);
+	return m ? m[0] : "";
+}
+
+/**
+ * Percent-encode a request path the way patterns are (non-ASCII bytes, spaces
+ * and controls; %xx hex uppercased). Expects a byte string (see toBytes).
+ */
+export function normalizePath(bytes: string): string {
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: encoding control bytes.
+	return escapePattern(bytes).replace(/[\u0000-\u0020\u007f]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
+}
+
+export interface EvaluateOptions {
+	/**
+	 * Percent-encode the request path like a crawler sends it (default false,
+	 * which is Google's contract: the caller passes an already-encoded URL).
+	 * The admin tester turns this on so a typed "/café" means "/caf%C3%A9".
+	 */
+	encodePath?: boolean;
+}
+
+export function evaluate(body: string, userAgents: string[], url: string, options: EvaluateOptions = {}): Verdict {
+	const rawPath = pathParamsQuery(url);
+	const path = options.encodePath ? normalizePath(rawPath) : rawPath;
 	const { directives } = parse(body);
 
 	let allowGlobal = NO_MATCH;
@@ -275,7 +306,7 @@ export function evaluate(body: string, userAgents: string[], url: string): Verdi
 			if (v.length >= 1 && v[0] === "*" && (v.length === 1 || WS.includes(v[1]))) {
 				seenGlobal = true;
 			} else {
-				const token = extractUserAgent(v);
+				const token = extractProductToken(v);
 				if (token && userAgents.some((qa) => qa.toLowerCase() === token.toLowerCase())) {
 					everSpecific = true;
 					seenSpecific = true;

@@ -43,7 +43,7 @@ test("rule kinds render like Coywolf SEO", () => {
 	assert.deepEqual(d({ kind: "contains", path: "/preview=" }), ["Disallow: /*preview="]);
 	assert.deepEqual(d({ kind: "any_depth", path: "/print/" }), ["Disallow: /*/print/"]);
 	assert.deepEqual(d({ kind: "query_any" }), ["Disallow: /*?"]);
-	assert.deepEqual(d({ kind: "query_param", path: "?utm_source" }), ["Disallow: /*?utm_source="]);
+	assert.deepEqual(d({ kind: "query_param", path: "?utm_source" }), ["Disallow: /*?utm_source=", "Disallow: /*&utm_source="]);
 	assert.deepEqual(d({ kind: "wildcard_prefix", path: "/pa_" }), ["Disallow: /pa_*"]);
 	assert.deepEqual(d({ kind: "allow_exception", path: "/members", allow: "/members/hi" }), ["Disallow: /members/", "Allow: /members/hi"]);
 	assert.deepEqual(d({ kind: "folder", path: "/x/", directive: "allow" }), ["Allow: /x/"]);
@@ -129,10 +129,17 @@ test("bundled directory: valid tokens, sources on verified entries, key crawlers
 	const data = JSON.parse(readFileSync(new URL("./data/bots.json", import.meta.url), "utf8")) as { bots: BotEntry[] };
 	assert.ok(data.bots.length > 650);
 	const slugs = new Set<string>();
+	const tokens = new Set<string>();
+	for (const b of data.bots) {
+		assert.ok(!tokens.has(b.token.toLowerCase()), `duplicate token ${b.token}`);
+		tokens.add(b.token.toLowerCase());
+	}
 	for (const b of data.bots) {
 		assert.ok(!slugs.has(b.slug), `duplicate ${b.slug}`);
 		slugs.add(b.slug);
-		assert.match(b.token, /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[0-9][0-9A-Za-z._-]*)?$/, b.slug);
+		assert.match(b.token, /^[A-Za-z0-9._-]+$/, b.slug);
+		assert.match(b.token, /[A-Za-z]/, b.slug);
+		if (b.evidence === "operator-docs") assert.doesNotMatch(b.sourceUrl ?? "", /^https?:\/\/[^/]+\/?$/, `${b.slug}: homepage isn't documentation`);
 		if (b.status === "verified") assert.ok(b.verifiedAt, `${b.slug} verifiedAt`);
 		if (b.evidence === "operator-docs") assert.match(b.sourceUrl ?? "", /^https?:\/\//, `${b.slug} source`);
 	}
@@ -187,4 +194,53 @@ test("mergeRadar stores only differences and adds new bots unverified", () => {
 	assert.equal(g?.category, "AI_SEARCH");
 	assert.equal(g?.token, "GPTBot");
 	assert.equal(g?.status, "verified");
+});
+
+test("whole-site blocks in any spelling drop the media Allow; /$ doesn't", () => {
+	for (const v of ["/", "/*", "*", "/**", "/*$"]) assert.equal(rules.blocksWholeSite(v), true, v);
+	assert.equal(rules.blocksWholeSite("/$"), false);
+	assert.equal(rules.blocksWholeSite("/private/"), false);
+	for (const v of ["/*", "*"]) {
+		const txt = rules.generate(config([rule({ name: "Block", agents: ["GPTBot"], kind: "custom", path: v })]), site);
+		assert.equal(rep.oneAgentAllowed(txt, "GPTBot", "/_emdash/api/media/file/a.jpg"), false, v);
+		assert.ok(!txt.slice(txt.indexOf("# EmDash")).includes("GPTBot"), v);
+	}
+	const home = rules.generate(config([rule({ name: "Home", agents: ["GPTBot"], kind: "custom", path: "/$" })]), site);
+	assert.equal(rep.oneAgentAllowed(home, "GPTBot", "/_emdash/api/media/file/a.jpg"), true);
+	assert.equal(rep.oneAgentAllowed(home, "GPTBot", "/_emdash/admin"), false);
+});
+
+test("line breaks can't inject directives", () => {
+	const txt = rules.generate(
+		config(
+			[
+				rule({
+					name: "Evil\nUser-agent: *\nDisallow: /",
+					description: "x\r\nAllow: /",
+					agents: ["GPTBot\nDisallow: /", "Good"],
+					kind: "folder",
+					path: "/a\nAllow: /b",
+				}),
+			],
+			{ sitemaps: ["/s.xml\nUser-agent: *\nDisallow: /", "https://x.test/a.xml\r\nDisallow: /"] },
+		),
+		{ siteUrl: "https://example.com\nDisallow: /" },
+	);
+	for (const line of txt.split("\n")) {
+		assert.ok(!/^Disallow: \/$/.test(line), `injected: ${line}`);
+		assert.ok(!/^User-agent: \*$/.test(line) || txt.includes("# EmDash"), line);
+	}
+	assert.ok(!txt.includes("\r"));
+	assert.equal(rep.oneAgentAllowed(txt, "Bingbot", "/post"), true);
+	assert.match(txt, /Sitemap: https:\/\/example\.comDisallow:\/s\.xmlUser-agent:\*Disallow:\//);
+});
+
+test("Radar entries merged by token count as their primary entry", () => {
+	const base: BotEntry[] = [
+		{ slug: "a", name: "A", operator: "", category: "OTHER", description: "", token: "ABot", status: "verified", evidence: "user-agent", origin: "radar", mergedSlugs: ["a-2"] },
+	];
+	const r = bots.mergeRadar(base, [], [{ slug: "a-2", name: "A two", userAgentPatterns: ["ABot"] }], "2026-10-03");
+	assert.equal(r.writes.length, 0);
+	assert.equal(r.added, 0);
+	assert.equal(r.delisted, 0);
 });

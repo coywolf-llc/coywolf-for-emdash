@@ -314,3 +314,22 @@ test("matches() normalizes both sides (rule tester)", () => {
 	for (const [p, path, want] of cases) assert.equal(rep.matches(p, path), want, `${p} ${path}`);
 	assert.equal(rep.matches("/caf%c3%a9", "/café"), true);
 });
+
+test("tokens with digits and dots match their own groups (MJ12bot, archive.org_bot)", () => {
+	const r = "User-agent: MJ12bot\nDisallow: /\n\nUser-agent: archive.org_bot\nDisallow: /private/\n\nUser-agent: MJ\nAllow: /\n";
+	assert.equal(al(r, "MJ12bot", "/page"), false);
+	assert.equal(al(r, "archive.org_bot", "/private/x"), false);
+	assert.equal(al(r, "archive.org_bot", "/public"), true);
+	assert.equal(al(r, "MJ", "/page"), true);
+	assert.equal(rep.extractProductToken("MJ12bot/1.4"), "MJ12bot");
+});
+
+test("tester path encoding: a typed /café matches /caf%C3%A9 rules", () => {
+	const r = "User-agent: *\nDisallow: /café\n";
+	assert.equal(rep.evaluate(r, ["x"], "/café", { encodePath: true }).allowed, false);
+	assert.equal(rep.evaluate(r, ["x"], "https://example.com/caf%c3%a9", { encodePath: true }).allowed, false);
+	assert.equal(rep.evaluate(r, ["x"], "/cafe", { encodePath: true }).allowed, true);
+	assert.equal(rep.evaluate("User-agent: *\nDisallow: /a%20b\n", ["x"], "/a b", { encodePath: true }).allowed, false);
+	// Google's contract (no encoding) is unchanged.
+	assert.equal(rep.evaluate(r, ["x"], "/café").allowed, true);
+});

@@ -37,6 +37,8 @@ export interface BotEntry {
 	/** Set when the bot was last seen in, or has left, the Radar directory (from the weekly sync). */
 	radarSeenAt?: string;
 	delisted?: boolean;
+	/** Other Radar slugs that share this token and were merged into this entry. */
+	mergedSlugs?: string[];
 }
 
 /** A record from GET /client/v4/radar/bots. */
@@ -173,6 +175,9 @@ const sameOverlay = (a: BotOverlay | undefined, b: BotOverlay) => {
  */
 export function mergeRadar(baseline: BotEntry[], existing: BotOverlay[], radar: RadarBot[], now: string): RadarMergeResult {
 	const base = new Map(baseline.map((b) => [b.slug, b]));
+	// Radar slugs merged into another entry (same token) count as that entry.
+	const primary = new Map<string, string>();
+	for (const b of baseline) for (const s of b.mergedSlugs ?? []) primary.set(s, b.slug);
 	const prev = new Map(existing.map((o) => [o.slug, o]));
 	const live = new Set<string>();
 	const writes: BotOverlay[] = [];
@@ -182,6 +187,11 @@ export function mergeRadar(baseline: BotEntry[], existing: BotOverlay[], radar: 
 
 	for (const bot of radar) {
 		if (!bot?.slug || typeof bot.slug !== "string") continue;
+		const merged = primary.get(bot.slug);
+		if (merged) {
+			live.add(merged);
+			continue;
+		}
 		live.add(bot.slug);
 		const b = base.get(bot.slug);
 		const fields = {

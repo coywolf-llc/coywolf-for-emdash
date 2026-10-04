@@ -20,12 +20,14 @@ export interface RobotsOptions {
 	database?: string;
 }
 
+const NO_NEWLINE = /^[^\r\n]*$/;
+
 const ruleInput = z.object({
 	id: z.string().min(1).max(64),
 	name: z.string().max(200),
 	description: z.string().max(500).optional(),
 	enabled: z.boolean(),
-	agents: z.array(z.string().max(100)).max(1000),
+	agents: z.array(z.string().max(100).regex(NO_NEWLINE, "Crawler tokens can't contain line breaks.")).max(1000),
 	directive: z.enum(["allow", "disallow"]),
 	kind: z.enum(RULE_KINDS),
 	path: z.string().max(2000).optional(),
@@ -37,7 +39,7 @@ const ruleInput = z.object({
 const configInput = z.object({
 	rules: z.array(ruleInput).max(200),
 	includeSitemap: z.boolean(),
-	sitemaps: z.array(z.string().max(2000)).max(50),
+	sitemaps: z.array(z.string().max(2000).regex(NO_NEWLINE, "Sitemap URLs can't contain line breaks.")).max(50),
 	allowMedia: z.boolean(),
 	comments: z.boolean(),
 	extra: z.string().max(20_000),

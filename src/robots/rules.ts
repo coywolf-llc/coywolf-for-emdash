@@ -125,8 +125,10 @@ export function directives(rule: RobotsRule): DirectiveLine[] {
 			return [line(`/*/${path.replace(/^\/+|\/+$/g, "")}/`)];
 		case "query_any":
 			return [line("/*?")];
-		case "query_param":
-			return [line(`/*?${path.replace(/^\?+/, "")}=`)];
+		case "query_param": {
+			const name = path.replace(/^[?&]+/, "").replace(/=+$/, "");
+			return [line(`/*?${name}=`), line(`/*&${name}=`)];
+		}
 		case "wildcard_prefix":
 			return [line(ensureStar(lead(path)))];
 		case "allow_exception":
@@ -158,6 +160,8 @@ export function validateRule(rule: RobotsRule): void {
 }
 
 const oneLine = (s: string | undefined) => (s ?? "").replace(/\s+/g, " ").trim();
+/** Values that must stay on one line and can't contain spaces (URLs, tokens): drop all whitespace, including CR/LF. */
+const singleLine = (s: string | undefined) => (s ?? "").replace(/\s+/g, "");
 
 function uniq(list: string[]): string[] {
 	const seen = new Set<string>();
@@ -172,11 +176,36 @@ function uniq(list: string[]): string[] {
 	return out;
 }
 
-/** Agents with an enabled rule that blocks the whole site (`Disallow: /`). */
+/** REP wildcard match (`*` any run, final `$` anchors), as in ./rep.ts; duplicated to keep this file import-free. */
+function wildcardMatch(pattern: string, path: string): boolean {
+	let pos = [0];
+	for (let i = 0; i < pattern.length; i++) {
+		const c = pattern[i];
+		if (c === "$" && i + 1 === pattern.length) return pos.includes(path.length);
+		if (c === "*") {
+			const from = Math.min(...pos);
+			pos = Array.from({ length: path.length - from + 1 }, (_, k) => from + k);
+		} else {
+			pos = pos.filter((p) => p < path.length && path[p] === c).map((p) => p + 1);
+			if (!pos.length) return false;
+		}
+	}
+	return true;
+}
+
+/** Paths a whole-site block must cover: the home page, any page, and EmDash media. */
+const WHOLE_SITE_PROBES = ["/", "/any/page.html?x=1", `${"/_emdash/api/media/"}file/a.jpg`];
+
+/** Whether a Disallow value blocks every URL (`/`, `/*`, `*`, `/**`…), unlike e.g. `/$` (home page only). */
+export function blocksWholeSite(value: string): boolean {
+	return value !== "" && WHOLE_SITE_PROBES.every((p) => wildcardMatch(value, p));
+}
+
+/** Agents with an enabled rule that blocks the whole site. */
 function rootBlocked(rules: RobotsRule[]): Set<string> {
 	const out = new Set<string>();
 	for (const rule of rules) {
-		if (directives(rule).some((d) => d.directive === "Disallow" && d.value === "/")) {
+		if (directives(rule).some((d) => d.directive === "Disallow" && blocksWholeSite(d.value))) {
 			for (const a of rule.agents) out.add(a.toLowerCase());
 		}
 	}
@@ -197,7 +226,11 @@ export interface GenerateOptions {
  * blocked from the whole site, where that Allow would reopen media.
  */
 export function generate(config: RobotsConfig, options: GenerateOptions): string {
-	const rules = config.rules.filter((r) => r.enabled && r.agents.length);
+	const siteUrl = singleLine(options.siteUrl).replace(/\/+$/, "");
+	const rules = config.rules
+		.filter((r) => r.enabled)
+		.map((r) => ({ ...r, agents: r.agents.map(singleLine).filter(isValidToken) }))
+		.filter((r) => r.agents.length);
 	const out: string[] = config.comments ? ["# robots.txt managed by Coywolf Pack (Robots.txt Rules)", ""] : [];
 
 	for (const rule of rules) {
@@ -225,11 +258,11 @@ export function generate(config: RobotsConfig, options: GenerateOptions): string
 	if (extra) out.push(extra, "");
 
 	const sitemaps: string[] = [];
-	if (config.includeSitemap) sitemaps.push(`${options.siteUrl}/sitemap.xml`);
+	if (config.includeSitemap) sitemaps.push(`${siteUrl}/sitemap.xml`);
 	for (const s of config.sitemaps) {
-		const t = s.trim();
+		const t = singleLine(s);
 		if (!t) continue;
-		sitemaps.push(/^https?:\/\//i.test(t) ? t : `${options.siteUrl}${lead(t)}`);
+		sitemaps.push(/^https?:\/\//i.test(t) ? t : `${siteUrl}${lead(t)}`);
 	}
 	for (const s of uniq(sitemaps)) out.push(`Sitemap: ${s}`);
 
