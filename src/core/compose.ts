@@ -139,6 +139,19 @@ export function composeHooks(modules: PackModule[], extra: { tasks: TaskDef[] })
  * Config-registered native plugins don't get plugin:activate at boot, so
  * routes call this too. schedule() is an upsert.
  */
-export async function ensureTasks(ctx: { cron?: { schedule(name: string, opts: { schedule: string }): Promise<void> } }, tasks: TaskDef[]) {
-	for (const task of tasks) await ctx.cron?.schedule(task.name, { schedule: task.schedule });
+export async function ensureTasks(
+	ctx: { cron?: { schedule(name: string, opts: { schedule: string }): Promise<void> }; log?: { error(msg: string, data?: unknown): void } },
+	tasks: TaskDef[],
+) {
+	// One bad task must not break the routes that call this (e.g. the Features page).
+	for (const task of tasks) {
+		try {
+			await ctx.cron?.schedule(task.name, { schedule: task.schedule });
+		} catch (error) {
+			ctx.log?.error(`coywolf-pack: could not schedule task ${task.name}`, { error: String(error) });
+		}
+	}
 }
+
+/** EmDash's task-name rule (emdash/src/plugins/cron.ts validateTaskName). */
+export const TASK_NAME = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
