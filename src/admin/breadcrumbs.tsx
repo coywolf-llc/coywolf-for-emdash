@@ -37,8 +37,21 @@ const SEPARATOR_ITEMS = [
 
 const errorText = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
 
-function Section(props: { title: string; description: React.ReactNode; children: React.ReactNode }) {
+function Section(props: { title: string; description: React.ReactNode; children: React.ReactNode; collapsed?: boolean }) {
 	const id = `cw-breadcrumbs-${props.title.toLowerCase().replace(/[^a-z]+/g, "-")}`;
+	if (props.collapsed)
+		// Native <details>: the browser's own disclosure triangle and keyboard support; closed until opened.
+		return (
+			<details className="rounded-lg border border-kumo-line">
+				<summary className="cursor-pointer p-4" style={{ display: "list-item" }}>
+					<h2 id={id} className="text-base font-semibold" style={{ display: "inline" }}>
+						{props.title}
+					</h2>
+					<span className="mt-1 block text-sm text-kumo-subtle">{props.description}</span>
+				</summary>
+				<div className="space-y-4 border-t border-kumo-line p-4">{props.children}</div>
+			</details>
+		);
 	return (
 		<section className="rounded-lg border border-kumo-line" aria-labelledby={id}>
 			<div className="border-b border-kumo-line p-4">
@@ -391,6 +404,7 @@ export function BreadcrumbsPage() {
 			)}
 
 			<Section
+				collapsed
 				title="Add the breadcrumb nav to your Astro theme"
 				description="Put the Breadcrumbs component in a layout once and every page that uses the layout gets a trail. Nothing renders while Breadcrumb Nav is turned off under Plugins → Coywolf Pack."
 			>
