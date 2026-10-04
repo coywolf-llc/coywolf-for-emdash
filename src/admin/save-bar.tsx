@@ -73,6 +73,18 @@ export function SaveBar(props: {
 	}, [onSave, form, saving]);
 	useUnsavedChanges(props.dirty, save, canSave);
 
+	// Sticky bottom: 0 stops at the top of the scroll container's bottom padding
+	// (EmDash's <main> has p-6), leaving a strip of page showing under the bar.
+	// Offset by that padding so the bar sits flush with the bottom edge.
+	const bar = React.useRef<HTMLDivElement>(null);
+	const [offset, setOffset] = React.useState(0);
+	React.useLayoutEffect(() => {
+		if (!props.dirty || !bar.current) return;
+		let node: HTMLElement | null = bar.current.parentElement;
+		while (node && !/(auto|scroll)/.test(getComputedStyle(node).overflowY)) node = node.parentElement;
+		setOffset(node ? Number.parseFloat(getComputedStyle(node).paddingBottom) || 0 : 0);
+	}, [props.dirty]);
+
 	return (
 		<>
 			{/* Always rendered so the change is announced when the bar appears. */}
@@ -81,12 +93,13 @@ export function SaveBar(props: {
 			</p>
 			{props.dirty && (
 				<div
+					ref={bar}
 					className="cw-save-bar flex flex-wrap items-center justify-between gap-3 border border-kumo-line bg-kumo-base"
 					role="region"
 					aria-label="Unsaved changes"
 					style={{
 						position: "sticky",
-						bottom: 0,
+						bottom: -offset,
 						zIndex: 20,
 						borderBottom: "none",
 						borderTopLeftRadius: 8,
