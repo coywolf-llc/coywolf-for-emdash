@@ -1,6 +1,6 @@
 import { registerFeatures } from "../core/features.js";
 import type { PackModule } from "../core/module.js";
-import { type SchemaOptions, schemaMetadataHook, schemaModule, schemaSettingsSchema, schemaStorage } from "./module.js";
+import { type SchemaOptions, schemaMetadataHook, schemaModule, schemaStorage } from "./module.js";
 
 const FEATURES = [
 	{
@@ -52,7 +52,6 @@ export function schemaPack(options: SchemaOptions): PackModule {
 		routes: schemaModule(options).routes,
 		hooks: { "page:metadata": schemaMetadataHook(options) },
 		adminPages: [{ path: "/schema", label: "Schema", icon: "tree-structure" }],
-		settingsSchema: schemaSettingsSchema,
 		storage: schemaStorage,
 		capabilities: ["content:read", "schema:read", "bylines:read", "media:read"],
 	};

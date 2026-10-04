@@ -1,7 +1,7 @@
 /**
  * Link Manager admin page and dashboard widget.
  */
-import { Badge, Banner, Button, Checkbox, Dialog, DropdownMenu, Input, Loader, Select } from "@cloudflare/kumo";
+import { Badge, Banner, Button, Checkbox, Dialog, DropdownMenu, Input, Loader, Select, Switch } from "@cloudflare/kumo";
 import {
 	ArrowClockwise,
 	ArrowSquareOut,
@@ -9,6 +9,7 @@ import {
 	CaretRight,
 	DotsThree,
 	EyeSlash,
+	GearSix,
 	LinkBreak,
 	LinkSimple,
 	MagnifyingGlass,
@@ -320,6 +321,96 @@ function UnlinkDialog(props: { rows: LinkRow[] | null; onClose: () => void; onDo
 	);
 }
 
+interface LinksSettings {
+	checkBudget: number;
+	checkInternal: boolean;
+	userAgent: string;
+}
+
+/** Link checking settings (plugin settings edited here, not on the generic Settings page). */
+function SettingsDialog(props: { open: boolean; onClose: () => void; onSaved: (message: string) => void }) {
+	const [draft, setDraft] = React.useState<{ checkBudget: string; checkInternal: boolean; userAgent: string }>();
+	const [pending, setPending] = React.useState(false);
+	const [error, setError] = React.useState<string>();
+	React.useEffect(() => {
+		if (!props.open) return;
+		setDraft(undefined);
+		setError(undefined);
+		apiFetch(`${API}/settings`)
+			.then((response) => parseApiResponse<LinksSettings>(response, "Could not load the settings"))
+			.then((s) => setDraft({ checkBudget: String(s.checkBudget), checkInternal: s.checkInternal, userAgent: s.userAgent }))
+			.catch((cause) => setError(errorText(cause, "Could not load the settings")));
+	}, [props.open]);
+	const save = async () => {
+		if (!draft) return;
+		setPending(true);
+		setError(undefined);
+		try {
+			await post("settings/save", { checkBudget: Number(draft.checkBudget), checkInternal: draft.checkInternal, userAgent: draft.userAgent });
+			props.onSaved("Link checking settings saved.");
+		} catch (cause) {
+			setError(errorText(cause, "Could not save the settings"));
+		} finally {
+			setPending(false);
+		}
+	};
+	return (
+		<Dialog.Root open={props.open} onOpenChange={(open) => !open && !pending && props.onClose()}>
+			<Dialog className="p-6" size="lg">
+				<Dialog.Title className="text-lg font-semibold">Link checking settings</Dialog.Title>
+				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">
+					How the scheduled job checks links. It runs every 5 minutes while Scheduled link checking is on under Features.
+				</Dialog.Description>
+				{!draft && !error ? (
+					<div className="py-8 text-center">
+						<Loader />
+					</div>
+				) : draft ? (
+					<form
+						className="mt-4 space-y-4"
+						onSubmit={(e) => {
+							e.preventDefault();
+							void save();
+						}}
+					>
+						<Input
+							type="number"
+							min={10}
+							max={900}
+							label="Subrequests per check run"
+							description="A link takes 1–2 HTTP requests (plus 1 per redirect) and 1 database write. Workers allow 50 subrequests per invocation on the Free plan and 1,000 on Paid, shared with other scheduled jobs. Default 40."
+							value={draft.checkBudget}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft({ ...draft, checkBudget: e.target.value })}
+						/>
+						<Switch
+							label="Check links to this site"
+							checked={draft.checkInternal}
+							onCheckedChange={(checked: boolean) => setDraft({ ...draft, checkInternal: checked })}
+						/>
+						<p className="-mt-2 text-sm text-kumo-subtle">Internal links are always listed; this also requests them to see if they work.</p>
+						<Input
+							label="User-Agent override (optional)"
+							description="Leave empty to present a current desktop Chrome, which avoids most false “Blocked” results."
+							value={draft.userAgent}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft({ ...draft, userAgent: e.target.value })}
+						/>
+						{error && <Banner variant="error" role="alert" description={error} />}
+						<div className="flex justify-end gap-2">
+							<Button type="button" variant="secondary" disabled={pending} onClick={props.onClose}>
+								Cancel
+							</Button>
+							<Button type="submit" variant="primary" disabled={pending}>
+								{pending ? "Saving…" : "Save"}
+							</Button>
+						</div>
+					</form>
+				) : null}
+				{error && !draft && <Banner variant="error" role="alert" className="mt-4" description={error} />}
+			</Dialog>
+		</Dialog.Root>
+	);
+}
+
 function IgnoreRulesDialog(props: { open: boolean; rules: IgnoreRule[]; onClose: () => void; onChanged: (message: string) => void }) {
 	const [type, setType] = React.useState<IgnoreRule["type"]>("domain");
 	const [value, setValue] = React.useState("");
@@ -419,6 +510,7 @@ export function LinksPage() {
 	const [replacing, setReplacing] = React.useState<LinkRow[] | null>(null);
 	const [unlinking, setUnlinking] = React.useState<LinkRow[] | null>(null);
 	const [rulesOpen, setRulesOpen] = React.useState(false);
+	const [settingsOpen, setSettingsOpen] = React.useState(false);
 	const [busy, setBusy] = React.useState<string>();
 	const scanning = React.useRef(false);
 
@@ -520,6 +612,9 @@ export function LinksPage() {
 				<div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1">
 					<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Link Manager</h1>
 					<div className="flex shrink-0 flex-wrap justify-end gap-2">
+						<Button variant="secondary" icon={<GearSix />} onClick={() => setSettingsOpen(true)}>
+							Settings
+						</Button>
 						<Button variant="secondary" icon={<Prohibit />} onClick={() => setRulesOpen(true)}>
 							Ignore rules
 						</Button>
@@ -774,6 +869,14 @@ export function LinksPage() {
 					setSelected(new Set());
 					setNotice(message);
 					void load();
+				}}
+			/>
+			<SettingsDialog
+				open={settingsOpen}
+				onClose={() => setSettingsOpen(false)}
+				onSaved={(message) => {
+					setSettingsOpen(false);
+					setNotice(message);
 				}}
 			/>
 			<IgnoreRulesDialog

@@ -36,7 +36,7 @@ import {
 	urls,
 } from "./store.js";
 
-/** No build-time options yet; settings live on the plugin's Settings page. */
+/** No build-time options yet; settings live on the Link Manager page. */
 // biome-ignore lint/complexity/noBannedTypes: reserved for future options.
 export type LinksOptions = {};
 
@@ -53,28 +53,30 @@ const REQUEST_MS = 25_000;
 const SCAN_OPS = 200;
 const SCAN_MS = 60_000;
 
-export const linksSettingsSchema = {
-	linksCheckBudget: {
-		type: "number" as const,
-		label: "Link Manager: subrequests per check run",
-		description:
-			"Link checks run every 5 minutes. Each run uses at most this many subrequests: a link takes 1–2 HTTP requests (plus 1 per redirect) and 1 database write. Workers allow 50 subrequests per invocation on the Free plan and 1,000 on Paid, shared with other scheduled jobs.",
-		min: 10,
-		max: 900,
-		default: 40,
-	},
-	linksCheckInternal: {
-		type: "boolean" as const,
-		label: "Link Manager: check links to this site",
-		description: "Also request internal links (they're always listed).",
-		default: true,
-	},
-	linksUserAgent: {
-		type: "string" as const,
-		label: "Link Manager: User-Agent override",
-		description: "Leave empty to present a current desktop Chrome, which avoids most false \"Blocked\" results.",
-	},
-};
+/**
+ * Link checking settings, edited on the Link Manager page. Not in the
+ * plugin's settingsSchema (that holds secrets only), so reads supply defaults.
+ */
+export const LINKS_DEFAULTS = { checkBudget: 40, checkInternal: true, userAgent: "" } as const;
+
+async function readLinksSettings(ctx: PluginContext) {
+	const [budget, internal, userAgent] = await Promise.all([
+		ctx.settings.get<number>("linksCheckBudget"),
+		ctx.settings.get<boolean>("linksCheckInternal"),
+		ctx.settings.get<string>("linksUserAgent"),
+	]);
+	return {
+		checkBudget: typeof budget === "number" && Number.isFinite(budget) ? budget : LINKS_DEFAULTS.checkBudget,
+		checkInternal: typeof internal === "boolean" ? internal : LINKS_DEFAULTS.checkInternal,
+		userAgent: typeof userAgent === "string" ? userAgent : LINKS_DEFAULTS.userAgent,
+	};
+}
+
+const linksSettingsInput = z.object({
+	checkBudget: z.number().int().min(10, "Use at least 10 subrequests per run.").max(900, "Use at most 900 subrequests per run."),
+	checkInternal: z.boolean(),
+	userAgent: z.string().trim().max(500),
+});
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -115,9 +117,10 @@ async function selfBinding(): Promise<{ fetch(url: string, init?: RequestInit): 
 }
 
 export async function runChecks(ctx: PluginContext, options: { ids?: string[]; budget?: number; deadline?: number } = {}): Promise<CheckRun> {
-	const budget: Budget = { left: options.budget ?? (await ctx.settings.get<number>("linksCheckBudget")) ?? 40 };
-	const checkInternal = (await ctx.settings.get<boolean>("linksCheckInternal")) ?? true;
-	const userAgent = (await ctx.settings.get<string>("linksUserAgent")) ?? undefined;
+	const settings = await readLinksSettings(ctx);
+	const budget: Budget = { left: options.budget ?? settings.checkBudget };
+	const checkInternal = settings.checkInternal;
+	const userAgent = settings.userAgent.trim() || undefined;
 	budget.left -= 4; // The three settings reads and the candidate query.
 	const deadline = options.deadline ?? Number.POSITIVE_INFINITY;
 	const now = Date.now();
@@ -167,7 +170,7 @@ export async function runChecks(ctx: PluginContext, options: { ids?: string[]; b
 					note: !data.resolved
 						? "Can't be resolved to a web address."
 						: !checkInternal
-							? "Internal links aren't checked (see settings)."
+							? "Internal links aren't checked (Link Manager → Settings)."
 							: `Internal links need a "${SELF_BINDING}" service binding to the site's own Worker (see README).`,
 					nextCheckAt: nextCheckAt("ok", now),
 				});
@@ -418,6 +421,30 @@ export function linksModule() {
 					siteUrlKnown: Boolean(ctx.site?.url),
 					ignores: await getIgnores(ctx),
 				};
+			},
+		}),
+
+		/** Link checking settings (the page's Settings dialog). */
+		"links/settings": {
+			permission: "plugins:manage" as const,
+			handler: async (ctx: PluginContext) => {
+				await guard(ctx);
+				return readLinksSettings(ctx);
+			},
+		},
+
+		"links/settings/save": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await guard(ctx);
+				const input = parseInput(linksSettingsInput, ctx.input);
+				await ctx.settings.set("linksCheckBudget", input.checkBudget);
+				await ctx.settings.set("linksCheckInternal", input.checkInternal);
+				await ctx.settings.set("linksUserAgent", input.userAgent);
+				ctx.log.info("Link Manager settings saved", { checkBudget: input.checkBudget, checkInternal: input.checkInternal });
+				return readLinksSettings(ctx);
 			},
 		}),
 

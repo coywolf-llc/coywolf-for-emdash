@@ -29,70 +29,54 @@ export const COUNTS_FEATURE = "files.counts";
 
 const MAX_UPLOAD = 5 * 1024 ** 4; // R2's object limit (just under 5 TiB).
 const DEFAULT_MAX_UPLOAD_GB = 5;
+const DEFAULT_BASE = "download";
 const STALE_UPLOAD_MS = 24 * 60 * 60 * 1000;
 export const CLEANUP_TASK = "files-abort-stale-uploads";
 
-export const filesSettingsSchema = {
-	filesBase: {
-		type: "string" as const,
-		label: "File Downloads: download URL base",
-		description: "Downloads are served at /<base>/<id>/<file name>. One path segment. Default: download.",
-		default: "download",
-	},
-	filesPublicBaseUrl: {
-		type: "string" as const,
-		label: "File Downloads: public bucket or CDN URL (optional)",
-		description:
-			"Redirect downloads to this URL plus the object key instead of streaming them through the Worker, e.g. https://files.example.com. Use only when media and large uploads share that bucket.",
-		default: "",
-	},
-	filesScheme: {
-		type: "select" as const,
-		label: "File Downloads: card color scheme",
-		options: [
-			{ value: "auto", label: "Auto (follow the visitor's system setting)" },
-			{ value: "light", label: "Light" },
-			{ value: "dark", label: "Dark" },
-		],
-		default: "auto",
-	},
-	filesAccent: {
-		type: "string" as const,
-		label: "File Downloads: accent color",
-		description: "Hex color for the download button and focus ring, e.g. #007392. Leave empty for the default.",
-		default: "",
-	},
-	filesMaxUploadGb: {
-		type: "number" as const,
-		label: "File Downloads: largest upload (GB)",
-		description: "Large uploads bigger than this are refused. R2 storage and operations are billed to your account.",
-		min: 1,
-		max: 5000,
-		default: 5,
-	},
-	filesR2AccountId: {
-		type: "string" as const,
-		label: "File Downloads: R2 account ID (large uploads)",
-		description: "Your Cloudflare account ID, used for the R2 S3 API endpoint.",
-		default: "",
-	},
-	filesR2AccessKeyId: {
-		type: "string" as const,
-		label: "File Downloads: R2 access key ID (large uploads)",
-		description: "From an R2 API token with Object Read & Write on the bucket below.",
-		default: "",
-	},
-	filesR2SecretAccessKey: {
-		type: "secret" as const,
-		label: "File Downloads: R2 secret access key (large uploads)",
-	},
-	filesR2Bucket: {
-		type: "string" as const,
-		label: "File Downloads: R2 bucket name (large uploads)",
-		description: "The bucket bound to the site as MEDIA (e.g. mysite-media), unless you set a separate `uploads` binding.",
-		default: "",
-	},
-};
+/**
+ * File Downloads settings, edited on the Files page → Settings. Only the R2
+ * secret access key is in the plugin's settingsSchema (secrets only), so every
+ * other read supplies its default here or in settingsFrom().
+ */
+const R2_KEYS = ["filesR2AccountId", "filesR2AccessKeyId", "filesR2SecretAccessKey", "filesR2Bucket"] as const;
+
+const hexColor = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+const filesSettingsInput = z.object({
+	filesBase: z
+		.string()
+		.trim()
+		.transform((v) => v.replace(/^\/+|\/+$/g, "").toLowerCase())
+		.refine((v) => v === "" || (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(v) && !v.startsWith("_")), "The download URL base must be one path segment: letters, digits, - or _."),
+	filesPublicBaseUrl: z
+		.string()
+		.trim()
+		.max(500)
+		.refine((v) => v === "" || /^https:\/\/[^\s"'<>]+$/i.test(v), "The public bucket or CDN URL must start with https://."),
+	filesScheme: z.enum(["auto", "light", "dark"]),
+	filesAccent: z
+		.string()
+		.trim()
+		.refine((v) => v === "" || hexColor.test(v), "The accent color must be a hex color such as #007392."),
+	filesMaxUploadGb: z.number().int().min(1, "The largest upload must be at least 1 GB.").max(5000, "The largest upload can be at most 5,000 GB."),
+	filesR2AccountId: z
+		.string()
+		.trim()
+		.refine((v) => v === "" || /^[a-f0-9]{32}$/i.test(v), "The R2 account ID should be 32 hexadecimal characters."),
+	filesR2AccessKeyId: z.string().trim().max(200),
+	filesR2Bucket: z
+		.string()
+		.trim()
+		.refine((v) => v === "" || /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(v), "The R2 bucket name isn't valid."),
+	/** Write-only: a new secret replaces the saved one; empty keeps it. */
+	filesR2SecretAccessKey: z.string().trim().max(500).optional(),
+	clearR2Secret: z.boolean().optional(),
+});
+
+/** Whether all four R2 credentials are saved (not whether they work). */
+async function r2Configured(ctx: PluginContext): Promise<boolean> {
+	const values = await Promise.all(R2_KEYS.map((key) => ctx.settings.get<string>(key).catch(() => null)));
+	return values.every((v) => typeof v === "string" && v.trim() !== "");
+}
 
 interface UsageDoc {
 	fileId: string;
@@ -139,7 +123,7 @@ async function r2Config(ctx: PluginContext): Promise<R2Config> {
 	]);
 	if (!accountId || !accessKeyId || !secretAccessKey || !bucket)
 		throw PluginRouteError.badRequest(
-			"Large uploads aren't set up: add the R2 account ID, access key ID, secret access key and bucket name in the plugin settings.",
+			"Large uploads aren't set up: add the R2 account ID, access key ID, secret access key and bucket name on the Files page → Settings.",
 		);
 	if (!/^[a-f0-9]{32}$/i.test(accountId.trim())) throw PluginRouteError.badRequest("The R2 account ID should be 32 hexadecimal characters.");
 	if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bucket.trim())) throw PluginRouteError.badRequest("The R2 bucket name isn't valid.");
@@ -244,6 +228,28 @@ export function filesModule(options: FilesOptions) {
 		const raw: Record<string, unknown> = {};
 		for (const key of ["filesBase", "filesPublicBaseUrl", "filesScheme", "filesAccent"]) raw[key] = await ctx.settings.get(key);
 		return settingsFrom(raw);
+	}
+
+	async function readFilesSettings(ctx: PluginContext) {
+		const site = await siteSettings(ctx);
+		const [accountId, accessKeyId, secretKey, bucket, maxGb] = await Promise.all([
+			ctx.settings.get<string>("filesR2AccountId"),
+			ctx.settings.get<string>("filesR2AccessKeyId"),
+			ctx.settings.get<string>("filesR2SecretAccessKey").catch(() => null),
+			ctx.settings.get<string>("filesR2Bucket"),
+			ctx.settings.get<number>("filesMaxUploadGb"),
+		]);
+		return {
+			filesBase: site.base,
+			filesPublicBaseUrl: site.publicBaseUrl,
+			filesScheme: site.scheme,
+			filesAccent: site.accent,
+			filesMaxUploadGb: typeof maxGb === "number" && Number.isFinite(maxGb) ? maxGb : DEFAULT_MAX_UPLOAD_GB,
+			filesR2AccountId: accountId ?? "",
+			filesR2AccessKeyId: accessKeyId ?? "",
+			filesR2Bucket: bucket ?? "",
+			r2SecretSet: typeof secretKey === "string" && secretKey.trim() !== "",
+		};
 	}
 
 	async function getUpload(ctx: PluginContext, id: string): Promise<UploadDoc> {
@@ -352,9 +358,35 @@ export function filesModule(options: FilesOptions) {
 					base: settings.base,
 					countsEnabled: features[COUNTS_FEATURE] ?? false,
 					largeUploadsEnabled: features[LARGE_UPLOADS_FEATURE] ?? false,
+					r2Configured: await r2Configured(ctx),
 				};
 			},
 		},
+
+		/** The Files page's Settings tab (the R2 secret is reported as set or not, never returned). */
+		"files/settings": {
+			permission: "plugins:manage" as const,
+			handler: async (ctx: PluginContext) => {
+				await requireFeature(ctx, FILES_FEATURE);
+				return readFilesSettings(ctx);
+			},
+		},
+
+		"files/settings/save": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, FILES_FEATURE);
+				const { filesR2SecretAccessKey, clearR2Secret, ...plain } = parseInput(filesSettingsInput, ctx.input);
+				for (const [key, value] of Object.entries(plain)) await ctx.settings.set(key, key === "filesBase" && value === "" ? DEFAULT_BASE : value);
+				if (clearR2Secret) await ctx.settings.delete("filesR2SecretAccessKey");
+				else if (filesR2SecretAccessKey) await ctx.settings.set("filesR2SecretAccessKey", filesR2SecretAccessKey);
+				invalidateSiteCache();
+				ctx.log.info("File Downloads settings saved", { r2SecretChanged: Boolean(clearR2Secret || filesR2SecretAccessKey) });
+				return readFilesSettings(ctx);
+			},
+		}),
 
 		/** Delete a large upload (object and record). Media library files are deleted in the Media Library. */
 		"files/delete": definePluginRoute({
@@ -454,7 +486,7 @@ export function filesModule(options: FilesOptions) {
 				);
 				const maxGb = (await ctx.settings.get<number>("filesMaxUploadGb")) ?? DEFAULT_MAX_UPLOAD_GB;
 				if (input.size > maxGb * 1024 ** 3)
-					throw PluginRouteError.badRequest(`That file is ${formatSize(input.size)}; the limit is ${maxGb} GB (File Downloads settings).`);
+					throw PluginRouteError.badRequest(`That file is ${formatSize(input.size)}; the limit is ${maxGb} GB (Files → Settings).`);
 				const r2 = await client(ctx);
 				const id = newUploadId();
 				const key = `files/${id}/${safeFilename(input.name)}`;

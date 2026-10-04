@@ -62,7 +62,12 @@ export interface PackModule {
 	tasks?: TaskDef[];
 	adminPages?: AdminPageDef[];
 	widgets?: WidgetDef[];
-	/** EmDash settingsSchema fields (prefix keys with the module id). */
+	/**
+	 * Secret settings (API keys and tokens) only, prefixed with the module id;
+	 * other fields are dropped. Prefer adding secrets to src/core/secrets.ts.
+	 * Non-secret settings aren't declared: edit them on the module's own admin
+	 * page (ctx.settings.get/set) and give every read its default in code.
+	 */
 	// biome-ignore lint/suspicious/noExplicitAny: SettingField shape is EmDash's.
 	settingsSchema?: Record<string, any>;
 	/** Portable Text block types this module adds to the editor (render components live in src/astro). */

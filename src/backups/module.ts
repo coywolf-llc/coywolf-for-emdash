@@ -35,35 +35,23 @@ export interface BackupsOptions {
 	restore?: { accountId: string; databaseId: string; tokenSecret?: string };
 }
 
-export const backupsSettingsSchema = {
-	backupsScheduled: {
-		type: "boolean" as const,
-		label: "Backups: daily scheduled backup",
-		description: "Back up once a day from the site itself. Leave off if an external job (such as a GitHub Action) already does.",
-		default: false,
-	},
-	backupsRetentionDays: {
-		type: "number" as const,
-		label: "Backups: keep for (days)",
-		description: "Older database backups and replaced media copies are deleted daily. The media mirror itself is kept.",
-		min: 1,
-		max: 365,
-		default: 30,
-	},
-	backupsStaleAfterHours: {
-		type: "number" as const,
-		label: "Backups: warn when the newest backup is older than (hours)",
-		min: 1,
-		max: 720,
-		default: 36,
-	},
-};
+/**
+ * Schedule and retention, edited on the Backups page. Not in the plugin's
+ * settingsSchema (that holds secrets only), so every read supplies its default.
+ */
+export const BACKUPS_DEFAULTS = { scheduled: false, retentionDays: 30, staleAfterHours: 36 } as const;
+
+const backupsSettingsInput = z.object({
+	scheduled: z.boolean(),
+	retentionDays: z.number().int().min(1, "Keep backups for at least 1 day.").max(365, "Keep backups for at most 365 days."),
+	staleAfterHours: z.number().int().min(1, "Warn after at least 1 hour.").max(720, "Warn after at most 720 hours (30 days)."),
+});
 
 async function settings(ctx: SettingsReader) {
 	return {
-		scheduled: (await ctx.settings.get<boolean>("backupsScheduled")) ?? false,
-		retentionDays: (await ctx.settings.get<number>("backupsRetentionDays")) ?? 30,
-		staleAfterHours: (await ctx.settings.get<number>("backupsStaleAfterHours")) ?? 36,
+		scheduled: (await ctx.settings.get<boolean>("backupsScheduled")) ?? BACKUPS_DEFAULTS.scheduled,
+		retentionDays: (await ctx.settings.get<number>("backupsRetentionDays")) ?? BACKUPS_DEFAULTS.retentionDays,
+		staleAfterHours: (await ctx.settings.get<number>("backupsStaleAfterHours")) ?? BACKUPS_DEFAULTS.staleAfterHours,
 	};
 }
 
@@ -147,6 +135,22 @@ export function backupsModule(options: BackupsOptions) {
 				return { items: await listBackups(backups), ...(await settings(ctx)), restore: restoreStatus, undo: await getUndo(backups) };
 			},
 		},
+
+		/** Schedule and retention (the Backups page's Settings section). */
+		"backups/settings/save": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				const input = parseInput(backupsSettingsInput, ctx.input);
+				await ctx.settings.set("backupsScheduled", input.scheduled);
+				await ctx.settings.set("backupsRetentionDays", input.retentionDays);
+				await ctx.settings.set("backupsStaleAfterHours", input.staleAfterHours);
+				await ensureBackupsTask(ctx);
+				ctx.log.info("Backup settings saved", input);
+				return settings(ctx);
+			},
+		}),
 
 		"backups/run": definePluginRoute({
 			permission: "plugins:manage",

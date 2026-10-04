@@ -3,7 +3,7 @@
  * where each video is used; editing, captions, uploads (straight from the
  * browser to Stream), index rebuild and the Stream webhook.
  */
-import { Badge, Banner, Button, Checkbox, Dialog, DropdownMenu, Input, InputArea, Loader } from "@cloudflare/kumo";
+import { Badge, Banner, Button, Checkbox, Dialog, DropdownMenu, Input, InputArea, Loader, Tabs } from "@cloudflare/kumo";
 import {
 	ArrowClockwise,
 	ClosedCaptioning,
@@ -17,6 +17,8 @@ import {
 } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
+
+import { SecretField, SettingsSection, SetupCard } from "./settings-ui.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/videos";
 
@@ -52,6 +54,16 @@ interface Status {
 	features: Record<string, boolean>;
 	webhook: { subscribed: boolean; url: string };
 	sitemapUrl: string;
+}
+
+interface VideosSettings {
+	accountId: string;
+	tokenSet: boolean;
+	customerSubdomain: string;
+	accentColor: string;
+	backgroundColor: string;
+	envAccountId: boolean;
+	envToken: boolean;
 }
 
 interface Meta {
@@ -456,6 +468,164 @@ function UploadDialog(props: { open: boolean; onClose: () => void; onUploaded: (
 	);
 }
 
+// ── Settings ─────────────────────────────────────────────────────
+
+async function loadSettings(): Promise<VideosSettings> {
+	return parseApiResponse<VideosSettings>(await apiFetch(`${API}/settings`), "Could not load the Videos settings");
+}
+
+/** Account ID and token: the setup card before Stream is connected. */
+function ConnectForm(props: { onConnected: () => void }) {
+	const [settings, setSettings] = React.useState<VideosSettings>();
+	const [accountId, setAccountId] = React.useState("");
+	const [token, setToken] = React.useState("");
+	const [pending, setPending] = React.useState(false);
+	const [error, setError] = React.useState<string>();
+	React.useEffect(() => {
+		loadSettings()
+			.then((s) => {
+				setSettings(s);
+				setAccountId(s.accountId);
+			})
+			.catch((cause) => setError(errorText(cause, "Could not load the Videos settings")));
+	}, []);
+	const save = async () => {
+		setPending(true);
+		setError(undefined);
+		try {
+			await post("settings/save", { accountId: accountId.trim(), ...(token.trim() ? { token: token.trim() } : {}) });
+			setToken("");
+			props.onConnected();
+		} catch (cause) {
+			setError(errorText(cause, "Could not save"));
+		} finally {
+			setPending(false);
+		}
+	};
+	return (
+		<form
+			className="space-y-3"
+			onSubmit={(e) => {
+				e.preventDefault();
+				void save();
+			}}
+		>
+			<div className="grid gap-4 sm:grid-cols-2">
+				<Input
+					label="Cloudflare account ID"
+					description={settings?.envAccountId ? "Empty uses the CF_ACCOUNT_ID Worker variable." : "Dashboard → any domain → Account ID (32 characters)."}
+					value={accountId}
+					disabled={pending}
+					onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAccountId(e.target.value)}
+				/>
+				<SecretField
+					label="Stream API token"
+					saved={settings?.tokenSet ?? false}
+					value={token}
+					onChange={setToken}
+					description={settings?.envToken ? "Empty uses the CF_STREAM_TOKEN Worker secret." : "An API token with Account → Stream → Edit. Stored encrypted."}
+					disabled={pending}
+				/>
+			</div>
+			{error && <Banner variant="error" role="alert" description={error} />}
+			<Button type="submit" variant="primary" disabled={pending || (!accountId.trim() && !token.trim())}>
+				{pending ? "Connecting…" : "Connect"}
+			</Button>
+		</form>
+	);
+}
+
+function SettingsPanel(props: { onSaved: (message: string) => void }) {
+	const [saved, setSaved] = React.useState<VideosSettings>();
+	const [draft, setDraft] = React.useState({ accountId: "", token: "", customerSubdomain: "", accentColor: "", backgroundColor: "" });
+	const [pending, setPending] = React.useState<"save" | "clear">();
+	const [error, setError] = React.useState<string>();
+	const apply = (s: VideosSettings) => {
+		setSaved(s);
+		setDraft({ accountId: s.accountId, token: "", customerSubdomain: s.customerSubdomain, accentColor: s.accentColor, backgroundColor: s.backgroundColor });
+	};
+	React.useEffect(() => {
+		loadSettings()
+			.then(apply)
+			.catch((cause) => setError(errorText(cause, "Could not load the Videos settings")));
+	}, []);
+	const set = (patch: Partial<typeof draft>) => setDraft((d) => ({ ...d, ...patch }));
+	const save = async (clearToken = false) => {
+		setPending(clearToken ? "clear" : "save");
+		setError(undefined);
+		try {
+			const { token, ...rest } = draft;
+			apply(await post<VideosSettings>("settings/save", { ...rest, ...(clearToken ? { clearToken: true } : token.trim() ? { token: token.trim() } : {}) }));
+			props.onSaved(clearToken ? "Stream API token removed." : "Videos settings saved.");
+		} catch (cause) {
+			setError(errorText(cause, "Could not save the settings"));
+		} finally {
+			setPending(undefined);
+		}
+	};
+	if (!saved)
+		return error ? (
+			<Banner variant="error" role="alert" title="Could not load the settings" description={error} />
+		) : (
+			<div className="py-12 text-center">
+				<Loader />
+			</div>
+		);
+	const text = (key: "accountId" | "customerSubdomain" | "accentColor" | "backgroundColor") => ({
+		value: draft[key],
+		disabled: Boolean(pending),
+		onChange: (e: React.ChangeEvent<HTMLInputElement>) => set({ [key]: e.target.value }),
+	});
+	return (
+		<form
+			className="space-y-6"
+			onSubmit={(e) => {
+				e.preventDefault();
+				void save();
+			}}
+		>
+			<SettingsSection
+				id="videos-connection"
+				title="Cloudflare Stream connection"
+				description="The account that holds your Stream library and an API token with Account → Stream → Edit. Empty fields fall back to the CF_ACCOUNT_ID and CF_STREAM_TOKEN Worker variables."
+			>
+				<div className="grid gap-4 sm:grid-cols-2">
+					<Input label="Cloudflare account ID" description={saved.envAccountId ? "CF_ACCOUNT_ID is set; it's used when this is empty." : undefined} {...text("accountId")} />
+					<SecretField
+						label="Stream API token"
+						saved={saved.tokenSet}
+						value={draft.token}
+						onChange={(value) => set({ token: value })}
+						description={saved.envToken ? "CF_STREAM_TOKEN is set; it's used when no token is saved here." : "Stored encrypted."}
+						onClear={() => void save(true)}
+						clearing={pending === "clear"}
+						disabled={Boolean(pending)}
+					/>
+				</div>
+			</SettingsSection>
+			<SettingsSection id="videos-player" title="Player" description="How the Coywolf Video block's player looks and where it loads from.">
+				<div className="grid gap-4 sm:grid-cols-2">
+					<Input
+						label="Stream customer subdomain"
+						placeholder="customer-abc123.cloudflarestream.com"
+						description="Stream → any video → Embed. Learned from the library automatically when empty."
+						{...text("customerSubdomain")}
+					/>
+					<div aria-hidden="true" className="hidden sm:block" />
+					<Input label="Accent color" placeholder="#f6821f" description="Play button and progress bar. Empty uses Stream's default." {...text("accentColor")} />
+					<Input label="Background color" placeholder="#000000" description="Behind letterboxed videos. Empty is transparent." {...text("backgroundColor")} />
+				</div>
+			</SettingsSection>
+			{error && <Banner variant="error" role="alert" description={error} />}
+			<div className="flex justify-end">
+				<Button type="submit" variant="primary" disabled={Boolean(pending)}>
+					{pending === "save" ? "Saving…" : "Save settings"}
+				</Button>
+			</div>
+		</form>
+	);
+}
+
 // ── Page ─────────────────────────────────────────────────────────
 
 export function VideosPage() {
@@ -468,6 +638,7 @@ export function VideosPage() {
 	const [captioning, setCaptioning] = React.useState<Video | null>(null);
 	const [uploading, setUploading] = React.useState(false);
 	const [busy, setBusy] = React.useState<string>();
+	const [tab, setTab] = React.useState("library");
 
 	const load = React.useCallback(async (refresh = false) => {
 		setError(undefined);
@@ -539,19 +710,23 @@ export function VideosPage() {
 				<div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1">
 					<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Videos</h1>
 					<div className="flex shrink-0 justify-end gap-2">
-						<Button variant="secondary" icon={<ArrowClockwise />} disabled={!status?.configured || Boolean(busy)} onClick={() => void load(true)}>
-							Refresh
-						</Button>
-						<Button variant="primary" icon={<UploadSimple />} disabled={!status?.configured} onClick={() => setUploading(true)}>
-							Upload
-						</Button>
+						{tab === "library" && status?.configured && (
+							<>
+								<Button variant="secondary" icon={<ArrowClockwise />} disabled={Boolean(busy)} onClick={() => void load(true)}>
+									Refresh
+								</Button>
+								<Button variant="primary" icon={<UploadSimple />} onClick={() => setUploading(true)}>
+									Upload
+								</Button>
+							</>
+						)}
 					</div>
 					<p className="col-span-2 text-sm leading-5 text-pretty text-kumo-subtle">
 						Your Cloudflare Stream library. Add videos to posts with the <strong>Coywolf Video</strong> block; plays,
 						likes and the posts each video appears in show here.
 					</p>
 				</div>
-				{status?.configured && (
+				{tab === "library" && status?.configured && (
 					<div className="sm:w-72">
 						<Input
 							label="Search"
@@ -569,15 +744,41 @@ export function VideosPage() {
 			</div>
 			{error && <Banner variant="error" role="alert" title="Something went wrong" description={error} />}
 
-			{status && !status.configured && (
-				<Banner
-					variant="default"
-					title="Connect Cloudflare Stream"
-					description="Add your account ID and an API token with Stream: Edit under Plugins → Coywolf Pack → Settings (or set the CF_ACCOUNT_ID and CF_STREAM_TOKEN Worker variables), then reload this page."
+			{status && (
+				<Tabs
+					value={tab}
+					onValueChange={setTab}
+					tabs={[
+						{ value: "library", label: "Library" },
+						{ value: "settings", label: "Settings" },
+					]}
 				/>
 			)}
 
-			{!videos && !error ? (
+			{tab === "settings" && (
+				<SettingsPanel
+					onSaved={(message) => {
+						setNotice(message);
+						void load(true);
+					}}
+				/>
+			)}
+
+			{tab === "library" && status && !status.configured && (
+				<SetupCard
+					title="Add a Stream API token to manage videos"
+					description="Connect your Cloudflare Stream account to see the library, upload videos, manage captions and subscribe to the Stream webhook. Or set the CF_ACCOUNT_ID and CF_STREAM_TOKEN Worker variables and reload this page."
+				>
+					<ConnectForm
+						onConnected={() => {
+							setNotice("Connected to Cloudflare Stream.");
+							void load(true);
+						}}
+					/>
+				</SetupCard>
+			)}
+
+			{tab !== "library" ? null : !videos && !error ? (
 				<div className="py-12 text-center text-kumo-subtle">
 					<Loader />
 				</div>
@@ -667,7 +868,7 @@ export function VideosPage() {
 				</div>
 			) : null}
 
-			{status && (
+			{tab === "library" && status?.configured && (
 				<section className="space-y-3 border-t border-kumo-line pt-4" aria-labelledby="cw-videos-tools">
 					<h2 id="cw-videos-tools" className="text-base font-semibold">
 						Tools
@@ -685,13 +886,13 @@ export function VideosPage() {
 									Unsubscribe Stream webhook
 								</Button>
 							) : (
-								<Button variant="secondary" disabled={Boolean(busy) || !status.configured} onClick={() => void webhook(true)}>
+								<Button variant="secondary" disabled={Boolean(busy)} onClick={() => void webhook(true)}>
 									Subscribe Stream webhook
 								</Button>
 							))}
 					</div>
 					<ul className="space-y-1 text-sm text-kumo-subtle">
-						<li>Player host: {status.host ?? "not known yet (refresh the library, or set the customer subdomain in Settings)"}</li>
+						<li>Player host: {status.host ?? "not known yet (refresh the library, or set the customer subdomain under Settings)"}</li>
 						{f.sitemap && (
 							<li>
 								Video sitemap:{" "}

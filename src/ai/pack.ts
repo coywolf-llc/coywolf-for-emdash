@@ -11,7 +11,7 @@ import type { PackModule } from "../core/module.js";
 import { getEntryEntities } from "./entities.js";
 import { PROVIDER_HOSTS } from "./providers.js";
 import { aiRoutes } from "./routes.js";
-import { type AiOptions, SETTINGS_SCHEMA, STORAGE, col, enqueue, entryKey, readSettings, type EntryRecord } from "./store.js";
+import { type AiOptions, STORAGE, col, enqueue, entryKey, readSettings, type EntryRecord } from "./store.js";
 import { WIKIDATA_HOST } from "./wikidata.js";
 import { queueId } from "./logic.js";
 import { entryText, targetCollections, tick } from "./worker.js";
@@ -112,7 +112,6 @@ export function aiPack(options: AiOptions = {}): PackModule {
 		},
 		tasks: [{ name: AI_TASK, schedule: "*/2 * * * *", handler: (ctx: PluginContext) => tick(ctx, options, { budgetMs: 8 * 60_000 }).then(() => undefined) }],
 		adminPages: [{ path: "/ai", label: "AI Enrichment", icon: "sparkle" }],
-		settingsSchema: SETTINGS_SCHEMA,
 		storage: STORAGE,
 		capabilities: ["network:request", "content:read", "content:write", "schema:read", "media:read", "media:bytes:read", "media:metadata:write"],
 		allowedHosts: [...PROVIDER_HOSTS, WIKIDATA_HOST],

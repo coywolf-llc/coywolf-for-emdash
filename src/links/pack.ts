@@ -2,7 +2,7 @@ import type { PluginContext } from "emdash";
 
 import { registerFeatures } from "../core/features.js";
 import type { PackModule } from "../core/module.js";
-import { LINKS_CHECK_TASK, LINKS_SCAN_TASK, linksModule, linksSettingsSchema } from "./module.js";
+import { LINKS_CHECK_TASK, LINKS_SCAN_TASK, linksModule } from "./module.js";
 import { STORAGE } from "./store.js";
 
 const FEATURES = [
@@ -35,7 +35,6 @@ export function linksPack(): PackModule {
 		],
 		adminPages: [{ path: "/links", label: "Link Manager", icon: "link" }],
 		widgets: [{ id: "links-status", title: "Links", size: "third" }],
-		settingsSchema: linksSettingsSchema,
 		storage: STORAGE,
 		capabilities: ["content:read", "content:write", "content:revisions:read", "content:publish", "schema:read"],
 	};
