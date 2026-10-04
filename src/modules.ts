@@ -9,6 +9,7 @@ import { codeBlocksPack } from "./codeBlocks/pack.js";
 import type { PackMiddleware, PackModule } from "./core/module.js";
 import { headingsPack } from "./headings/pack.js";
 import { filesMiddleware, filesPack } from "./files/pack.js";
+import { discoveryMiddleware, discoveryPack } from "./discovery/pack.js";
 import { redirectsMiddleware, redirectsPack } from "./redirects/pack.js";
 import { schemaPack } from "./schema/pack.js";
 import { searchPack, searchRateLimitMiddleware } from "./search/pack.js";
@@ -25,6 +26,7 @@ export const MODULES: Factory[] = [
 	(o) => (o.files === false ? null : filesPack(o.files ?? {})),
 	(o) => (o.search === false ? null : searchPack(o.search ?? {})),
 	(o) => (o.ai === false ? null : aiPack(o.ai ?? {})),
+	(o) => (o.discovery === false ? null : discoveryPack(o.discovery ?? {})),
 ];
 
-export const MIDDLEWARE: PackMiddleware[] = [redirectsMiddleware, filesMiddleware, searchRateLimitMiddleware];
+export const MIDDLEWARE: PackMiddleware[] = [redirectsMiddleware, filesMiddleware, searchRateLimitMiddleware, ...discoveryMiddleware];

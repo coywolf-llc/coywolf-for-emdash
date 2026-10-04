@@ -1,0 +1,390 @@
+/**
+ * Discovery admin page: IndexNow, the news sitemap, and llms.txt settings
+ * and status.
+ */
+import { Badge, Banner, Button, Checkbox, Input, InputArea, Loader, Select } from "@cloudflare/kumo";
+import { ArrowClockwise, ArrowSquareOut, Key, PaperPlaneTilt } from "@phosphor-icons/react";
+import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
+import * as React from "react";
+
+const API = "/_emdash/api/plugins/coywolf-pack/discovery";
+
+interface Settings {
+	indexnow: { endpoint: "api.indexnow.org" | "www.bing.com"; collections: string[] };
+	news: { collections: string[]; publicationName: string; language: string };
+	llms: { summary: string; intro: string; collections: string[]; maxEntries: number; markdown: boolean; license: string };
+}
+
+interface PingLogEntry {
+	at: string;
+	endpoint: string;
+	count: number;
+	urls: string[];
+	status: number;
+	ok: boolean;
+	error?: string;
+	trigger: "content" | "manual";
+}
+
+interface Status {
+	features: { indexnow: boolean; news: boolean; llms: boolean };
+	settings: Settings;
+	collections: { slug: string; label: string; hidden: boolean; hasSeo: boolean }[];
+	key: string | null;
+	urls: { keyFile: string | null; news: string; llms: string };
+	log: PingLogEntry[];
+	cache: { llms: { count: number; builtAt: string } | null; news: { count: number; builtAt: string } | null };
+}
+
+const errorText = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
+const dateTime = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" });
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+	const response = await apiFetch(`${API}/${path}`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	});
+	return parseApiResponse<T>(response, "The request failed");
+}
+
+function Section(props: { title: string; on: boolean; description: string; children: React.ReactNode; actions?: React.ReactNode }) {
+	return (
+		<section className="rounded-lg border border-kumo-line" aria-labelledby={`discovery-${props.title}`}>
+			<div className="flex flex-wrap items-start justify-between gap-4 border-b border-kumo-line p-4">
+				<div className="min-w-0">
+					<h2 id={`discovery-${props.title}`} className="flex items-center gap-2 text-base font-semibold">
+						{props.title}
+						<Badge variant={props.on ? "primary" : "secondary"}>{props.on ? "On" : "Off"}</Badge>
+					</h2>
+					<p className="mt-1 text-sm text-kumo-subtle">{props.description}</p>
+				</div>
+				{props.actions && <div className="flex flex-wrap gap-2">{props.actions}</div>}
+			</div>
+			<div className="space-y-4 p-4">{props.children}</div>
+		</section>
+	);
+}
+
+function ExternalLink(props: { href: string }) {
+	return (
+		<a className="inline-flex items-center gap-1 break-all text-sm text-kumo-link underline" href={props.href} target="_blank" rel="noreferrer">
+			{props.href}
+			<ArrowSquareOut aria-hidden="true" className="shrink-0" />
+		</a>
+	);
+}
+
+function CollectionPicker(props: {
+	legend: string;
+	hint: string;
+	collections: Status["collections"];
+	value: string[];
+	onChange: (value: string[]) => void;
+}) {
+	return (
+		<fieldset>
+			<legend className="text-sm font-medium">{props.legend}</legend>
+			<p className="mt-0.5 text-sm text-kumo-subtle">{props.hint}</p>
+			<div className="mt-2 flex flex-wrap gap-x-6 gap-y-2">
+				{props.collections.map((c) => (
+					<Checkbox
+						key={c.slug}
+						label={c.label}
+						checked={props.value.includes(c.slug)}
+						onCheckedChange={(checked: boolean) =>
+							props.onChange(checked ? [...props.value, c.slug] : props.value.filter((s) => s !== c.slug))
+						}
+					/>
+				))}
+			</div>
+		</fieldset>
+	);
+}
+
+const when = (iso: string | undefined) => (iso ? dateTime.format(new Date(iso)) : "never");
+
+export function DiscoveryPage() {
+	const [status, setStatus] = React.useState<Status>();
+	const [draft, setDraft] = React.useState<Settings>();
+	const [error, setError] = React.useState<string>();
+	const [notice, setNotice] = React.useState<string>();
+	const [busy, setBusy] = React.useState<string | null>(null);
+
+	const load = React.useCallback(async () => {
+		try {
+			const data = await parseApiResponse<Status>(await apiFetch(`${API}/status`), "Couldn't load Discovery");
+			setStatus(data);
+			setDraft(data.settings);
+		} catch (cause) {
+			setError(errorText(cause, "Couldn't load Discovery"));
+		}
+	}, []);
+	React.useEffect(() => {
+		void load();
+	}, [load]);
+
+	async function run(name: string, task: () => Promise<string>) {
+		setBusy(name);
+		setError(undefined);
+		setNotice(undefined);
+		try {
+			setNotice(await task());
+			await load();
+		} catch (cause) {
+			setError(errorText(cause, "Something went wrong"));
+		} finally {
+			setBusy(null);
+		}
+	}
+
+	const save = () =>
+		run("save", async () => {
+			await post("save", draft);
+			return "Settings saved. llms.txt and the news sitemap will rebuild on their next request.";
+		});
+	const rebuild = () =>
+		run("rebuild", async () => {
+			const out = await post<{ llms?: number; news?: number }>("rebuild", {});
+			const parts = [out.llms !== undefined && `llms.txt lists ${out.llms} entries`, out.news !== undefined && `the news sitemap lists ${out.news}`].filter(Boolean);
+			return parts.length ? `Rebuilt: ${parts.join(", ")}.` : "Nothing to rebuild: llms.txt and the news sitemap are off.";
+		});
+	const submitHome = () =>
+		run("submit", async () => {
+			const entry = await post<PingLogEntry>("submit", {});
+			return entry.ok ? `Submitted the home page to ${entry.endpoint} (HTTP ${entry.status}).` : `The submission failed: ${entry.error ?? `HTTP ${entry.status}`}`;
+		});
+	const regenerate = () => {
+		if (!window.confirm("Create a new IndexNow key? The old key file stops working.")) return;
+		void run("key", async () => {
+			await post("regenerate-key", {});
+			return "New IndexNow key created.";
+		});
+	};
+
+	if (!status || !draft) {
+		return (
+			<div className="space-y-6">
+				<Header />
+				{error ? (
+					<Banner variant="error" role="alert" description={error} />
+				) : (
+					<div className="flex justify-center py-12">
+						<Loader />
+					</div>
+				)}
+			</div>
+		);
+	}
+
+	const set = <K extends keyof Settings>(section: K, patch: Partial<Settings[K]>) =>
+		setDraft((d) => (d ? { ...d, [section]: { ...d[section], ...patch } } : d));
+	const anyOn = status.features.indexnow || status.features.news || status.features.llms;
+
+	return (
+		<div className="space-y-6">
+			<Header />
+
+			{!anyOn && (
+				<Banner
+					variant="default"
+					description="Discovery features are off. Turn on Discovery and the parts you want under Coywolf Pack → Features. You can change settings here first."
+				/>
+			)}
+			<div aria-live="polite">
+				{error && <Banner variant="error" role="alert" description={error} />}
+				{notice && <Banner variant="default" description={notice} />}
+			</div>
+
+			<form
+				className="space-y-6"
+				onSubmit={(e) => {
+					e.preventDefault();
+					void save();
+				}}
+			>
+				<Section
+					title="IndexNow"
+					on={status.features.indexnow}
+					description="When an entry is published, updated, unpublished, or deleted, its URL is sent to IndexNow so Bing, Yandex, Seznam, Naver and other participating engines can recrawl it within minutes. Changes made within a few seconds of each other go out together. Entries set to noindex aren't submitted."
+					actions={
+						<>
+							<Button type="button" variant="secondary" icon={<PaperPlaneTilt />} disabled={!status.features.indexnow || busy !== null} onClick={() => void submitHome()}>
+								{busy === "submit" ? "Submitting…" : "Submit home page"}
+							</Button>
+							<Button type="button" variant="secondary" icon={<Key />} disabled={busy !== null} onClick={regenerate}>
+								New key
+							</Button>
+						</>
+					}
+				>
+					<div className="text-sm">
+						<div className="font-medium">Key file</div>
+						{status.urls.keyFile ? (
+							<ExternalLink href={status.urls.keyFile} />
+						) : (
+							<p className="text-kumo-subtle">A key is created when IndexNow is turned on.</p>
+						)}
+					</div>
+					<Select
+						label="Endpoint"
+						value={draft.indexnow.endpoint}
+						onValueChange={(value: string | null) => set("indexnow", { endpoint: value === "www.bing.com" ? "www.bing.com" : "api.indexnow.org" })}
+						items={[
+							{ value: "api.indexnow.org", label: "api.indexnow.org (shared with all IndexNow engines)" },
+							{ value: "www.bing.com", label: "www.bing.com" },
+						]}
+					/>
+					<CollectionPicker
+						legend="Collections"
+						hint="Leave all unchecked to submit every collection with public URLs."
+						collections={status.collections}
+						value={draft.indexnow.collections}
+						onChange={(collections) => set("indexnow", { collections })}
+					/>
+					<div>
+						<h3 className="text-sm font-medium">Recent submissions</h3>
+						{status.log.length === 0 ? (
+							<p className="mt-1 text-sm text-kumo-subtle">None yet.</p>
+						) : (
+							<div className="mt-2 overflow-x-auto">
+								<table className="w-full text-left text-sm">
+									<thead className="text-kumo-subtle">
+										<tr>
+											<th scope="col" className="py-1 pr-4 font-medium">When</th>
+											<th scope="col" className="py-1 pr-4 font-medium">Result</th>
+											<th scope="col" className="py-1 pr-4 font-medium">URLs</th>
+										</tr>
+									</thead>
+									<tbody className="divide-y divide-kumo-line">
+										{status.log.map((entry) => (
+											<tr key={`${entry.at}-${entry.urls[0] ?? ""}`} className="align-top">
+												<td className="whitespace-nowrap py-2 pr-4">{when(entry.at)}</td>
+												<td className="py-2 pr-4">
+													<Badge variant={entry.ok ? "primary" : "destructive"}>{entry.ok ? `OK ${entry.status}` : entry.status ? `Error ${entry.status}` : "Error"}</Badge>
+													{entry.error && <div className="mt-1 max-w-xs break-words text-kumo-subtle">{entry.error}</div>}
+												</td>
+												<td className="py-2 pr-4">
+													<div className="break-all">{entry.urls[0]}</div>
+													{entry.count > 1 && <div className="text-kumo-subtle">and {entry.count - 1} more</div>}
+												</td>
+											</tr>
+										))}
+									</tbody>
+								</table>
+							</div>
+						)}
+					</div>
+				</Section>
+
+				<Section
+					title="News sitemap"
+					on={status.features.news}
+					description="A Google News sitemap of entries published in the last 48 hours. Submit it in Google Search Console, and optionally add a Sitemap: line for it to your robots.txt (Settings → SEO)."
+				>
+					<ExternalLink href={status.urls.news} />
+					<p className="text-sm text-kumo-subtle">
+						{status.cache.news ? `${status.cache.news.count} entries as of ${when(status.cache.news.builtAt)}.` : "Not built yet."}
+					</p>
+					<CollectionPicker
+						legend="Collections"
+						hint="Entries from these collections are listed."
+						collections={status.collections}
+						value={draft.news.collections}
+						onChange={(collections) => set("news", { collections })}
+					/>
+					<div className="grid gap-4 sm:grid-cols-2">
+						<Input
+							label="Publication name"
+							description="Must match the name Google News knows you by. Empty uses the site title."
+							value={draft.news.publicationName}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => set("news", { publicationName: e.target.value })}
+						/>
+						<Input
+							label="Language"
+							description="ISO 639 code, such as en or fr. Empty uses the site locale."
+							value={draft.news.language}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => set("news", { language: e.target.value })}
+						/>
+					</div>
+				</Section>
+
+				<Section
+					title="llms.txt and Markdown"
+					on={status.features.llms}
+					description="An llms.txt index (llmstxt.org) linking your entries, and a Markdown version of each entry at its URL + index.html.md, also served to requests that ask for text/markdown."
+					actions={
+						<Button type="button" variant="secondary" icon={<ArrowClockwise />} disabled={busy !== null} onClick={() => void rebuild()}>
+							{busy === "rebuild" ? "Rebuilding…" : "Rebuild now"}
+						</Button>
+					}
+				>
+					<ExternalLink href={status.urls.llms} />
+					<p className="text-sm text-kumo-subtle">
+						{status.cache.llms ? `${status.cache.llms.count} entries as of ${when(status.cache.llms.builtAt)}.` : "Not built yet."}
+					</p>
+					<Input
+						label="Summary"
+						description="The one-line summary under the site name. Empty uses the site tagline."
+						value={draft.llms.summary}
+						onChange={(e: React.ChangeEvent<HTMLInputElement>) => set("llms", { summary: e.target.value })}
+					/>
+					<InputArea
+						label="Introduction"
+						description="Optional Markdown shown before the lists, such as what the site covers and which pages matter most."
+						rows={4}
+						value={draft.llms.intro}
+						onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => set("llms", { intro: e.target.value })}
+					/>
+					<CollectionPicker
+						legend="Collections"
+						hint="Leave all unchecked to list every visible collection with public URLs."
+						collections={status.collections}
+						value={draft.llms.collections}
+						onChange={(collections) => set("llms", { collections })}
+					/>
+					<div className="grid gap-4 sm:grid-cols-2">
+						<Input
+							label="Maximum entries"
+							type="number"
+							min={1}
+							max={5000}
+							description="The first 100 per collection are listed by collection; the rest go under Optional."
+							value={String(draft.llms.maxEntries)}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => set("llms", { maxEntries: Math.max(1, Math.min(5000, Number(e.target.value) || 1)) })}
+						/>
+						<Input
+							label="Content license (optional)"
+							description="Noted in each Markdown file's frontmatter, such as CC BY 4.0."
+							value={draft.llms.license}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => set("llms", { license: e.target.value })}
+						/>
+					</div>
+					<Checkbox
+						label="Serve Markdown versions of entries and link to them from llms.txt"
+						checked={draft.llms.markdown}
+						onCheckedChange={(checked: boolean) => set("llms", { markdown: checked })}
+					/>
+				</Section>
+
+				<div className="flex justify-end">
+					<Button type="submit" variant="primary" disabled={busy !== null}>
+						{busy === "save" ? "Saving…" : "Save settings"}
+					</Button>
+				</div>
+			</form>
+		</div>
+	);
+}
+
+function Header() {
+	return (
+		<header className="grid min-w-0 gap-4 border-b border-kumo-line pb-4">
+			<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Discovery</h1>
+			<p className="text-sm leading-5 text-pretty text-kumo-subtle">
+				Help search engines and AI agents find your content: IndexNow pings, a Google News sitemap, and llms.txt with Markdown versions of
+				your entries.
+			</p>
+		</header>
+	);
+}

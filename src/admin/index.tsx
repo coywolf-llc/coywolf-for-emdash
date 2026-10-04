@@ -3,6 +3,7 @@ import type { PluginAdminExports } from "emdash";
 import { AiPage } from "./ai.js";
 import { BackupStatusWidget, BackupsPage } from "./backups.js";
 import { CodeBlocksPage } from "./codeBlocks.js";
+import { DiscoveryPage } from "./discovery.js";
 import { FeaturesPage } from "./features.js";
 import { HeadingsPage } from "./headings.js";
 import { FilesPage } from "./files.js";
@@ -20,6 +21,7 @@ export const pages: PluginAdminExports["pages"] = {
 	"/files": FilesPage,
 	"/search": SearchPage,
 	"/ai": AiPage,
+	"/discovery": DiscoveryPage,
 };
 
 export const widgets: PluginAdminExports["widgets"] = {

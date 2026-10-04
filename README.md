@@ -10,6 +10,7 @@ One plugin with [Coywolf](https://coywolf.com)'s features for [EmDash](https://e
 | **Code Blocks** | Server-side syntax highlighting, themes, language label, copy button and line numbers for code blocks |
 | **File Downloads** | A download card block, stable download URLs with counts, a Files page, and direct-to-R2 uploads of any size |
 | **Search** | Settings page for EmDash's full-text search, a search box with as-you-type suggestions and an OR fallback, and rate limiting |
+| **Discovery** | IndexNow pings, a Google News sitemap, and llms.txt with Markdown versions of entries |
 
 More modules will follow as Coywolf's WordPress plugins move to EmDash.
 
@@ -429,6 +430,34 @@ Set `ai: false` in `coywolfPlugin()` to leave the module out entirely. The modul
 - Only published entries are analyzed. Change the model or switch features and entries are re-analyzed the next time they're saved (or with **Re-analyze unchanged entries**).
 - The daily limit is counted in UTC days. Each call's token usage is in the usage log; costs depend on your provider.
 - Wikidata lookups are cached per Worker isolate. If Wikidata doesn't answer, the item is retried rather than saved unverified.
+## Discovery
+
+Help search engines and AI agents find your content. Ported from Coywolf SEO for WordPress. Everything is off until you turn it on under **Features**: the **Discovery** switch, then any of its three parts. Settings and status are under **Plugins → Coywolf Pack → Discovery**.
+
+| Feature switch | Default | What it does |
+| --- | --- | --- |
+| `discovery` | off | Main switch for the module |
+| `discovery.indexnow` | off | IndexNow submissions and the key file |
+| `discovery.newsSitemap` | off | `/news-sitemap.xml` |
+| `discovery.llms` | off | `/llms.txt`, Markdown versions of entries, and the `<link rel="alternate" type="text/markdown">` head tag |
+
+- **IndexNow**: when an entry is published, updated (in collections without draft revisions), unpublished, or deleted, its public URL goes to `api.indexnow.org` (or `www.bing.com`), which shares it with Bing, Yandex, Seznam, Naver, and the other participating engines. Changes made within 3 seconds of each other go out as one request, after the response is sent. A changed slug submits the old URL too. Entries set to noindex aren't submitted. The key is generated the first time it's needed (or when you open the Discovery page with IndexNow on) and served at `/<key>.txt`; **New key** replaces it. The page shows the last 25 submissions and has **Submit home page** for checking the setup.
+- **News sitemap**: entries published in the last 48 hours (the window Google News uses), newest first, at most 1,000, with publication name and language (defaults: site title and locale). Choose the collections (default: `posts`). Also served at `/coywolf-news-sitemap.xml`, Coywolf SEO's URL, so a sitemap submitted from WordPress keeps working. Submit it in Google Search Console; to list it in robots.txt, add `Sitemap: https://example.com/news-sitemap.xml` to the custom robots.txt under **Settings → SEO**. The module doesn't change robots.txt.
+- **llms.txt** ([llmstxt.org](https://llmstxt.org/)): the site name, a summary (default: the site tagline), an optional introduction, then one list per collection (newest first, 100 per collection) and an **Optional** list for the rest, up to 1,000 entries (configurable up to 5,000). Each link points at the entry's Markdown version, or at the page itself when Markdown is off. Excerpts (`excerpt` field or SEO description) become link notes. A static `public/llms.txt` takes precedence, because Cloudflare serves static assets before the Worker runs.
+- **Markdown versions**: each entry at its URL + `index.html.md` (`/blog/post/` → `/blog/post/index.html.md`, Coywolf SEO's convention). The Portable Text body becomes Markdown (headings, paragraphs, lists, links, images with captions, code, block quotes, tables, and horizontal rules; other blocks are skipped) under YAML frontmatter with the title, URL, dates, sources, and an optional license. Requests for an entry's own URL with `Accept: text/markdown` get the same Markdown (`Cache-Control: private, no-store`, `Vary: Accept`, `Content-Location`). Responses carry `X-Markdown-Tokens`, an estimate at about 4 characters per token. Entry pages get `<link rel="alternate" type="text/markdown">` in the head.
+
+Only published, non-noindex entries in routable collections are included. URLs come from EmDash's own routing (each collection's URL pattern, date tokens, locale prefix, and trailing-slash setting), so they match the native sitemap.
+
+### Setup
+
+Nothing to configure beyond the feature switches. The module's site URLs are served by the pack middleware (see Redirects → Setup), so add `coywolfPack()` from `@coywolf/emdash/middleware` to `src/middleware.ts` if you haven't. The plugin asks for `content:read`, `schema:read`, `network:request` (hosts `api.indexnow.org` and `www.bing.com`), and `hooks.page-fragments:register`.
+
+### Caching and limits
+
+- llms.txt is built on first request and cached in plugin storage until content changes (publish, unpublish, delete, or a live edit), with a 24-hour safety expiry. The news sitemap is cached for 5 minutes, since its window moves. **Rebuild now** on the Discovery page rebuilds both. Each Worker isolate also keeps responses for a minute, and CDNs may keep `llms.txt` and `.md` files for an hour (`Cache-Control: public, max-age=3600`; 5 minutes for the news sitemap).
+- Markdown URLs resolve through EmDash's routing (`resolveEmDashPath`, or `/{collection}/{slug}` for collections without a URL pattern), then are checked against the entry's public URL. Entries behind a locale prefix or a custom route don't get a Markdown version.
+- An entry's old URL is known only if it was published while IndexNow was on, so unpublishing or deleting an entry published earlier submits nothing.
+- The news sitemap has no category include/exclude filter (Coywolf SEO's WordPress option); pick collections instead. Coywolf SEO's AI entity sections (a Labs feature) aren't ported.
 
 ## Development
 
@@ -436,7 +465,6 @@ Set `ai: false` in `coywolfPlugin()` to leave the module out entirely. The modul
 npx tsc --noEmit -p .        # typecheck
 node --test test/*.test.mjs  # unit tests (Node 22.15+; runs the TypeScript sources directly)
 ```
-
 ## License
 
 MIT
