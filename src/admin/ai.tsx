@@ -8,6 +8,8 @@ import { ArrowClockwise, Check, Play, Sparkle, Stop, X } from "@phosphor-icons/r
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { CredentialGuide } from "./guides.js";
+
 const API = "/_emdash/api/plugins/coywolf-pack/ai";
 
 type ProviderId = "workers-ai" | "anthropic" | "openai" | "gemini";
@@ -383,6 +385,9 @@ function SettingsPanel(props: { status: Status; reload: () => Promise<void>; set
 							{status.settings.bindingAvailable ? "The Workers AI binding is connected." : "Add an \"ai\" binding to wrangler.jsonc (see README) to use Workers AI."}
 						</p>
 					)}
+					<div style={{ gridColumn: "1 / -1" }}>
+						<CredentialGuide id={draft.aiProvider} />
+					</div>
 					{models ? (
 						<>
 							<Select

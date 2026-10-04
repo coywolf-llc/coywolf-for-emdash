@@ -18,6 +18,7 @@ import {
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { CredentialGuide } from "./guides.js";
 import { SecretField, SettingsSection, SetupCard } from "./settings-ui.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/videos";
@@ -527,6 +528,7 @@ function ConnectForm(props: { onConnected: () => void }) {
 					disabled={pending}
 				/>
 			</div>
+			<CredentialGuide id="stream" />
 			{error && <Banner variant="error" role="alert" description={error} />}
 			<Button type="submit" variant="primary" disabled={pending || (!accountId.trim() && !token.trim())}>
 				{pending ? "Connecting…" : "Connect"}
@@ -602,6 +604,7 @@ function SettingsPanel(props: { onSaved: (message: string) => void }) {
 						disabled={Boolean(pending)}
 					/>
 				</div>
+				<CredentialGuide id="stream" />
 			</SettingsSection>
 			<SettingsSection id="videos-player" title="Player" description="How the Coywolf Video block's player looks and where it loads from.">
 				<div className="grid gap-4 sm:grid-cols-2">

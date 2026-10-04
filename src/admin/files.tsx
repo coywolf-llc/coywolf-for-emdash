@@ -10,6 +10,7 @@ import * as React from "react";
 
 import { FILE_CSS, SAMPLE_FILE, renderFileCardHtml } from "../files/card.js";
 import { formatSize, iconFor } from "../files/format.js";
+import { CredentialGuide } from "./guides.js";
 import { PreviewSection } from "./preview.js";
 import { SecretField, SettingsSection, SetupCard } from "./settings-ui.js";
 
@@ -419,6 +420,7 @@ function SettingsPanel(props: { largeUploadsEnabled: boolean; onSaved: (message:
 						onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ filesMaxUploadGb: e.target.value })}
 					/>
 				</div>
+				<CredentialGuide id="r2" />
 			</SettingsSection>
 
 			{error && <Banner variant="error" role="alert" description={error} />}
@@ -644,6 +646,7 @@ export function FilesPage() {
 					title="Add R2 credentials to upload large files"
 					description="Large uploads go straight from the browser to your R2 bucket, so they need an R2 API token: the account ID, access key ID, secret access key and bucket name."
 				>
+					<CredentialGuide id="r2" />
 					<Button variant="secondary" onClick={() => setTab("settings")}>
 						Open Settings
 					</Button>
