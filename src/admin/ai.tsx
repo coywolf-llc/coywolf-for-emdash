@@ -287,6 +287,35 @@ function SettingsPanel(props: { status: Status; reload: () => Promise<void>; set
 	}, [sameProvider, provider, status.settings.textModel, status.settings.visionModel]);
 	const set = (patch: Partial<typeof draft>) => setDraft((d) => ({ ...d, ...patch }));
 	const [pending, setPending] = React.useState(false);
+	// Model pickers: once the saved provider has a key (or the Workers AI binding), list its models.
+	const canList = sameProvider && (draft.aiProvider === "workers-ai" ? status.settings.bindingAvailable : status.settings.apiKeySet);
+	const [models, setModels] = React.useState<{ id: string; label: string }[] | null>(null);
+	const [modelsError, setModelsError] = React.useState<string>();
+	React.useEffect(() => {
+		if (!canList) {
+			setModels(null);
+			return;
+		}
+		let live = true;
+		get<{ models: { id: string; label: string }[]; error?: string }>("models")
+			.then((r) => {
+				if (!live) return;
+				setModels(r.models.length ? r.models : null);
+				setModelsError(r.error);
+			})
+			.catch((cause) => live && setModelsError(errorText(cause, "Couldn't list models")));
+		return () => {
+			live = false;
+		};
+	}, [canList, draft.aiProvider, status.settings.apiKeySet]);
+	/** The model in use for a field: the draft value, else the saved value, else the provider default. */
+	const currentModel = (draftValue: string, saved: string, fallback: string) => draftValue || (sameProvider ? saved : "") || fallback;
+	const modelItems = (current: string, fallback: string) => {
+		const list = models ?? [];
+		const items = list.map((m) => ({ value: m.id, label: m.id === fallback ? `${m.label} — default` : m.label }));
+		if (!list.some((m) => m.id === current)) items.unshift({ value: current, label: current === fallback ? `${current} — default` : `${current} (current)` });
+		return items;
+	};
 	const [test, setTest] = React.useState<string>();
 
 	const save = async () => {
@@ -343,7 +372,9 @@ function SettingsPanel(props: { status: Status; reload: () => Promise<void>; set
 						<Input
 							type="password"
 							autoComplete="off"
-							label={status.settings.apiKeySet && sameProvider ? "API key (saved; enter a new one to replace it)" : "API key"}
+							label={status.settings.apiKeySet && sameProvider ? "API key (saved)" : "API key"}
+							placeholder={status.settings.apiKeySet && sameProvider ? "••••••••••••••••••••••••" : undefined}
+							description={status.settings.apiKeySet && sameProvider ? "Type a new key to replace the saved one." : undefined}
 							value={draft.aiApiKey}
 							onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiApiKey: e.target.value })}
 						/>
@@ -352,9 +383,34 @@ function SettingsPanel(props: { status: Status; reload: () => Promise<void>; set
 							{status.settings.bindingAvailable ? "The Workers AI binding is connected." : "Add an \"ai\" binding to wrangler.jsonc (see README) to use Workers AI."}
 						</p>
 					)}
-					<Input label={`Text model (default ${provider.textModel})`} value={draft.aiModel} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiModel: e.target.value })} />
-					<Input label={`Image model (default ${provider.visionModel})`} value={draft.aiVisionModel} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiVisionModel: e.target.value })} />
+					{models ? (
+						<>
+							<Select
+								label="Text model"
+								value={currentModel(draft.aiModel, status.settings.textModel, provider.textModel)}
+								onValueChange={(value: string | null) => set({ aiModel: !value || value === provider.textModel ? "" : value })}
+								items={modelItems(currentModel(draft.aiModel, status.settings.textModel, provider.textModel), provider.textModel)}
+							/>
+							<Select
+								label="Image model"
+								value={currentModel(draft.aiVisionModel, status.settings.visionModel, provider.visionModel)}
+								onValueChange={(value: string | null) => set({ aiVisionModel: !value || value === provider.visionModel ? "" : value })}
+								items={modelItems(currentModel(draft.aiVisionModel, status.settings.visionModel, provider.visionModel), provider.visionModel)}
+							/>
+						</>
+					) : (
+						<>
+							<Input label={`Text model (default ${provider.textModel})`} value={draft.aiModel} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiModel: e.target.value })} />
+							<Input label={`Image model (default ${provider.visionModel})`} value={draft.aiVisionModel} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ aiVisionModel: e.target.value })} />
+						</>
+					)}
 				</div>
+				{!models && canList && modelsError && (
+					<p className="mt-2 text-sm text-kumo-subtle">Couldn't list this provider's models ({modelsError}); type a model id instead.</p>
+				)}
+				{!canList && draft.aiProvider !== "workers-ai" && (
+					<p className="mt-2 text-sm text-kumo-subtle">Save an API key to pick from this provider's models.</p>
+				)}
 				{test && (
 					<p className="mt-3 text-sm text-kumo-subtle" role="status" aria-live="polite">
 						{test}

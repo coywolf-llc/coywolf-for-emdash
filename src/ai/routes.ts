@@ -9,7 +9,7 @@ import { z } from "zod";
 import { ctxFeatures, isOn, requireFeature } from "../core/features.js";
 import { parseInput } from "../shared.js";
 import { type QueueJob, cleanText, DESCRIPTION_MAX, ALT_MAX, CAPTION_MAX } from "./logic.js";
-import { PROVIDERS, chat } from "./providers.js";
+import { type ModelOption, PROVIDERS, chat, listModels } from "./providers.js";
 import {
 	type AiOptions,
 	type BulkState,
@@ -33,6 +33,8 @@ import {
 import { applyDescription, applyImageText, targetCollections, tick } from "./worker.js";
 
 const asCtx = (ctx: unknown) => ctx as PluginContext;
+/** Model lists per provider, per isolate (keyed to the saved key so a new key refetches). */
+const modelCache = new Map<string, { key: string; at: number; models: ModelOption[] }>();
 
 const settingsInput = z.object({
 	aiProvider: z.enum(["workers-ai", "anthropic", "openai", "gemini"]).optional(),
@@ -105,6 +107,26 @@ export function aiRoutes(options: AiOptions) {
 				return { settings: publicSettings(await readSettings(ctx, options)) };
 			},
 		}),
+
+		/** Models the saved key (or Workers AI) can use, for the settings page's pickers. No model call. */
+		"ai/models": {
+			permission: "plugins:manage" as const,
+			handler: async (raw: unknown) => {
+				const ctx = asCtx(raw);
+				const s = await readSettings(ctx, options);
+				if (s.provider !== "workers-ai" && !s.apiKey) return { provider: s.provider, models: [] as ModelOption[] };
+				const cached = modelCache.get(s.provider);
+				if (cached && cached.key === s.apiKey && Date.now() - cached.at < 10 * 60_000) return { provider: s.provider, models: cached.models };
+				try {
+					const cfg = await providerConfig(ctx, options, s, false);
+					const models = await listModels(cfg);
+					modelCache.set(s.provider, { key: s.apiKey, at: Date.now(), models });
+					return { provider: s.provider, models };
+				} catch (error) {
+					return { provider: s.provider, models: [] as ModelOption[], error: String((error as Error).message ?? error).slice(0, 200) };
+				}
+			},
+		},
 
 		/** One tiny real call with the saved settings. Counts toward the daily limit. */
 		"ai/test": definePluginRoute({
