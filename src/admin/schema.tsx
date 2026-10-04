@@ -763,6 +763,14 @@ function OverridesTab(props: { config: Config }) {
 
 // ── Settings (search, robots, Open Graph) ────────────────────────
 
+/** A robots limit field: blank → -1 (no limit); a number stays a number; anything else is sent as typed for the server to reject. */
+const limit = (value: unknown): number | string => {
+	const text = String(value ?? "").trim();
+	if (!text) return -1;
+	const n = Number(text);
+	return Number.isFinite(n) ? n : text;
+};
+
 function SettingsTab(props: { config: Config; onSaved: (settings: Config["settings"]) => void }) {
 	const [values, setValues] = React.useState(props.config.settings);
 	const [pending, setPending] = React.useState(false);
@@ -783,8 +791,9 @@ function SettingsTab(props: { config: Config; onSaved: (settings: Config["settin
 		try {
 			const body = {
 				...values,
-				schemaRobotsMaxSnippet: Number(values.schemaRobotsMaxSnippet),
-				schemaRobotsMaxVideo: Number(values.schemaRobotsMaxVideo),
+				// Blank means no limit (-1), never 0 (which would forbid snippets/previews).
+				schemaRobotsMaxSnippet: limit(values.schemaRobotsMaxSnippet),
+				schemaRobotsMaxVideo: limit(values.schemaRobotsMaxVideo),
 				schemaRobotsNofollow: !!values.schemaRobotsNofollow,
 			};
 			const result = await post<{ settings: Config["settings"] }>("settings/save", body);
@@ -802,7 +811,7 @@ function SettingsTab(props: { config: Config; onSaved: (settings: Config["settin
 		<div className="space-y-6">
 			<Section title="Graph">
 				{text("schemaSearchUrl", "Search URL template", "/?s={search_term_string}", "Adds a SearchAction to the WebSite node. Leave empty if the site has no search.")}
-				{text("schemaAuthorUrlPattern", "Author page URL", "/author/{slug}/", "An author's url and @id when the byline has no website. Leave empty if the site has no author pages.")}
+				{text("schemaAuthorUrlPattern", "Author page URL", "/author/{slug}/", "Your site's author page URL with {slug} for the byline slug, e.g. /author/{slug}/. Used for an author's url and @id when the byline has no website. Leave empty if the site has no author pages.")}
 				{text("schemaBreadcrumbHome", "Breadcrumb home label", "Home", "First crumb when breadcrumbs are derived from the URL.")}
 			</Section>
 			<Section title="Robots" description="Applies with Robots directives on. Entries marked No index stay noindex.">
@@ -819,14 +828,14 @@ function SettingsTab(props: { config: Config; onSaved: (settings: Config["settin
 				/>
 				<div className="grid gap-4 sm:grid-cols-2">
 					<Input
-						label="max-snippet (characters, -1 = no limit)"
+						label="max-snippet (characters; blank or -1 = no limit)"
 						type="number"
 						min={-1}
 						value={str("schemaRobotsMaxSnippet")}
 						onChange={(e: React.ChangeEvent<HTMLInputElement>) => set("schemaRobotsMaxSnippet", e.target.value)}
 					/>
 					<Input
-						label="max-video-preview (seconds, -1 = no limit)"
+						label="max-video-preview (seconds; blank or -1 = no limit)"
 						type="number"
 						min={-1}
 						value={str("schemaRobotsMaxVideo")}

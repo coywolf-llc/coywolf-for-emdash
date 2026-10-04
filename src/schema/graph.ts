@@ -253,6 +253,34 @@ export function authorPath(pattern: string | null | undefined, slug: string): st
 	return pattern.trim().replaceAll("{slug}", encodeURIComponent(slug));
 }
 
+/**
+ * The @id for an author byline. The byline chosen as the publisher Person
+ * shares the publisher's @id, so the graph has one Person for them. Others
+ * anchor on their author page (when the site has an author URL pattern) or
+ * the site root.
+ */
+export function authorId(opts: {
+	bylineId: string;
+	slug: string;
+	origin: string;
+	authorUrl?: string | null;
+	details?: SiteDetails | null;
+	personRows?: PropertyRow[] | null;
+}): string {
+	if (opts.details?.publisherType === "person" && opts.details.personBylineId && opts.details.personBylineId === opts.bylineId)
+		return publisherId(opts.details, opts.origin, opts.personRows);
+	return opts.authorUrl ? `${opts.authorUrl}#person` : `${opts.origin}/#person-${encodeURIComponent(opts.slug)}`;
+}
+
+/** A robots max-snippet / max-video-preview setting: blank, missing or invalid means -1 (no limit). */
+export function parseLimit(value: unknown): number {
+	if (value === null || value === undefined) return -1;
+	if (typeof value === "string" && !value.trim()) return -1;
+	const n = Number(value);
+	if (!Number.isFinite(n)) return -1;
+	return Math.max(-1, Math.trunc(n));
+}
+
 export function publisherId(details: SiteDetails | null | undefined, origin: string, personRows?: PropertyRow[] | null): string {
 	if (details?.publisherType === "person") return idFromRows(personRows, origin) ?? `${origin}/#person`;
 	return idFromRows(details?.orgRows, origin) ?? `${origin}/#organization`;
@@ -431,6 +459,7 @@ export function buildGraph(input: GraphInput): Node {
 	const modified = page.articleMeta?.modifiedTime || published;
 	const { pageType, articleType } = resolveTypes(page, input.types, input.override);
 	const home = isHome(page);
+	const publisher: Node = { ...input.publisher };
 
 	const website: Node = {
 		"@type": "WebSite",
@@ -503,14 +532,18 @@ export function buildGraph(input: GraphInput): Node {
 		if (authors.length) {
 			const refs = authors.map((a) => ({ "@id": String(a["@id"]) }));
 			article.author = refs.length === 1 ? refs[0] : refs;
-			for (const a of authors) if (!publisherIsAuthor(a)) nodes.push(a);
+			for (const a of authors) {
+				if (!publisherIsAuthor(a)) nodes.push(a);
+				// The publisher person also wrote this: one Person node, with the author's extra properties.
+				else for (const [k, v] of Object.entries(a)) if (publisher[k] === undefined) publisher[k] = v;
+			}
 		} else if (page.articleMeta?.author) {
 			article.author = { "@type": "Person", name: page.articleMeta.author };
 		}
 		nodes.push(article);
 	}
 
-	nodes.push(website, input.publisher);
+	nodes.push(website, publisher);
 	return { "@context": "https://schema.org", "@graph": dedupeById(nodes) };
 }
 

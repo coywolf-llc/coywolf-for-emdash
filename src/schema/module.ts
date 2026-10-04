@@ -12,7 +12,7 @@ import type { PageMetadataContribution, PluginContext, PublicPageContext } from 
 import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
-import { type FeatureMap, ctxFeatures, isOn, requireFeature } from "../core/features.js";
+import { type FeatureMap, cachedCtxFeatures, ctxFeatures, isOn, requireFeature } from "../core/features.js";
 import { parseInput, workerEnv } from "../shared.js";
 import { ARTICLE_TYPES, ORGANIZATION_PROPERTIES, PAGE_TYPES, PERSON_PROPERTIES, PROPERTY_INPUTS } from "./catalog.js";
 import {
@@ -26,6 +26,7 @@ import {
 	type TypeChoice,
 	type TypeMap,
 	absolute,
+	authorId,
 	authorPath,
 	breadcrumbDocument,
 	buildGraph,
@@ -34,6 +35,7 @@ import {
 	ogLocale,
 	originOf,
 	pageUrl,
+	parseLimit,
 	personNode,
 	publisherNode,
 	resolveTypes,
@@ -64,8 +66,9 @@ export const schemaSettingsSchema = {
 	schemaAuthorUrlPattern: {
 		type: "string",
 		label: "Schema: author page URL",
-		description: "Used for an author's url and @id when the byline has no website. {slug} is the byline slug. Leave empty for none.",
-		default: "/author/{slug}/",
+		description:
+			"Your site's author page URL, e.g. /author/{slug}/ ({slug} is the byline slug). Used for an author's url and @id when the byline has no website. Leave empty if the site has no author pages.",
+		default: "",
 	},
 	schemaBreadcrumbHome: {
 		type: "string",
@@ -153,12 +156,10 @@ export function invalidateSchemaConfig(): void {
 const DEFAULT_SITE: SiteDetails = { publisherType: "organization", personBylineId: null, orgRows: [] };
 
 async function readSettings(ctx: PluginContext): Promise<SimpleSettings> {
-	const keys = Object.keys(schemaSettingsSchema) as SettingKey[];
-	const values = await Promise.all(keys.map((k) => ctx.settings.get<unknown>(k)));
+	// One read for every schema* setting (they share the prefix).
+	const stored = new Map((await ctx.settings.list("schema")).map((e) => [e.key, e.value]));
 	const out: Record<string, unknown> = {};
-	keys.forEach((k, i) => {
-		out[k] = values[i] ?? schemaSettingsSchema[k].default;
-	});
+	for (const k of Object.keys(schemaSettingsSchema) as SettingKey[]) out[k] = stored.get(k) ?? schemaSettingsSchema[k].default;
 	return out as SimpleSettings;
 }
 
@@ -278,7 +279,14 @@ async function authorNodes(ctx: PluginContext, page: PublicPageContext, config: 
 				byline: { id: b.id, slug: b.slug, displayName: b.displayName, bio: b.bio, websiteUrl: b.websiteUrl, avatarUrl },
 				rows,
 				origin: site.origin,
-				defaultId: authorUrl ? `${authorUrl}#person` : `${site.origin}/#person-${encodeURIComponent(b.slug)}`,
+				defaultId: authorId({
+					bylineId: b.id,
+					slug: b.slug,
+					origin: site.origin,
+					authorUrl,
+					details: config.site,
+					personRows: config.person?.rows,
+				}),
 				authorUrl,
 			});
 		}),
@@ -293,7 +301,7 @@ export async function schemaContributions(
 	options: SchemaOptions,
 	features?: FeatureMap,
 ): Promise<PageMetadataContribution[]> {
-	const on = features ?? (await ctxFeatures(ctx));
+	const on = features ?? (await cachedCtxFeatures(ctx));
 	if (!isOn(on, SCHEMA_FEATURES.main)) return [];
 	const config = await loadConfig(ctx);
 	const site = await siteFacts(ctx, page);
@@ -349,8 +357,8 @@ export async function schemaContributions(
 			name: "robots",
 			content: robotsContent(page.seo?.robots, {
 				maxImagePreview: s.schemaRobotsMaxImage,
-				maxSnippet: Number.isFinite(Number(s.schemaRobotsMaxSnippet)) ? Number(s.schemaRobotsMaxSnippet) : null,
-				maxVideoPreview: Number.isFinite(Number(s.schemaRobotsMaxVideo)) ? Number(s.schemaRobotsMaxVideo) : null,
+				maxSnippet: parseLimit(s.schemaRobotsMaxSnippet),
+				maxVideoPreview: parseLimit(s.schemaRobotsMaxVideo),
 				nofollow: !!s.schemaRobotsNofollow,
 			}),
 		});
@@ -382,6 +390,19 @@ const TYPE_SET = new Set(PAGE_TYPES.map(([t]) => t));
 const ARTICLE_SET = new Set(ARTICLE_TYPES.map(([t]) => t));
 
 const rowInput = z.object({ prop: z.string().max(100), value: z.union([z.string().max(5000), z.record(z.string(), z.string().max(2000))]) });
+/** max-snippet / max-video-preview: blank or missing means -1 (no limit); anything non-numeric is rejected. */
+const limitInput = z
+	.union([z.number(), z.string().max(20), z.null()])
+	.optional()
+	.transform((v, zctx) => {
+		if (v === undefined || v === null || (typeof v === "string" && !v.trim())) return -1;
+		const n = Number(v);
+		if (!Number.isFinite(n) || !Number.isInteger(n) || n < -1 || n > 1_000_000) {
+			zctx.addIssue({ code: "custom", message: "Robots limits must be whole numbers, -1 or more (-1 = no limit)." });
+			return z.NEVER;
+		}
+		return n;
+	});
 const typeChoiceInput = z.object({ pageType: z.string().max(60).optional(), articleType: z.string().max(60).optional() });
 
 function cleanValue(value: string, input: string | undefined): string {
@@ -475,8 +496,8 @@ export function schemaModule(options: SchemaOptions) {
 						schemaAuthorUrlPattern: z.string().max(500).optional(),
 						schemaBreadcrumbHome: z.string().max(100).optional(),
 						schemaRobotsMaxImage: z.enum(["large", "standard", "none", ""]).optional(),
-						schemaRobotsMaxSnippet: z.number().int().min(-1).max(1_000_000).optional(),
-						schemaRobotsMaxVideo: z.number().int().min(-1).max(1_000_000).optional(),
+						schemaRobotsMaxSnippet: limitInput,
+						schemaRobotsMaxVideo: limitInput,
 						schemaRobotsNofollow: z.boolean().optional(),
 						schemaOgLocale: z
 							.string()
@@ -628,6 +649,9 @@ export function schemaModule(options: SchemaOptions) {
 					await entries(ctx).delete(id);
 					return { deleted: true };
 				}
+				if (!ctx.content) throw PluginRouteError.badRequest("Content access is unavailable.");
+				const entry = await ctx.content.get(input.collection, input.entryId).catch(() => null);
+				if (!entry) throw PluginRouteError.notFound("That entry doesn't exist.");
 				const item: EntryOverride = { collection: input.collection, entryId: input.entryId, title: input.title, ...choice, updatedAt: new Date().toISOString() };
 				await entries(ctx).put(id, item);
 				return { item };

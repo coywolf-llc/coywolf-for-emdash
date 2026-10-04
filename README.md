@@ -251,7 +251,7 @@ The Schema page has:
 - **Types**: the WebPage subtype (AboutPage, ContactPage, CollectionPage…) and Article subtype (BlogPosting, NewsArticle, TechArticle… or none) for the home page, other non-entry pages, and each collection. By default, article pages get a BlogPosting, as with EmDash's own JSON-LD, and everything else a WebPage.
 - **Authors**: Person properties per byline. Bylines without saved properties use their name, website (or the author page URL), bio and avatar.
 - **Overrides**: a different page or article type for a single entry.
-- **Robots & social**: the search URL template (`/?s={search_term_string}` by default; empty for no SearchAction), the author page URL pattern (`/author/{slug}/`), the breadcrumb home label, the robots directives, and an `og:locale` override (derived from the site locale otherwise, e.g. `en` → `en_US`).
+- **Robots & social**: the search URL template (`/?s={search_term_string}` by default; empty for no SearchAction), the author page URL pattern (empty by default: set it to match your site's author pages, e.g. `/author/{slug}/`, so authors get a `url` and `@id` there; without it, authors without a byline website get no `url` and an `@id` on the site root), the breadcrumb home label, the robots directives (a blank max-snippet or max-video-preview means -1, no limit), and an `og:locale` override (derived from the site locale otherwise, e.g. `en` → `en_US`).
 - **Preview**: the tags and JSON-LD the module would add to the home page or an entry.
 
 ### Setup

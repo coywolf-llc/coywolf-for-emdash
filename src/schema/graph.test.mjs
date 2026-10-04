@@ -287,3 +287,36 @@ test("JSON-LD output is plain JSON with no undefined values", () => {
 	assert.equal(JSON.stringify(JSON.parse(json)), json);
 	assert.equal(json.includes("null"), false);
 });
+
+test("robots limits: blank or missing means -1, never 0", () => {
+	assert.equal(g.parseLimit(""), -1);
+	assert.equal(g.parseLimit("  "), -1);
+	assert.equal(g.parseLimit(undefined), -1);
+	assert.equal(g.parseLimit(null), -1);
+	assert.equal(g.parseLimit("abc"), -1);
+	assert.equal(g.parseLimit("160"), 160);
+	assert.equal(g.parseLimit(0), 0);
+	assert.equal(g.parseLimit(-5), -1);
+	const content = g.robotsContent(null, { maxImagePreview: "large", maxSnippet: g.parseLimit(""), maxVideoPreview: g.parseLimit("") });
+	assert.equal(content, "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1");
+	assert.equal(content.includes("max-snippet:0"), false);
+});
+
+test("publisher person who also authors is one Person node with merged properties", () => {
+	const details = { publisherType: "person", personBylineId: "b1", orgRows: [] };
+	const byline = { id: "b1", slug: "jon", displayName: "Jon Henshaw" };
+	const pub = g.publisherNode({ details, origin: ORIGIN, siteName: "Example", person: { byline, rows: null } });
+	const id = g.authorId({ bylineId: "b1", slug: "jon", origin: ORIGIN, authorUrl: `${ORIGIN}/author/jon/`, details });
+	assert.equal(id, pub["@id"]);
+	assert.equal(g.authorId({ bylineId: "b2", slug: "amy", origin: ORIGIN, authorUrl: `${ORIGIN}/author/amy/`, details }), `${ORIGIN}/author/amy/#person`);
+	assert.equal(g.authorId({ bylineId: "b2", slug: "amy", origin: ORIGIN, authorUrl: null, details }), `${ORIGIN}/#person-amy`);
+	const author = g.personNode({ byline, rows: [{ prop: "jobTitle", value: "Editor" }], origin: ORIGIN, defaultId: id });
+	const doc = build(page(), { publisher: pub, authors: [author] });
+	const people = byType(doc, "Person");
+	assert.equal(people.length, 1);
+	assert.equal(people[0]["@id"], pub["@id"]);
+	assert.equal(people[0].jobTitle, "Editor");
+	assert.deepEqual(byType(doc, "BlogPosting")[0].author, { "@id": pub["@id"] });
+	assert.equal(pub.jobTitle, undefined, "input publisher node isn't mutated");
+	assertRefsResolve(doc);
+});
