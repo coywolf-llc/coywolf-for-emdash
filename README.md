@@ -163,7 +163,7 @@ Feature **Redirects → Removed content** (`redirects.trashPrompt`, off by defau
 - **Return 410 Gone** creates a 410 rule, telling search engines the page is gone for good.
 - **Dismiss** forgets it (for example, when the URL should simply 404).
 
-The old URL is resolved the way EmDash resolves it: the collection's URL pattern (`{slug}`, `{id}`, and date tokens from the publish date), or `/<collection>/<slug>`. Locale prefixes aren't added. Drafts that were never published aren't listed, and republishing or restoring an entry removes it from the list. Decisions are kept in plugin storage (`redirects_removed`). The module declares the `content:read` capability for the delete and publish hooks.
+The old URL is resolved the way EmDash resolves it: the collection's URL pattern (`{slug}`, `{id}`, and date tokens from the publish date), or `/<collection>/<slug>`. Locale prefixes aren't added. Drafts that were never published aren't listed, and republishing an entry, or restoring it from the trash (it comes back as a draft), removes it from the list. Decisions are kept in plugin storage (`redirects_removed`). The module declares the `content:read` capability for the delete and publish hooks.
 
 ### Export redirects from WordPress (Coywolf SEO)
 
@@ -339,7 +339,7 @@ import { SearchBox } from "@coywolf/emdash/astro";
 <SearchBox action="/search" collections={["posts", "pages"]} placeholder="Search articles" />
 ```
 
-Props: `action` (your search page, default `/search`), `name` (`q`), `label`, `showLabel`, `placeholder`, `collections`, `locale`, `minChars` (2), `debounce` (200 ms), `limit` (8), `showType`, `showSnippets`, `submitButton`, `value`, `class`, and `id` (set a different one for each box on a page). Its script (about 4 KB minified, 2 KB compressed) loads only on pages that use it.
+Props: `action` (your search page, default `/search`), `name` (`q`), `label`, `showLabel`, `placeholder`, `collections`, `locale`, `minChars` (2), `debounce` (200 ms), `limit` (8), `showType`, `showSnippets`, `submitButton`, `value`, `class`, and `id` (set a different one for each box on a page). Its script (about 4 KB minified, 2 KB compressed) and styles load only on pages that render it, and nothing at all is sent while **Search box** is off. Suggestions are real links, so middle-click and "open in new tab" work.
 
 Colors are CSS custom properties with light and dark defaults. Override them on `.cw-search`:
 
@@ -373,16 +373,31 @@ Fallback results aren't paginated (the best 50 are ranked together).
 
 ### Rate limit setup
 
-```js
-coywolfPlugin({ search: { requestsPerMinute: 120, kv: "SEARCH_RATE_LIMIT" } });
+The limit is enforced by a [Workers Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) binding when you add one. Its limit and period (10 or 60 seconds) come from `wrangler.jsonc`:
+
+```jsonc
+"ratelimits": [
+  { "name": "SEARCH_RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 120, "period": 60 } }
+]
 ```
 
-- `requestsPerMinute`: default 120; `0` turns limiting off.
-- `kv`: a KV namespace binding name. Without one, each Worker isolate counts on its own, which stops a single client hammering one isolate but isn't a hard limit. With one, isolates share a one-minute window in KV (KV is eventually consistent, so short bursts can overshoot). Don't reuse the `SESSION` namespace.
-- Optional Worker secret `SEARCH_RATE_LIMIT_SALT` for the IP hash. Without it, a random salt is kept in the KV namespace (or per isolate).
+```js
+coywolfPlugin({ search: { rateLimiter: "SEARCH_RATE_LIMITER" } });
+```
+
+- `rateLimiter`: the binding's name. Counting happens at Cloudflare (per location), so it holds across Worker isolates. Blocked requests get `Retry-After: 60`.
+- Without a binding, each Worker isolate counts on its own (`requestsPerMinute`, default 120; `0` turns it off). That's best effort: it stops one client hammering one isolate, but it isn't a hard limit.
+- Optional Worker secret `SEARCH_RATE_LIMIT_SALT` for the IP hash (recommended; a fixed built-in salt is used otherwise, so keys agree across isolates).
 - Requires the pack middleware (`coywolfPack()` in `src/middleware.ts`). The admin endpoints (enable, rebuild, stats) aren't limited.
 
-For a hard limit at no cost, use a Cloudflare WAF rate limiting rule instead of (or as well as) this feature. The free plan includes one: **Security → WAF → Rate limiting rules**, match `URI Path starts with /_emdash/api/search` or `URI Path equals /_emdash/api/plugins/coywolf-pack/search/query`, counted per IP, for example 60 requests per 10 seconds with a 10-second block. It runs before your Worker, so blocked requests cost nothing.
+For a hard limit that never reaches your Worker, use a Cloudflare WAF rate limiting rule instead of (or as well as) this feature. The free plan includes one: **Security → WAF → Rate limiting rules**, match `URI Path starts with /_emdash/api/search` or `URI Path equals /_emdash/api/plugins/coywolf-pack/search/query`, counted per IP, for example 60 requests per 10 seconds with a 10-second block.
+
+## Development
+
+```bash
+npx tsc --noEmit -p .        # typecheck
+node --test test/*.test.mjs  # unit tests (Node 22.15+; runs the TypeScript sources directly)
+```
 
 ## License
 

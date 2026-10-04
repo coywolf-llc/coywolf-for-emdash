@@ -78,9 +78,32 @@ export class MemoryWindowCounter {
 	}
 }
 
-/** KV key for a client's window. */
-export function kvKey(clientHash: string, windowStart: number): string {
-	return `coywolf-search-rl:${clientHash}:${windowStart}`;
+/** The Workers Rate Limiting binding's API (wrangler "ratelimits"). */
+export interface RateLimitBinding {
+	limit(options: { key: string }): Promise<{ success: boolean }>;
+}
+
+/**
+ * Decide on one request for a client. With a Rate Limiting binding the
+ * binding decides (its limit and period come from the wrangler config, and it
+ * counts per Cloudflare location); without one, the per-isolate counter does.
+ * If the binding errors, fall back to the counter rather than fail open.
+ */
+export async function limitClient(
+	clientKey: string,
+	options: { limit: number; now: number; memory: MemoryWindowCounter; binding?: RateLimitBinding; bindingPeriod?: number },
+): Promise<{ allowed: boolean; retryAfter: number }> {
+	if (options.binding) {
+		try {
+			const { success } = await options.binding.limit({ key: clientKey });
+			return { allowed: success, retryAfter: options.bindingPeriod ?? 60 };
+		} catch {
+			// Use the in-memory counter below.
+		}
+	}
+	if (options.limit <= 0) return { allowed: true, retryAfter: 0 };
+	const decision = options.memory.hit(clientKey, options.limit, options.now);
+	return { allowed: decision.allowed, retryAfter: decision.retryAfter };
 }
 
 /** Search URLs the limiter covers: EmDash's public search and suggest endpoints, and the pack's search route. Admin endpoints (enable, rebuild, stats) aren't limited. */

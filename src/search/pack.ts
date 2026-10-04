@@ -35,7 +35,7 @@ const FEATURES = [
 registerFeatures(FEATURES);
 
 export function searchPack(options: SearchOptions): PackModule {
-	configureSearchRateLimit({ requestsPerMinute: options.requestsPerMinute, kv: options.kv });
+	configureSearchRateLimit({ requestsPerMinute: options.requestsPerMinute, rateLimiter: options.rateLimiter });
 	return {
 		id: "search",
 		label: "Search",

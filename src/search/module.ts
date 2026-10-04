@@ -12,18 +12,21 @@ import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
 import { requireFeature } from "../core/features.js";
-import { COLLECTION_SLUG } from "../core/content-url.js";
+import { COLLECTION_SLUG, readCollections } from "../core/content-url.js";
 import { parseInput, workerEnv } from "../shared.js";
 import { searchWithFallback } from "./query.js";
 
 export interface SearchOptions {
 	/** D1 binding of the site database. Default "DB". */
 	database?: string;
-	/** Requests per minute per visitor for search.rateLimit. Default 120; 0 turns it off. */
+	/** Requests per minute per visitor for search.rateLimit's in-memory fallback. Default 120; 0 turns it off. */
 	requestsPerMinute?: number;
-	/** KV namespace binding for a rate limit shared across isolates. Default none (per-isolate memory only). */
-	kv?: string;
+	/** Workers Rate Limiting binding name for search.rateLimit. Default none (per-isolate memory only). */
+	rateLimiter?: string;
 }
+
+/** Most collections one search may name. */
+const MAX_COLLECTIONS = 10;
 
 const queryInput = z.object({
 	q: z.string().trim().min(1, "Enter a search.").max(200, "That search is too long."),
@@ -69,13 +72,19 @@ export function searchModule(options: SearchOptions) {
 			handler: async (ctx) => {
 				await requireFeature(ctx, "search.box");
 				const input = parseInput(queryInput, ctx.input);
-				const collections = input.collections
-					?.split(",")
-					.map((c) => c.trim())
-					.filter((c) => COLLECTION_SLUG.test(c));
+				let collections: string[] | undefined;
+				if (input.collections) {
+					const requested = [...new Set(input.collections.split(",").map((c) => c.trim()))]
+						.filter((c) => COLLECTION_SLUG.test(c))
+						.slice(0, MAX_COLLECTIONS);
+					// Only collections that exist; asking for nothing real finds nothing rather than everything.
+					const known = requested.length ? await readCollections(await db(), requested) : new Map();
+					collections = requested.filter((c) => known.has(c));
+					if (!collections.length) return { items: [], fallback: false };
+				}
 				return searchWithFallback(input.q, {
 					mode: input.mode,
-					collections: collections?.length ? collections : undefined,
+					collections,
 					locale: input.locale,
 					limit: input.limit ?? 8,
 					cursor: input.cursor,

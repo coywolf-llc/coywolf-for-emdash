@@ -103,8 +103,9 @@ export function removedModule(options: Options) {
 			await store(ctx).delete(pendingId(event.collection, String(event.content.id)));
 		},
 
+		// Restored entries come back as drafts; restoring says the content is coming back, so drop the decision.
 		"content:afterRestore": async (event: { content: Record<string, unknown>; collection: string }, ctx: PluginContext) => {
-			if (event.content.status === "published") await store(ctx).delete(pendingId(event.collection, String(event.content.id)));
+			await store(ctx).delete(pendingId(event.collection, String(event.content.id)));
 		},
 	};
 

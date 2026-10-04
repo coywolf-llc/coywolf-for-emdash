@@ -49,9 +49,12 @@ const FALLBACK_POOL = 50;
 export async function searchWithFallback(query: string, options: PackSearchOptions = {}): Promise<PackSearchResponse> {
 	const limit = Math.min(Math.max(options.limit ?? 10, 1), 50);
 	const base = {
-		collections: options.collections?.filter((c) => COLLECTION_SLUG.test(c)),
+		collections: options.collections ? [...new Set(options.collections)].filter((c) => COLLECTION_SLUG.test(c)).slice(0, 10) : undefined,
 		locale: options.locale,
 	};
+
+	// EmDash treats an empty list as "every collection"; a list with nothing valid in it should find nothing.
+	if (base.collections && base.collections.length === 0) return { items: [], fallback: false };
 
 	if (options.mode === "suggest" && !options.cursor) {
 		const titles = await search(query, { ...base, limit, scope: "title" });

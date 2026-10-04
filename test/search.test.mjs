@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 const { buildOrQuery, queryTerms, rankByCoverage, MAX_OR_TERMS } = await import("../src/search/fallback.ts");
-const { decide, currentWindow, MemoryWindowCounter, isLimitedPath, kvKey } = await import("../src/search/ratelimit-core.ts");
+const { decide, currentWindow, MemoryWindowCounter, isLimitedPath, limitClient } = await import("../src/search/ratelimit-core.ts");
 
 test("OR query: bare prefix terms joined with OR", () => {
 	assert.equal(buildOrQuery("coyote wolf hybrid"), "coyote* OR wolf* OR hybrid*");
@@ -108,5 +108,31 @@ test("rate limit paths: public search endpoints only", () => {
 	assert.ok(!isLimitedPath("/_emdash/api/search/stats"));
 	assert.ok(!isLimitedPath("/_emdash/api/search/enable"));
 	assert.ok(!isLimitedPath("/search"));
-	assert.equal(kvKey("abc", 60_000), "coywolf-search-rl:abc:60000");
+});
+
+test("rate limit binding: the binding decides, keyed by the client hash", async () => {
+	const seen = [];
+	const binding = { limit: async ({ key }) => (seen.push(key), { success: seen.length <= 2 }) };
+	const memory = new MemoryWindowCounter();
+	const opts = { limit: 1, now: 0, memory, binding };
+	assert.deepEqual(await limitClient("h1", opts), { allowed: true, retryAfter: 60 });
+	assert.equal((await limitClient("h1", opts)).allowed, true); // binding's limit, not the memory limit of 1
+	assert.deepEqual(await limitClient("h1", opts), { allowed: false, retryAfter: 60 });
+	assert.deepEqual(seen, ["h1", "h1", "h1"]);
+	assert.equal(memory.size, 0); // memory counter unused
+});
+
+test("rate limit binding: errors fall back to the memory counter", async () => {
+	const binding = { limit: async () => { throw new Error("unavailable"); } };
+	const memory = new MemoryWindowCounter();
+	const opts = { limit: 1, now: 0, memory, binding };
+	assert.equal((await limitClient("h", opts)).allowed, true);
+	assert.equal((await limitClient("h", opts)).allowed, false);
+});
+
+test("rate limit without a binding: memory counter, 0 turns it off", async () => {
+	const memory = new MemoryWindowCounter();
+	assert.equal((await limitClient("h", { limit: 1, now: 0, memory })).allowed, true);
+	assert.deepEqual(await limitClient("h", { limit: 1, now: 45_000, memory }), { allowed: false, retryAfter: 15 });
+	assert.equal((await limitClient("h", { limit: 0, now: 0, memory })).allowed, true);
 });

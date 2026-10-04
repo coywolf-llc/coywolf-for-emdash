@@ -2,22 +2,24 @@
  * Rate limiting for search (feature "search.rateLimit"), served through the
  * pack middleware. Each client is keyed by a salted SHA-256 of its IP address
  * (Cloudflare's CF-Connecting-IP, which visitors can't spoof), never the
- * address itself. Two layers: a per-isolate counter, then, when a KV binding
- * is configured, a shared fixed window in KV.
+ * address itself. With a Workers Rate Limiting binding (option
+ * `rateLimiter`), Cloudflare counts across isolates; without one, a
+ * per-isolate in-memory counter does, best effort.
  */
 import type { PackMiddleware } from "../core/module.js";
-import { MemoryWindowCounter, WINDOW_MS, currentWindow, decide, isLimitedPath, kvKey } from "./ratelimit-core.js";
+import { MemoryWindowCounter, type RateLimitBinding, isLimitedPath, limitClient } from "./ratelimit-core.js";
 
 export interface SearchRateLimitOptions {
-	/** Requests per minute per visitor. Default 120; 0 turns limiting off. */
+	/** Requests per minute per visitor for the in-memory fallback. Default 120; 0 turns the fallback off. With a binding, the binding's own limit applies. */
 	requestsPerMinute?: number;
-	/** KV namespace binding for a limit shared across isolates. Default none (per-isolate memory only). */
-	kv?: string;
+	/** Name of a Workers Rate Limiting binding (wrangler "ratelimits"). Default none (per-isolate memory only). */
+	rateLimiter?: string;
 }
 
 const DEFAULT_RPM = 120;
-const SALT_KEY = "coywolf-search-rl:salt";
 const SALT_SECRET = "SEARCH_RATE_LIMIT_SALT";
+/** Used when no secret is set. Keys must agree across isolates for the binding, so this can't be random per isolate. */
+const DEFAULT_SALT = "coywolf-pack:search-rate-limit";
 
 /**
  * Options from coywolfPlugin({ search }). EmDash instantiates plugins when the
@@ -30,33 +32,9 @@ export function configureSearchRateLimit(options: SearchRateLimitOptions): void 
 }
 
 const memory = new MemoryWindowCounter();
-let salt: string | null = null;
 
-function randomHex(bytes: number): string {
-	return [...crypto.getRandomValues(new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/** Salt: a Worker secret if set, else one stored in KV (so isolates agree), else per isolate. */
-async function getSalt(env: Record<string, unknown>, kv: KVNamespace | undefined): Promise<string> {
-	if (salt) return salt;
-	const fromSecret = env[SALT_SECRET];
-	if (typeof fromSecret === "string" && fromSecret) return (salt = fromSecret);
-	if (kv) {
-		try {
-			const stored = await kv.get(SALT_KEY);
-			if (stored) return (salt = stored);
-			const fresh = randomHex(32);
-			await kv.put(SALT_KEY, fresh);
-			return (salt = fresh);
-		} catch {
-			// Fall through to a per-isolate salt.
-		}
-	}
-	return (salt = randomHex(32));
-}
-
-async function hashClient(ip: string, saltValue: string): Promise<string> {
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${saltValue}:${ip}`));
+async function hashClient(ip: string, salt: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${salt}:${ip}`));
 	return [...new Uint8Array(digest).slice(0, 16)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
@@ -81,33 +59,16 @@ function tooMany(retryAfter: number): Response {
 export const searchRateLimitMiddleware: PackMiddleware = {
 	module: "search",
 	feature: "search.rateLimit",
-	handle: async (context, env, waitUntil) => {
+	handle: async (context, env) => {
 		if (!isLimitedPath(context.url.pathname)) return undefined;
+		const binding = config.rateLimiter ? (env[config.rateLimiter] as RateLimitBinding | undefined) : undefined;
 		const limit = config.requestsPerMinute ?? DEFAULT_RPM;
-		if (limit <= 0) return undefined;
+		if (!binding && limit <= 0) return undefined;
 		const ip = clientIp(context.request, () => context.clientAddress);
 		if (!ip) return undefined;
-
-		const kv = config.kv ? (env[config.kv] as KVNamespace | undefined) : undefined;
-		const client = await hashClient(ip, await getSalt(env, kv));
-		const now = Date.now();
-
-		const local = memory.hit(client, limit, now);
-		if (!local.allowed) return tooMany(local.retryAfter);
-
-		if (kv) {
-			const { start } = currentWindow(now, WINDOW_MS);
-			const key = kvKey(client, start);
-			try {
-				const previous = Number((await kv.get(key)) ?? 0) || 0;
-				const shared = decide(previous, limit, now);
-				if (!shared.allowed) return tooMany(shared.retryAfter);
-				// KV's minimum TTL is 60 seconds; keep the key a little past its window.
-				waitUntil(kv.put(key, String(shared.count), { expirationTtl: 120 }).catch(() => undefined));
-			} catch (error) {
-				console.error("coywolf-pack: search rate limit KV unavailable", error);
-			}
-		}
-		return undefined;
+		const secret = env[SALT_SECRET];
+		const client = await hashClient(ip, typeof secret === "string" && secret ? secret : DEFAULT_SALT);
+		const result = await limitClient(client, { limit, now: Date.now(), memory, binding });
+		return result.allowed ? undefined : tooMany(result.retryAfter);
 	},
 };
