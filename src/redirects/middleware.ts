@@ -1,18 +1,8 @@
 /**
- * Astro middleware that serves Coywolf redirects. Add it to the site's
- * src/middleware.ts:
- *
- * ```ts
- * import { sequence } from "astro:middleware";
- * import { coywolfRedirects } from "@coywolf/emdash/middleware";
- * export const onRequest = sequence(coywolfRedirects(), yourMiddleware);
- * ```
- *
+ * Serves Coywolf redirects (through the pack middleware in src/middleware.ts).
  * Rules are read from D1 at most once a minute per Worker isolate; hits are
  * counted after the response is sent.
  */
-import type { MiddlewareHandler } from "astro";
-
 import { type CompiledRules, compile, listRules, match, recordHit } from "./rules.js";
 
 export interface CoywolfRedirectsOptions {
@@ -31,38 +21,34 @@ export function invalidateRedirectCache(): void {
 
 const SKIP = /^\/(_emdash|_astro|_image)\//;
 
-export function coywolfRedirects(options: CoywolfRedirectsOptions = {}): MiddlewareHandler {
+/** Answer a request from the redirect rules, or return undefined to pass it on. */
+export async function serveRedirect(
+	url: URL,
+	env: Record<string, unknown>,
+	waitUntil: (p: Promise<unknown>) => void,
+	options: CoywolfRedirectsOptions = {},
+): Promise<Response | undefined> {
 	const ttl = (options.cacheSeconds ?? 60) * 1000;
-	return async (context, next) => {
-		const { pathname, search } = context.url;
-		if (SKIP.test(pathname)) return next();
+	const { pathname, search } = url;
+	if (SKIP.test(pathname)) return undefined;
+	const db = env[options.database ?? "DB"] as D1Database | undefined;
+	if (!db) return undefined;
 
-		let workers: { env: Record<string, unknown>; waitUntil?: (p: Promise<unknown>) => void };
+	if (!cache || Date.now() - cache.loadedAt > ttl) {
 		try {
-			workers = (await import("cloudflare:workers")) as unknown as typeof workers;
-		} catch {
-			return next(); // Not running on Cloudflare.
+			cache = { compiled: compile(await listRules(db)), loadedAt: Date.now() };
+		} catch (error) {
+			console.error("coywolf redirects: could not load rules", error);
+			return undefined;
 		}
-		const db = workers.env[options.database ?? "DB"] as D1Database | undefined;
-		if (!db) return next();
+	}
 
-		if (!cache || Date.now() - cache.loadedAt > ttl) {
-			try {
-				cache = { compiled: compile(await listRules(db)), loadedAt: Date.now() };
-			} catch (error) {
-				console.error("coywolf redirects: could not load rules", error);
-				return next();
-			}
-		}
+	const found = match(cache.compiled, pathname, search);
+	if (!found) return undefined;
 
-		const found = match(cache.compiled, pathname, search);
-		if (!found) return next();
+	waitUntil(recordHit(db, found.rule.id).catch(() => undefined));
 
-		const hit = recordHit(db, found.rule.id).catch(() => undefined);
-		if (workers.waitUntil) workers.waitUntil(hit);
-
-		if (found.rule.type === 410) return new Response("Gone", { status: 410 });
-		const location = found.location.startsWith("/") ? new URL(found.location, context.url).href : found.location;
-		return new Response(null, { status: found.rule.type, headers: { Location: location } });
-	};
+	if (found.rule.type === 410) return new Response("Gone", { status: 410 });
+	const location = found.location.startsWith("/") ? new URL(found.location, url).href : found.location;
+	return new Response(null, { status: found.rule.type, headers: { Location: location } });
 }
