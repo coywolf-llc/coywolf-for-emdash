@@ -16,8 +16,14 @@
  * of the entry's first term in that taxonomy, ordered the way EmDash's
  * getTermsForEntries orders them: by label) with an optional fallback after
  * a pipe, `{term:category|uncategorized}`. `{category}` is shorthand for
- * exactly that. Collections without an override resolve the way EmDash
- * does (getPublicUrl inside the plugin context, url_pattern otherwise).
+ * exactly that. `{termpath:<taxonomy>|fallback}` is the same term with its
+ * ancestors in front, WordPress's hierarchical %category%: `news/seo` for
+ * SEO under News. Parents come from EmDash's taxonomy table (`parent_id`),
+ * with the `termParents` option filling in terms that have none.
+ * `{pagepath}` is the entry's slug with its parents' slugs in front
+ * (`apps/coywolf-seo`); EmDash has no parent for entries, so they come from
+ * the `pageParents` option. Collections without an override resolve the way
+ * EmDash does (getPublicUrl inside the plugin context, url_pattern otherwise).
  *
  * Configuration: coywolfPlugin() options reach createPlugin(), which
  * EmDash's generated plugins module (virtual:emdash/plugins) calls when the
@@ -39,8 +45,11 @@ import type { PluginContext } from "emdash";
 const REPEATED_SLASHES = /\/{2,}/g;
 const DATE_TOKEN = /\{(year|month|day|hour|minute|second)\}/g;
 const DATE_TOKEN_TEST = /\{(year|month|day|hour|minute|second)\}/;
-const TERM_TOKEN = /\{term:([A-Za-z0-9_-]+)(?:\|([^{}/]*))?\}/g;
-const UNRESOLVED_TERM = /\{term:[^}]*\}/;
+const TERM_TOKEN = /\{(term|termpath):([A-Za-z0-9_-]+)(?:\|([^{}/]*))?\}/g;
+const UNRESOLVED_TERM = /\{term(?:path)?:[^}]*\}/;
+const PAGE_PATH = "{pagepath}";
+/** Longest ancestor chain followed (cycles stop earlier). */
+const MAX_DEPTH = 32;
 const OFFSETLESS_DATETIME = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/;
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -71,11 +80,40 @@ export function expandPattern(pattern: string): string {
 	return pattern.replaceAll("{category}", "{term:category|uncategorized}");
 }
 
-/** Taxonomies named by `{term:…}` tokens. */
+/** Taxonomies named by `{term:…}` and `{termpath:…}` tokens. */
 export function patternTaxonomies(pattern: string | null): string[] {
 	if (!pattern) return [];
-	return [...new Set([...expandPattern(pattern).matchAll(TERM_TOKEN)].map((m) => m[1]))];
+	return [...new Set([...expandPattern(pattern).matchAll(TERM_TOKEN)].map((m) => m[2] as string))];
 }
+
+/** Taxonomies named by `{termpath:…}` tokens (those that need term parents). */
+export function patternTermPathTaxonomies(pattern: string | null): string[] {
+	if (!pattern) return [];
+	return [...new Set([...expandPattern(pattern).matchAll(TERM_TOKEN)].filter((m) => m[1] === "termpath").map((m) => m[2] as string))];
+}
+
+/** True when the pattern has a `{pagepath}` token. */
+export function patternUsesPagePath(pattern: string | null): boolean {
+	return !!pattern && pattern.includes(PAGE_PATH);
+}
+
+/**
+ * A slug with its ancestors in front (root first), following `parents`
+ * (slug → parent slug). Stops at a cycle or after 32 levels.
+ */
+export function ancestorTrail(slug: string, parents: ReadonlyMap<string, string> | Record<string, string> | null | undefined): string[] {
+	const trail = [slug];
+	if (!parents) return trail;
+	const get = parents instanceof Map ? (s: string) => parents.get(s) : (s: string) => (Object.hasOwn(parents, s) ? (parents as Record<string, string>)[s] : undefined);
+	let up = get(slug);
+	while (up && !trail.includes(up) && trail.length < MAX_DEPTH) {
+		trail.unshift(up);
+		up = get(up);
+	}
+	return trail;
+}
+
+const encodeSegments = (segments: string[]) => segments.map((s) => encodeURIComponent(s)).join("/");
 
 /** True when the pattern needs a publish date to resolve. */
 export function patternUsesDate(pattern: string | null): boolean {
@@ -84,9 +122,12 @@ export function patternUsesDate(pattern: string | null): boolean {
 
 /**
  * EmDash's interpolateUrlPattern, plus `{term:<taxonomy>|fallback}` tokens
- * filled from `terms` (taxonomy → first term slug). A term token with no
- * term and no fallback stays literal, like a date token without a date.
- * The result has no trailing slash (see applyTrailingSlash).
+ * filled from `terms` (taxonomy → first term slug), `{termpath:…}` from
+ * `termPaths` (taxonomy → the term's slugs, root first; the bare term when
+ * missing) and `{pagepath}` from `pagePath` (the entry's slugs, root first;
+ * the slug when missing). A term token with no term and no fallback stays
+ * literal, like a date token without a date. The result has no trailing
+ * slash (see applyTrailingSlash).
  */
 export function interpolateUrlPattern(options: {
 	pattern: string | null;
@@ -95,14 +136,19 @@ export function interpolateUrlPattern(options: {
 	id: string;
 	date?: string | Date | null;
 	terms?: Record<string, string | null | undefined>;
+	termPaths?: Record<string, string[] | null | undefined>;
+	pagePath?: string[] | null;
 }): string {
-	const { pattern, collection, slug, id, date, terms } = options;
+	const { pattern, collection, slug, id, date, terms, termPaths, pagePath } = options;
 	const basePattern = pattern == null ? `/${encodeURIComponent(collection)}/{slug}` : expandPattern(pattern);
-	let path = basePattern.replace(TERM_TOKEN, (match, taxonomy: string, fallback: string | undefined) => {
+	let path = basePattern.replace(TERM_TOKEN, (match, kind: string, taxonomy: string, fallback: string | undefined) => {
+		const trail = kind === "termpath" ? termPaths?.[taxonomy] : null;
+		if (trail?.length) return encodeSegments(trail);
 		const term = terms?.[taxonomy];
 		if (term) return encodeURIComponent(term);
 		return fallback ? fallback : match;
 	});
+	path = path.replaceAll(PAGE_PATH, pagePath?.length ? encodeSegments(pagePath) : encodeURIComponent(slug));
 	path = path.replaceAll("{slug}", encodeURIComponent(slug)).replaceAll("{id}", encodeURIComponent(id));
 	path = applyDateTokens(path, date);
 	path = path.replace(REPEATED_SLASHES, "/");
@@ -126,23 +172,35 @@ export function applyTrailingSlash(path: string, policy: TrailingSlash | undefin
 /** The path an override pattern gives an entry, or null when a term token can't be filled. */
 export function overridePath(
 	pattern: string,
-	entry: { collection: string; id: string; slug: string; date?: string | Date | null; terms?: Record<string, string | null | undefined> },
+	entry: {
+		collection: string;
+		id: string;
+		slug: string;
+		date?: string | Date | null;
+		terms?: Record<string, string | null | undefined>;
+		termPaths?: Record<string, string[] | null | undefined>;
+		pagePath?: string[] | null;
+	},
 	policy: TrailingSlash | undefined,
 ): string | null {
 	const expanded = expandPattern(pattern);
-	const path = interpolateUrlPattern({ pattern: expanded, collection: entry.collection, slug: entry.slug, id: entry.id, date: entry.date, terms: entry.terms });
+	const path = interpolateUrlPattern({ pattern: expanded, ...entry });
 	if (UNRESOLVED_TERM.test(path)) return null;
 	return applyTrailingSlash(path, policy, expanded.endsWith("/"));
 }
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const ANY_TOKEN = /\{(?:term:[A-Za-z0-9_-]+(?:\|[^{}/]*)?|[a-z]+)\}/g;
+const ANY_TOKEN = /\{(?:term(?:path)?:[A-Za-z0-9_-]+(?:\|[^{}/]*)?|[a-z]+)\}/g;
+const ONE_SEGMENT = "([^/]+)";
+const SEGMENTS = "([^/]+(?:/[^/]+)*)";
 
 /**
  * Compile a pattern into a regex over decoded paths without a trailing
- * slash. Captures the {slug} and {id} tokens; other tokens match one segment.
+ * slash. Captures the {slug} and {id} tokens (and {pagepath}, whose last
+ * segment is the slug). `{termpath:…}` and `{pagepath}` match one or more
+ * segments, other tokens one.
  */
-export function compilePattern(pattern: string): { regex: RegExp; slug: number; id: number } {
+export function compilePattern(pattern: string): { regex: RegExp; slug: number; id: number; pagePath: number } {
 	let source = expandPattern(pattern).replace(REPEATED_SLASHES, "/");
 	if (!source.startsWith("/")) source = `/${source}`;
 	if (source.length > 1) source = source.replace(/\/+$/, "");
@@ -151,16 +209,18 @@ export function compilePattern(pattern: string): { regex: RegExp; slug: number; 
 	let group = 0;
 	let slug = 0;
 	let id = 0;
+	let pagePath = 0;
 	for (const m of source.matchAll(ANY_TOKEN)) {
 		regex += escapeRegex(source.slice(last, m.index));
 		group++;
 		if (m[0] === "{slug}" && !slug) slug = group;
 		if (m[0] === "{id}" && !id) id = group;
-		regex += "([^/]+)";
+		if (m[0] === PAGE_PATH && !pagePath) pagePath = group;
+		regex += m[0] === PAGE_PATH || m[0].startsWith("{termpath:") ? SEGMENTS : ONE_SEGMENT;
 		last = (m.index ?? 0) + m[0].length;
 	}
 	regex += escapeRegex(source.slice(last));
-	return { regex: new RegExp(`^${regex}$`), slug, id };
+	return { regex: new RegExp(`^${regex}$`), slug, id, pagePath };
 }
 
 const safeDecode = (path: string) => {
@@ -186,9 +246,36 @@ export interface ContentUrlOptions {
 	urls?: Record<string, string>;
 	/** Trailing-slash policy for the pack's entry URLs. Default: EmDash's (Astro's `trailingSlash`). */
 	trailingSlash?: TrailingSlash;
+	/**
+	 * Taxonomy → term slug → parent term slug, for `{termpath:…}`. Used only
+	 * for terms with no parent in EmDash (e.g. before parents are restored
+	 * after a WordPress import).
+	 */
+	termParents?: Record<string, Record<string, string>>;
+	/** Entry slug → parent entry slug, for `{pagepath}` (EmDash entries have no parent). */
+	pageParents?: Record<string, string>;
 }
 
-let config: { urls: Map<string, string>; trailingSlash?: TrailingSlash } = { urls: new Map() };
+interface UrlConfig {
+	urls: Map<string, string>;
+	trailingSlash?: TrailingSlash;
+	termParents: Map<string, Map<string, string>>;
+	pageParents: Map<string, string>;
+}
+
+let config: UrlConfig = { urls: new Map(), termParents: new Map(), pageParents: new Map() };
+
+const TAXONOMY_NAME = /^[A-Za-z0-9_-]+$/;
+
+/** A slug → parent slug map from an option, dropping non-string and self-parent entries. */
+function parentMap(input: unknown): Map<string, string> {
+	const out = new Map<string, string>();
+	if (!input || typeof input !== "object") return out;
+	for (const [slug, parent] of Object.entries(input as Record<string, unknown>)) {
+		if (typeof parent === "string" && parent.trim() && slug && parent.trim() !== slug) out.set(slug, parent.trim());
+	}
+	return out;
+}
 
 /** Set from coywolfPlugin()/createPlugin() options. Invalid collection slugs are ignored. */
 export function configureContentUrls(options: ContentUrlOptions = {}): void {
@@ -196,7 +283,16 @@ export function configureContentUrls(options: ContentUrlOptions = {}): void {
 	for (const [collection, pattern] of Object.entries(options.urls ?? {})) {
 		if (COLLECTION_SLUG.test(collection) && typeof pattern === "string" && pattern.trim()) urls.set(collection, expandPattern(pattern.trim()));
 	}
-	config = { urls, trailingSlash: options.trailingSlash };
+	const termParents = new Map<string, Map<string, string>>();
+	for (const [taxonomy, map] of Object.entries(options.termParents ?? {})) {
+		if (TAXONOMY_NAME.test(taxonomy)) termParents.set(taxonomy, parentMap(map));
+	}
+	config = { urls, trailingSlash: options.trailingSlash, termParents, pageParents: parentMap(options.pageParents) };
+}
+
+/** The entry's slugs, root first, from the `pageParents` option. */
+export function pageTrail(slug: string): string[] {
+	return ancestorTrail(slug, config.pageParents);
 }
 
 /** The configured override pattern for a collection (shorthands expanded), if any. */
@@ -305,6 +401,72 @@ export async function primaryTerms(source: UrlSource, collection: string, ids: s
 	return out;
 }
 
+/**
+ * Term parents per taxonomy (term slug → parent term slug), read in one
+ * query: EmDash's `taxonomies.parent_id` (the parent's translation_group, or
+ * a row id before EmDash's migration 045), then the `termParents` option for
+ * terms with no parent in the database. A parent in the entry's own locale
+ * wins; otherwise the default locale's slug is used.
+ */
+export async function termParentMaps(source: UrlSource, taxonomies: string[]): Promise<Map<string, Map<string, string>>> {
+	const wanted = [...new Set(taxonomies)].filter((t) => TAXONOMY_NAME.test(t));
+	const out = new Map<string, Map<string, string>>();
+	for (const taxonomy of wanted) out.set(taxonomy, new Map());
+	if (!wanted.length) return out;
+
+	if (!isD1(source)) {
+		const { getTaxonomyTerms } = await import("emdash");
+		type Node = { slug: string; children?: Node[] };
+		for (const taxonomy of wanted) {
+			const roots = (await getTaxonomyTerms(taxonomy, { includeCounts: false }).catch(() => [])) as Node[];
+			const map = out.get(taxonomy)!;
+			const walk = (nodes: Node[], parent: string | null, depth: number) => {
+				if (depth > MAX_DEPTH) return;
+				for (const node of nodes) {
+					if (parent && node.slug && node.slug !== parent && !map.has(node.slug)) map.set(node.slug, parent);
+					if (node.children?.length) walk(node.children, node.slug, depth + 1);
+				}
+			};
+			walk(roots, null, 0);
+		}
+	} else {
+		const defaultLocale = (await readHostConfig()).defaultLocale ?? "en";
+		let rows: Array<{ name: string; id: string; slug: string; parent_id: string | null; locale: string | null; translation_group: string | null }> = [];
+		try {
+			rows = (
+				await source
+					.prepare(`SELECT name, id, slug, parent_id, locale, translation_group FROM taxonomies WHERE name IN (${wanted.map(() => "?").join(",")})`)
+					.bind(...wanted)
+					.all<{ name: string; id: string; slug: string; parent_id: string | null; locale: string | null; translation_group: string | null }>()
+			).results;
+		} catch {
+			rows = []; // No taxonomy table yet: only the option applies.
+		}
+		// Default locale first, so its slugs win where locales disagree.
+		rows.sort((a, b) => Number(b.locale === defaultLocale) - Number(a.locale === defaultLocale));
+		const slugOf = new Map<string, string>();
+		for (const r of rows) {
+			for (const ref of [r.translation_group ?? r.id, r.id]) {
+				for (const key of [`${r.name}|${r.locale ?? ""}|${ref}`, `${r.name}||*|${ref}`]) if (!slugOf.has(key)) slugOf.set(key, r.slug);
+			}
+		}
+		for (const r of rows) {
+			if (!r.parent_id || !r.slug) continue;
+			const parent = slugOf.get(`${r.name}|${r.locale ?? ""}|${r.parent_id}`) ?? slugOf.get(`${r.name}||*|${r.parent_id}`);
+			const map = out.get(r.name);
+			if (map && parent && parent !== r.slug && !map.has(r.slug)) map.set(r.slug, parent);
+		}
+	}
+
+	for (const taxonomy of wanted) {
+		const fallback = config.termParents.get(taxonomy);
+		if (!fallback) continue;
+		const map = out.get(taxonomy)!;
+		for (const [slug, parent] of fallback) if (!map.has(slug)) map.set(slug, parent);
+	}
+	return out;
+}
+
 // ── Collections (D1) ─────────────────────────────────────────────
 
 export interface CollectionInfo {
@@ -369,6 +531,19 @@ export function createEntryUrlResolver(source: UrlSource): EntryUrlResolver {
 	const verdicts = new Map<string, "local" | "exact">();
 	let policy: Promise<TrailingSlash> | null = null;
 	const getPolicy = () => (policy ??= trailingPolicy(source));
+	const parents = new Map<string, Promise<Map<string, string>>>();
+
+	/** Term parents per taxonomy, loaded once per resolver (taxonomies not seen yet in one query). */
+	async function termParents(taxonomies: string[]): Promise<Map<string, Map<string, string>>> {
+		const missing = taxonomies.filter((t) => !parents.has(t));
+		if (missing.length) {
+			const batch = termParentMaps(source, missing).catch(() => new Map<string, Map<string, string>>());
+			for (const t of missing) parents.set(t, batch.then((m) => m.get(t) ?? new Map()));
+		}
+		const out = new Map<string, Map<string, string>>();
+		for (const t of taxonomies) out.set(t, await parents.get(t)!);
+		return out;
+	}
 
 	function route(collection: string): Promise<CollectionRoute | null> {
 		let r = routes.get(collection);
@@ -436,9 +611,21 @@ export function createEntryUrlResolver(source: UrlSource): EntryUrlResolver {
 
 		if (r.override && r.pattern) {
 			const taxonomies = patternTaxonomies(r.pattern);
-			const terms = taxonomies.length ? await primaryTerms(source, collection, usable.map((e) => e.id), taxonomies) : new Map<string, Record<string, string>>();
+			const pathTaxonomies = patternTermPathTaxonomies(r.pattern);
+			const usesPagePath = patternUsesPagePath(r.pattern);
+			const [terms, termParentsByTaxonomy] = await Promise.all([
+				taxonomies.length ? primaryTerms(source, collection, usable.map((e) => e.id), taxonomies) : new Map<string, Record<string, string>>(),
+				pathTaxonomies.length ? termParents(pathTaxonomies) : new Map<string, Map<string, string>>(),
+			]);
 			for (const e of usable) {
-				out.set(e.id, overridePath(r.pattern, { collection, id: e.id, slug: e.slug as string, date: dateOf(e), terms: terms.get(e.id) }, trailing));
+				const entryTerms = terms.get(e.id);
+				let termPaths: Record<string, string[]> | undefined;
+				for (const taxonomy of pathTaxonomies) {
+					const leaf = entryTerms?.[taxonomy];
+					if (leaf) (termPaths ??= {})[taxonomy] = ancestorTrail(leaf, termParentsByTaxonomy.get(taxonomy));
+				}
+				const slug = e.slug as string;
+				out.set(e.id, overridePath(r.pattern, { collection, id: e.id, slug, date: dateOf(e), terms: entryTerms, termPaths, pagePath: usesPagePath ? pageTrail(slug) : null }, trailing));
 			}
 			return out;
 		}
@@ -545,16 +732,20 @@ async function matchPattern(source: UrlSource, resolver: EntryUrlResolver, colle
 	}
 	const m = compiled.regex.exec(wanted);
 	if (!m) return null;
-	const by = compiled.slug ? "slug" : compiled.id ? "id" : null;
+	const by = compiled.slug || compiled.pagePath ? "slug" : compiled.id ? "id" : null;
 	if (!by) return null;
-	const value = m[by === "slug" ? compiled.slug : compiled.id];
+	// {pagepath}: the slug is its last segment.
+	const value = compiled.slug ? m[compiled.slug] : compiled.pagePath ? m[compiled.pagePath]?.split("/").pop() : m[compiled.id];
+	if (!value) return null;
 	return verify(resolver, collection, await findPublished(source, collection, by, value), wanted);
 }
 
 /**
  * The published entry a site path belongs to, or null. Override patterns
  * first: e.g. for `/{term:category}/{slug}/` the entry is looked up by slug
- * and its primary category must match. Then EmDash's own routing
+ * and its primary category must match; for `/{termpath:category}/{slug}/`
+ * the whole category path must (`/news/seo/a/`, not `/seo/a/`), and for
+ * `/{pagepath}/` the whole parent chain. Then EmDash's own routing
  * (resolveEmDashPath with a context; url_pattern or /<collection>/{slug}
  * from D1). Every match is verified by resolving the entry's URL back.
  */

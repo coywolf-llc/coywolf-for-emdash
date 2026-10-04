@@ -18,6 +18,7 @@ const { normalizeReview, reviewSchema } = await import("../src/reviews/lib.ts");
 const { findVideoBlocks, buildVideoObject, playerConfig } = await import("../src/videos/lib.ts");
 const { stampContent } = await import("../src/headings/stamp.ts");
 const { isFileId, isUploadId } = await import("../src/files/format.ts");
+const { wxrCategories, wxrPages, parentsMap, planCategoryParents, flattenTerms, optionSnippet, termParentsSnippet } = await import("../src/wpImport/parents.ts");
 const { resolveLanguage } = await import("../src/codeBlocks/render.ts");
 
 const fixture = (name) => readFileSync(new URL(`./fixtures/wp/${name}`, import.meta.url), "utf8");
@@ -412,4 +413,82 @@ test("Video Manager and Coywolf Files settings map to converter defaults", () =>
 	);
 	assert.deepEqual(d.video, { controls: true, autoplay: false, loop: false, mute: false, showName: true, showDescription: false, showDate: true, showPlays: false, showLikes: true, preload: "metadata" });
 	assert.deepEqual(d.files, { showIcon: true, showDescription: false, showMeta: true, showDownload: true, showCopyLink: false });
+});
+
+// ── Category and page parents ──
+
+const PARENTS_WXR = `<?xml version="1.0"?><rss><channel>
+<wp:category><wp:term_id>2</wp:term_id><wp:category_nicename><![CDATA[news]]></wp:category_nicename><wp:category_parent><![CDATA[]]></wp:category_parent><wp:cat_name><![CDATA[News]]></wp:cat_name></wp:category>
+<wp:category><wp:term_id>3</wp:term_id><wp:category_nicename><![CDATA[seo]]></wp:category_nicename><wp:category_parent><![CDATA[news]]></wp:category_parent><wp:cat_name><![CDATA[SEO]]></wp:cat_name></wp:category>
+<wp:category><wp:term_id>4</wp:term_id><wp:category_nicename><![CDATA[guides]]></wp:category_nicename><wp:category_parent><![CDATA[]]></wp:category_parent><wp:cat_name><![CDATA[Guides]]></wp:cat_name></wp:category>
+<wp:category><wp:term_id>5</wp:term_id><wp:category_nicename><![CDATA[method-seo]]></wp:category_nicename><wp:category_parent><![CDATA[guides]]></wp:category_parent><wp:cat_name><![CDATA[Method SEO]]></wp:cat_name></wp:category>
+<wp:category><wp:term_id>6</wp:term_id><wp:category_nicename><![CDATA[structure]]></wp:category_nicename><wp:category_parent><![CDATA[method-seo]]></wp:category_parent><wp:cat_name><![CDATA[Structure &amp; more]]></wp:cat_name></wp:category>
+<wp:category><wp:term_id>7</wp:term_id><wp:category_nicename><![CDATA[gone]]></wp:category_nicename><wp:category_parent><![CDATA[news]]></wp:category_parent><wp:cat_name><![CDATA[Gone]]></wp:cat_name></wp:category>
+<wp:term><wp:term_id>8</wp:term_id><wp:term_taxonomy><![CDATA[category]]></wp:term_taxonomy><wp:term_slug><![CDATA[books]]></wp:term_slug><wp:term_parent><![CDATA[reviews]]></wp:term_parent><wp:term_name><![CDATA[Books]]></wp:term_name></wp:term>
+<wp:term><wp:term_id>9</wp:term_id><wp:term_taxonomy><![CDATA[post_tag]]></wp:term_taxonomy><wp:term_slug><![CDATA[tagged]]></wp:term_slug><wp:term_parent><![CDATA[news]]></wp:term_parent></wp:term>
+<item><title>Apps</title><wp:post_id>10</wp:post_id><wp:post_name><![CDATA[apps]]></wp:post_name><wp:status><![CDATA[publish]]></wp:status><wp:post_parent>0</wp:post_parent><wp:post_type><![CDATA[page]]></wp:post_type></item>
+<item><title>Coywolf SEO</title><wp:post_id>11</wp:post_id><wp:post_name><![CDATA[coywolf-seo]]></wp:post_name><wp:status><![CDATA[publish]]></wp:status><wp:post_parent>10</wp:post_parent><wp:post_type><![CDATA[page]]></wp:post_type></item>
+<item><title>Orphan</title><wp:post_id>12</wp:post_id><wp:post_name><![CDATA[orphan]]></wp:post_name><wp:status><![CDATA[publish]]></wp:status><wp:post_parent>999</wp:post_parent><wp:post_type><![CDATA[page]]></wp:post_type></item>
+<item><title>Trashed</title><wp:post_id>13</wp:post_id><wp:post_name><![CDATA[trashed]]></wp:post_name><wp:status><![CDATA[trash]]></wp:status><wp:post_parent>10</wp:post_parent><wp:post_type><![CDATA[page]]></wp:post_type></item>
+<item><title>A post</title><wp:post_id>14</wp:post_id><wp:post_name><![CDATA[a-post]]></wp:post_name><wp:status><![CDATA[publish]]></wp:status><wp:post_parent>10</wp:post_parent><wp:post_type><![CDATA[post]]></wp:post_type></item>
+</channel></rss>`;
+
+test("parents: categories and pages from a WXR export", () => {
+	const cats = wxrCategories(PARENTS_WXR);
+	assert.deepEqual(parentsMap(cats), { seo: "news", "method-seo": "guides", structure: "method-seo", gone: "news", books: "reviews" });
+	assert.equal(cats.find((c) => c.slug === "structure").name, "Structure & more");
+	assert.equal(cats.some((c) => c.slug === "tagged"), false, "tags aren't categories");
+	const pages = wxrPages(PARENTS_WXR);
+	assert.deepEqual(pages.map((p) => p.slug), ["apps", "coywolf-seo", "orphan"]);
+	assert.deepEqual(parentsMap(pages), { "coywolf-seo": "apps" });
+	assert.equal(optionSnippet("pageParents", parentsMap(pages)), 'pageParents: {\n\t"coywolf-seo": "apps",\n},');
+	assert.equal(termParentsSnippet("category", { seo: "news" }), 'termParents: {\n\tcategory: {\n\t\t"seo": "news",\n\t},\n},');
+	const prepared = prepareWxr(PARENTS_WXR);
+	assert.equal(prepared.categories.length, 7);
+	assert.equal(prepared.pages.length, 3);
+});
+
+test("parents: the restore plan sets missing parents, skips done ones, and orders parents first", () => {
+	// EmDash's term list for a hierarchical taxonomy is a tree; method-seo is already under guides.
+	const site = [
+		{ id: "t-news", slug: "news", parentId: null, translationGroup: "t-news", children: [] },
+		{ id: "t-seo", slug: "seo", parentId: null, translationGroup: "t-seo", children: [] },
+		{
+			id: "t-guides",
+			slug: "guides",
+			parentId: null,
+			translationGroup: "t-guides",
+			children: [{ id: "t-mseo", slug: "method-seo", parentId: "t-guides", translationGroup: "t-mseo", children: [] }],
+		},
+		{ id: "t-structure", slug: "structure", parentId: "t-news", translationGroup: "t-structure", children: [] },
+		{ id: "t-books", slug: "books", parentId: null, translationGroup: "t-books", children: [] },
+	];
+	assert.equal(flattenTerms(site).length, 6);
+	const plan = planCategoryParents(wxrCategories(PARENTS_WXR), site);
+	const by = Object.fromEntries(plan.map((p) => [p.slug, p]));
+	assert.equal(by.seo.action, "set");
+	assert.equal(by.seo.parentTermId, "t-news");
+	assert.equal(by.seo.termId, "t-seo");
+	assert.equal(by["method-seo"].action, "done");
+	assert.equal(by.structure.action, "set", "a different parent on the site is changed back");
+	assert.equal(by.structure.current, "news");
+	assert.equal(by.structure.parentTermId, "t-mseo");
+	assert.equal(by.gone.action, "missing");
+	assert.equal(by.books.action, "missing", "the parent isn't on the site");
+	assert.ok(plan.findIndex((p) => p.slug === "method-seo") < plan.findIndex((p) => p.slug === "structure"));
+	// After applying, nothing is left to do.
+	const after = flattenTerms(site).map((t) => ({ ...t, children: [], parentId: by[t.slug]?.parentTermId ?? t.parentId }));
+	assert.equal(planCategoryParents(wxrCategories(PARENTS_WXR), after).filter((p) => p.action === "set").length, 0);
+});
+
+test("parents: a cyclic export doesn't hang the plan", () => {
+	const cats = [
+		{ slug: "a", name: "A", parent: "b" },
+		{ slug: "b", name: "B", parent: "a" },
+	];
+	const plan = planCategoryParents(cats, [
+		{ id: "1", slug: "a", parentId: null },
+		{ id: "2", slug: "b", parentId: null },
+	]);
+	assert.equal(plan.length, 2);
 });

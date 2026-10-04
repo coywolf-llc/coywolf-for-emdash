@@ -38,6 +38,7 @@
 import { type GBlock, blockHtml, htmlBlock, parseBlocks, serializeBlocks } from "./gutenberg.js";
 import { type GuestAuthor, wxrGuestAuthors } from "./guests.js";
 import { escapeAttr, markerHtml, parseMarker } from "./markers.js";
+import { type WxrCategory, type WxrPage, wxrCategories, wxrPages } from "./parents.js";
 import { hasStreamPlayer, parseStreamEmbed } from "./stream.js";
 
 export interface PrepareOptions {
@@ -383,6 +384,9 @@ export interface PrepareWxrResult {
 	counts: PrepareCounts;
 	/** Posts with a guest author (Coywolf Guest Author plugin), for the guest bylines step. */
 	guestAuthors: GuestAuthor[];
+	/** Categories with their parents, and pages with their parent pages, for the parents step (EmDash's importer drops both). */
+	categories: WxrCategory[];
+	pages: WxrPage[];
 }
 
 /** Prepare a whole WXR export. Only `content:encoded` bodies change. */
@@ -404,5 +408,5 @@ export function prepareWxr(xml: string, opts: PrepareOptions = {}): PrepareWxrRe
 		for (const [k, v] of Object.entries(result.counts)) totals[k] = (totals[k] ?? 0) + v;
 		return `<item>${item.replace(m[0], () => `<content:encoded>${toCdata(result.content)}</content:encoded>`)}</item>`;
 	});
-	return { xml: out, posts, counts: totals, guestAuthors: wxrGuestAuthors(xml, attachments) };
+	return { xml: out, posts, counts: totals, guestAuthors: wxrGuestAuthors(xml, attachments), categories: wxrCategories(xml), pages: wxrPages(xml) };
 }

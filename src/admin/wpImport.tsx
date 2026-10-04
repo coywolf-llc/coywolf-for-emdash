@@ -6,11 +6,12 @@
  * Coywolf Pack page.
  */
 import { Banner, Button, InputArea, Loader } from "@cloudflare/kumo";
-import { ArrowsClockwise, DownloadSimple, FileArrowUp, MagnifyingGlass, UploadSimple, UserPlus } from "@phosphor-icons/react";
+import { ArrowsClockwise, DownloadSimple, FileArrowUp, MagnifyingGlass, TreeStructure, UploadSimple, UserPlus } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
 import { type GuestAuthor, type GuestByline, collectionFor, groupGuests, sameName, wxrGuestAuthors } from "../wpImport/guests.js";
+import { type ParentPlan, type SiteTerm, type WxrCategory, type WxrPage, optionSnippet, parentsMap, planCategoryParents, wxrCategories, wxrPages } from "../wpImport/parents.js";
 import { type PrepareWxrResult, prepareWxr, wxrAttachments } from "../wpImport/prepare.js";
 import { saveFile } from "./download.js";
 
@@ -71,7 +72,7 @@ function CountsTable({ counts }: { counts: Record<string, number> }) {
 
 // ── 1. Prepare ───────────────────────────────────────────────────
 
-function PrepareStep({ onGuests }: { onGuests: (guests: GuestAuthor[]) => void }) {
+function PrepareStep({ onGuests, onParents }: { onGuests: (guests: GuestAuthor[]) => void; onParents: (parents: WxrParents) => void }) {
 	const fileRef = React.useRef<HTMLInputElement>(null);
 	const [busy, setBusy] = React.useState(false);
 	const [error, setError] = React.useState<string>();
@@ -89,6 +90,7 @@ function PrepareStep({ onGuests }: { onGuests: (guests: GuestAuthor[]) => void }
 			const prepared = prepareWxr(xml);
 			setResult({ ...prepared, name: file.name });
 			onGuests(prepared.guestAuthors);
+			onParents({ categories: prepared.categories, pages: prepared.pages });
 		} catch (cause) {
 			setError(errorText(cause, "Could not read that file."));
 		} finally {
@@ -140,6 +142,9 @@ function PrepareStep({ onGuests }: { onGuests: (guests: GuestAuthor[]) => void }
 						{result.posts.length.toLocaleString()} {result.posts.length === 1 ? "entry" : "entries"} changed. Blocks marked “→ note”, “→ details”, “→ quote”,
 						“→ disclosure”, “→ testimonial” and “→ podcast” become Custom Blocks, “→ html” keep their content as HTML blocks, “→ flag” leaves an empty marker for the theme, and “→ removed” rendered nothing on WordPress.
 						{result.guestAuthors.length ? ` ${result.guestAuthors.length} ${result.guestAuthors.length === 1 ? "post has" : "posts have"} a guest author: credit them in step 4 after importing.` : ""}
+						{Object.keys(parentsMap(result.categories)).length + Object.keys(parentsMap(result.pages)).length
+							? " Some categories or pages have parents, which EmDash's importer drops: restore them in step 5 after importing."
+							: ""}
 					</p>
 					<CountsTable counts={result.counts} />
 				</div>
@@ -668,7 +673,182 @@ function GuestBylinesStep({ guests, onGuests }: { guests: GuestAuthor[] | null; 
 	);
 }
 
-// ── 5. Files and videos ──────────────────────────────────────────
+// ── 5. Category and page parents ─────────────────────────────────
+
+interface WxrParents {
+	categories: WxrCategory[];
+	pages: WxrPage[];
+}
+
+function ParentsStep({ parents, onParents }: { parents: WxrParents | null; onParents: (parents: WxrParents) => void }) {
+	const fileRef = React.useRef<HTMLInputElement>(null);
+	const [plans, setPlans] = React.useState<ParentPlan[] | null>(null);
+	const [running, setRunning] = React.useState<false | "read" | "dry" | "apply">(false);
+	const [applied, setApplied] = React.useState(false);
+	const [error, setError] = React.useState<string>();
+	const pageMap = React.useMemo(() => (parents ? parentsMap(parents.pages) : {}), [parents]);
+	const withParent = React.useMemo(() => (parents ? parents.categories.filter((c) => c.parent && c.parent !== c.slug).length : 0), [parents]);
+
+	React.useEffect(() => {
+		setPlans(null);
+		setApplied(false);
+	}, [parents]);
+
+	const choose = async (file: File) => {
+		setRunning("read");
+		setError(undefined);
+		try {
+			const xml = await file.text();
+			if (!xml.includes("<rss") || !xml.includes("<wp:")) throw new Error("That doesn't look like a WordPress export (WXR) file.");
+			onParents({ categories: wxrCategories(xml), pages: wxrPages(xml) });
+		} catch (cause) {
+			setError(errorText(cause, "Could not read that file."));
+		} finally {
+			setRunning(false);
+		}
+	};
+
+	const dryRun = async () => {
+		if (!parents) return;
+		setRunning("dry");
+		setError(undefined);
+		setApplied(false);
+		try {
+			const { terms } = await getJson<{ terms: SiteTerm[] }>(`${EMDASH}/taxonomies/category/terms?includeCounts=false`, "Could not list the categories");
+			setPlans(planCategoryParents(parents.categories, terms));
+		} catch (cause) {
+			setError(errorText(cause, "The dry run failed"));
+		} finally {
+			setRunning(false);
+		}
+	};
+
+	const apply = async () => {
+		if (!plans) return;
+		if (!window.confirm("Set the parent of each category listed as “Set”? Category archive and post URLs that include parent categories change to match WordPress.")) return;
+		setRunning("apply");
+		setError(undefined);
+		const next = plans.map((p) => ({ ...p }));
+		for (const plan of next) {
+			if (plan.action !== "set" || !plan.parentTermId) continue;
+			try {
+				await send(`${EMDASH}/taxonomies/category/terms/${encodeURIComponent(plan.slug)}`, "PUT", { parentId: plan.parentTermId }, "Could not update the category");
+				plan.action = "done";
+				plan.current = plan.parent;
+				plan.result = "Parent set";
+			} catch (cause) {
+				plan.result = `Failed: ${errorText(cause, "unknown error")}`;
+			}
+			setPlans(next.map((p) => ({ ...p })));
+		}
+		setPlans(next);
+		setApplied(true);
+		setRunning(false);
+	};
+
+	const toSet = plans?.filter((p) => p.action === "set").length ?? 0;
+	const pageCount = Object.keys(pageMap).length;
+
+	return (
+		<Section
+			title="5. Category and page parents"
+			description={
+				<>
+					EmDash's importer creates every category at the top level and drops page parents, so WordPress URLs with parent categories
+					(<Code>/news/seo/a-post/</Code>) or parent pages (<Code>/apps/coywolf-seo/</Code>) are lost. This sets each category's parent the way
+					WordPress had it, with EmDash's own taxonomy API and your account, a dry run first. Running it again changes nothing. EmDash pages have
+					no parent, so page parents are listed as a <Code>pageParents</Code> option to paste into <Code>coywolfPlugin()</Code> (see the README,
+					“Content URLs”).
+				</>
+			}
+		>
+			<input
+				ref={fileRef}
+				type="file"
+				accept=".xml,text/xml,application/xml"
+				className="sr-only"
+				tabIndex={-1}
+				aria-hidden="true"
+				onChange={(e) => {
+					const file = e.target.files?.[0];
+					e.target.value = "";
+					if (file) void choose(file);
+				}}
+			/>
+			<div className="flex flex-wrap items-center gap-2">
+				{parents === null && (
+					<Button variant="secondary" icon={<FileArrowUp />} disabled={Boolean(running)} onClick={() => fileRef.current?.click()}>
+						{running === "read" ? "Reading…" : "Choose export file"}
+					</Button>
+				)}
+				<Button variant="secondary" icon={<MagnifyingGlass />} disabled={Boolean(running) || !withParent} onClick={() => void dryRun()}>
+					{running === "dry" ? "Checking…" : "Dry run"}
+				</Button>
+				<Button variant="primary" icon={<TreeStructure />} disabled={Boolean(running) || !plans || applied || !toSet} onClick={() => void apply()}>
+					{running === "apply" ? "Setting parents…" : "Set category parents"}
+				</Button>
+				{running && <Loader size="sm" />}
+			</div>
+			{error && <Banner variant="error" role="alert" description={error} />}
+			{parents !== null && (
+				<p className="text-sm" role="status">
+					{withParent
+						? `${withParent.toLocaleString()} ${withParent === 1 ? "category has" : "categories have"} a parent in WordPress.`
+						: "No categories with a parent in this export."}
+					{plans && !applied ? ` Dry run: ${toSet} to set.` : ""}
+					{applied ? " Done." : ""}
+				</p>
+			)}
+			{plans && plans.length > 0 && (
+				<div className="overflow-x-auto">
+					<table className="w-full text-left text-sm">
+						<thead className="text-kumo-subtle">
+							<tr>
+								<th className="py-1 pe-3 font-medium">Category</th>
+								<th className="py-1 pe-3 font-medium">Parent in WordPress</th>
+								<th className="py-1 pe-3 font-medium">Parent now</th>
+								<th className="py-1 font-medium">{applied ? "Result" : "Will"}</th>
+							</tr>
+						</thead>
+						<tbody>
+							{plans.map((p) => (
+								<tr key={p.slug} className="border-t border-kumo-line align-top">
+									<td className="py-1 pe-3">
+										{p.name}
+										<span className="block font-mono text-xs text-kumo-subtle">{p.slug}</span>
+									</td>
+									<td className="py-1 pe-3 font-mono text-xs">{p.parent}</td>
+									<td className="py-1 pe-3 font-mono text-xs">{p.current || "—"}</td>
+									<td className="py-1 text-xs">
+										{p.result ?? (p.action === "done" ? "Already set" : p.action === "missing" ? (p.note ?? "Not found") : p.current ? `Change to ${p.parent}` : `Set to ${p.parent}`)}
+									</td>
+								</tr>
+							))}
+						</tbody>
+					</table>
+				</div>
+			)}
+			{parents !== null && (
+				<div className="space-y-1">
+					<h3 className="text-sm font-medium">Page parents</h3>
+					{pageCount ? (
+						<>
+							<p className="text-xs text-kumo-subtle">
+								{pageCount} {pageCount === 1 ? "page has" : "pages have"} a parent page. Add this to <Code>coywolfPlugin()</Code> in astro.config.mjs and
+								use <Code>{"{pagepath}"}</Code> in the pages URL pattern, e.g. <Code>{'urls: { pages: "/{pagepath}/" }'}</Code>:
+							</p>
+							<pre className="overflow-x-auto rounded bg-kumo-tint p-2 font-mono text-xs">{optionSnippet("pageParents", pageMap)}</pre>
+						</>
+					) : (
+						<p className="text-xs text-kumo-subtle">No pages with a parent page in this export.</p>
+					)}
+				</div>
+			)}
+		</Section>
+	);
+}
+
+// ── 6. Files and videos ──────────────────────────────────────────
 
 const FILES_QUERY =
 	'wp db query "SELECT file_id, object_key, filename, mime, size, downloads, created FROM wp_coywolf_files"';
@@ -693,7 +873,7 @@ function FilesStep() {
 	};
 	return (
 		<Section
-			title="5. Coywolf Files downloads"
+			title="6. Coywolf Files downloads"
 			description={
 				<>
 					Registers files uploaded with Coywolf Files so File download blocks and old download links keep working (they keep their WordPress ids;
@@ -756,7 +936,7 @@ function VideosStep() {
 	);
 	return (
 		<Section
-			title="6. Video Manager library"
+			title="7. Video Manager library"
 			description="Per-video descriptions, poster frames or images, and MP4 download links set on Video Manager's Edit Video page. They're used in VideoObject schema and the video sitemap."
 		>
 			<div className="grid gap-4 lg:grid-cols-3">
@@ -779,6 +959,7 @@ function VideosStep() {
 
 export function WpImportPage() {
 	const [guests, setGuests] = React.useState<GuestAuthor[] | null>(null);
+	const [parents, setParents] = React.useState<WxrParents | null>(null);
 	return (
 		<div className="space-y-6">
 			<header className="grid min-w-0 gap-2 border-b border-kumo-line pb-4">
@@ -787,15 +968,16 @@ export function WpImportPage() {
 					Move content that used Coywolf's WordPress plugins: Cloudflare Stream and Video Manager videos become Coywolf Video blocks, reviews become
 					Coywolf Review blocks, sidenotes, transcripts, quotes, affiliate disclosures, testimonials and podcast links become Note, Details, Quote,
 					Affiliate disclosure, Testimonial and Podcast links blocks,
-					tables of contents and heading ids carry over, guest authors get their own bylines, and Coywolf Files downloads keep their links. Turn on
+					tables of contents and heading ids carry over, guest authors get their own bylines, category parents come back, and Coywolf Files downloads keep their links. Turn on
 					Videos, Reviews, Custom Blocks (and each block), Headings &amp; TOC and File Downloads on the Coywolf Pack page before importing. The
 					README has the full checklist.
 				</p>
 			</header>
-			<PrepareStep onGuests={setGuests} />
+			<PrepareStep onGuests={setGuests} onParents={setParents} />
 			<DefaultsStep />
 			<ConvertStep />
 			<GuestBylinesStep guests={guests} onGuests={setGuests} />
+			<ParentsStep parents={parents} onParents={setParents} />
 			<FilesStep />
 			<VideosStep />
 		</div>

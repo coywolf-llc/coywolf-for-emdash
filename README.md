@@ -34,7 +34,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.12.1
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.13.0
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -88,8 +88,25 @@ Patterns take EmDash's tokens plus taxonomy tokens:
 - `{term:<taxonomy>}` is the slug of the entry's first term in that taxonomy, in the order EmDash's `getTermsForEntries` returns them (by label).
 - `{term:<taxonomy>|<fallback>}` uses `<fallback>` when the entry has no term. Without a fallback, an entry with no term has no URL.
 - `{category}` is shorthand for `{term:category|uncategorized}`.
+- `{termpath:<taxonomy>}` (and `{termpath:<taxonomy>|<fallback>}`) is the same term with its parent terms in front, root first, like WordPress's `%category%` permalink: `news/seo` for SEO under News, `guides/method-seo/structure` three levels down. A term with no parent is just its slug. Parents come from EmDash's categories (the parent set under **Taxonomies**), read once per request or build. Chains stop at a loop or after 32 levels.
+- `{pagepath}` is the entry's slug with its parent pages' slugs in front (`apps/coywolf-seo`). EmDash entries have no parent field, so the parents come from the `pageParents` option (slug → parent slug). An entry with no parent is just its slug.
 
-Collections without an override keep EmDash's resolution. The pack also maps paths back to entries (for example, the Markdown source at `/mind/some-post/index.html.md` resolves only when `mind` is the post's primary category), so a wrong category doesn't match.
+```js
+// coywolf.com: WordPress's /%category%/%postname%/ with the full category path, and nested pages
+coywolfPlugin({
+  urls: {
+    posts: "/{termpath:category|uncategorized}/{slug}/",
+    pages: "/{pagepath}/",
+  },
+  pageParents: { "coywolf-seo": "apps", "coywolf-files": "apps" },
+  // Optional: parents for categories that have none in EmDash yet (e.g. right after a WordPress import).
+  termParents: { category: { seo: "news", "method-seo": "guides", structure: "method-seo" } },
+});
+```
+
+`termParents` (taxonomy → term slug → parent slug) is a fallback: it's used only for terms that have no parent in EmDash, so once the parents are restored (see [Migrating from WordPress](#migrating-from-wordpress), "Category and page parents") it can go.
+
+Collections without an override keep EmDash's resolution. The pack also maps paths back to entries (for example, the Markdown source at `/mind/some-post/index.html.md` resolves only when `mind` is the post's primary category), so a wrong category doesn't match. With `{termpath:…}` the whole path must match: `/news/seo/some-post/` resolves, `/seo/some-post/` doesn't (the theme should redirect it, as WordPress did). With `{pagepath}`, a page under a parent resolves only at its full path.
 
 Trailing slashes follow Astro's `trailingSlash` setting. With the default (`"ignore"`), an override keeps the pattern's own trailing slash. Set `trailingSlash: "always" | "never"` on `coywolfPlugin()` to force one for every entry URL the pack builds. Override URLs get no locale prefix.
 
@@ -907,6 +924,16 @@ The Coywolf Guest Author plugin stores one guest per post in post meta (`_guest_
 
 Schema & Social's author Person and Review schema then name the guest (with their website as `url`, bio as `description` and avatar as `image`, and Author profiles on the Schema page lists them). What stays manual: an avatar that isn't in the media library (upload it, then pick it on the byline under **Bylines**); a post whose slug changed on import ("Not found" in the dry run; credit it in the editor); and guest bylines get the author-page URL pattern in schema like any byline, so set the byline's website if the theme has no page for guests.
 
+### Category and page parents
+
+EmDash's importer creates every category at the top level and drops each page's parent, so WordPress URLs with parent categories (`/news/seo/a-post/`) or parent pages (`/apps/coywolf-seo/`) are lost. **Category and page parents** (step 5 on the WordPress import page) puts them back, from your browser:
+
+1. It reads the categories (`<wp:category>` with `<wp:category_parent>`) and pages (`<wp:post_parent>`) from the export (the one prepared in step 1, or choose it again).
+2. **Dry run** lists each category that had a parent in WordPress with its parent on the site now: "Set to …", "Change to …" (the site has a different parent), "Already set", or why it can't be set (the category or its parent isn't on the site).
+3. **Set category parents** sets them through EmDash's own taxonomy API (`PUT /_emdash/api/taxonomies/category/terms/<slug>`), as you, parents first. Categories already right are skipped, so running it again changes nothing. You need permission to manage taxonomies.
+
+EmDash pages have no parent, so the step shows a ready-to-paste `pageParents` option for `coywolfPlugin()` instead (use it with `{pagepath}`, see [Content URLs](#content-urls)). `node scripts/wp-prepare.mjs` prints the same `pageParents` option, plus a `termParents` option you can use until the category parents are set.
+
 ### Order of operations
 
 1. Install this version and turn on, under **Plugins → Coywolf Pack**: **WordPress import**, **Videos** (and Video schema, sitemap, plays and likes as wanted), **Reviews** and **Review schema**, **Custom Blocks** with the Note, Details, Affiliate disclosure, Quote, Testimonial and Podcast links blocks, **Headings & TOC** with **Heading anchors** and **Table of Contents block**, **File Downloads**, and **Code Blocks**. Set your disclosure wording and podcast links on the Custom Blocks page. Connect Stream on the Videos page (same account) or at least set the customer subdomain.
@@ -914,10 +941,11 @@ Schema & Social's author Person and Review schema then name the guest (with thei
 3. Export from WordPress (**Tools → Export → All content**), prepare the file (step 1), and import the prepared file under **Settings → Import**.
 4. Run **Convert imported content → Dry run**. It should list nothing left to convert; if the module (or a block) was off during the import, run **Convert**.
 5. Guest authors: run **Guest author bylines → Dry run**, then **Create bylines and credit posts** (step 4).
-6. Files: copy each Coywolf Files object into the bucket bound as `FILES` (or `MEDIA`) under the same key (`coywolf-files/YYYY/MM/<id>-<name>`), paste `wp db query "SELECT file_id, object_key, filename, mime, size, downloads, created FROM wp_coywolf_files"` into step 5, and set **Files → Settings → Download URL base** to WordPress's link base (`coywolf-file` by default) so old download links keep working. Download counts carry over.
-7. Videos: paste the output of `wp option get coywolf_cvm_descriptions --format=json` (and the same for `coywolf_cvm_posters` and `coywolf_cvm_downloads`) into step 6 for per-video descriptions, posters and MP4 links. On the Videos page, **Refresh** the library (with the token) and **Rebuild embed index**.
-8. Redirects: import Coywolf SEO's redirects (see Redirects) and add a rule for `/wp-content/uploads/(.*)` if media URLs moved.
-9. Run the Headings & TOC, Schema and Videos checks on a few entries (Rich Results Test for a review and a video page), then turn **WordPress import** off.
+6. Parents: run **Category and page parents → Dry run**, then **Set category parents** (step 5). Paste the `pageParents` it shows into `coywolfPlugin()`, and use `{termpath:category}` and `{pagepath}` in `urls` if the theme serves WordPress's hierarchical URLs.
+7. Files: copy each Coywolf Files object into the bucket bound as `FILES` (or `MEDIA`) under the same key (`coywolf-files/YYYY/MM/<id>-<name>`), paste `wp db query "SELECT file_id, object_key, filename, mime, size, downloads, created FROM wp_coywolf_files"` into step 6, and set **Files → Settings → Download URL base** to WordPress's link base (`coywolf-file` by default) so old download links keep working. Download counts carry over.
+8. Videos: paste the output of `wp option get coywolf_cvm_descriptions --format=json` (and the same for `coywolf_cvm_posters` and `coywolf_cvm_downloads`) into step 7 for per-video descriptions, posters and MP4 links. On the Videos page, **Refresh** the library (with the token) and **Rebuild embed index**.
+9. Redirects: import Coywolf SEO's redirects (see Redirects) and add a rule for `/wp-content/uploads/(.*)` if media URLs moved.
+10. Run the Headings & TOC, Schema and Videos checks on a few entries (Rich Results Test for a review and a video page), then turn **WordPress import** off.
 
 Without a Stream token, converted videos still play and have VideoObject schema: the name, length, upload date and size come from WordPress and are stored as the video's details until Stream's own data replaces them. Captions, plays from Stream, MP4 links found via the API, and the library listing need the token.
 

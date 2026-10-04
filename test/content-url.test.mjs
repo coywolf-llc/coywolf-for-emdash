@@ -4,11 +4,11 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 const cu = await import("../src/core/content-url.ts");
-const { interpolateUrlPattern, overridePath, applyTrailingSlash, patternTaxonomies, expandPattern, compilePattern, configureContentUrls, entryUrl, entryUrls, matchEntryPath, primaryTerms } = cu;
+const { interpolateUrlPattern, overridePath, applyTrailingSlash, patternTaxonomies, patternTermPathTaxonomies, expandPattern, compilePattern, configureContentUrls, entryUrl, entryUrls, matchEntryPath, primaryTerms, ancestorTrail, termParentMaps } = cu;
 
 // ── A D1 stand-in over node:sqlite, with EmDash's tables ──
 
-function fakeD1() {
+function fakeD1(extraSql = "") {
 	const db = new DatabaseSync(":memory:");
 	db.exec(`
 		CREATE TABLE _emdash_collections (slug TEXT, label TEXT, label_singular TEXT, url_pattern TEXT, title_field TEXT, routable INTEGER DEFAULT 1);
@@ -32,6 +32,7 @@ function fakeD1() {
 		INSERT INTO ec_pages VALUES ('a1','about','published','2024-01-01 00:00:00','en','a1',NULL,'About');
 		INSERT INTO ec_items VALUES ('i1','widget','published','2024-01-01 00:00:00','en','i1',NULL,'Widget');
 	`);
+	if (extraSql) db.exec(extraSql);
 	const log = [];
 	const d1 = {
 		log,
@@ -173,4 +174,122 @@ test("removed content records the resolved former URL", async () => {
 	const entry = { id: "p1", slug: "first", status: "published", publishedAt: "2024-03-05", locale: "en", title: "First" };
 	assert.equal(buildPending("posts", entry, { url: "/apple/first/", urlPattern: "/posts/{slug}" }, "deleted").url, "/apple/first/");
 	assert.equal(buildPending("posts", entry, { url: null, urlPattern: "/posts/{slug}" }, "deleted").url, "/posts/first");
+});
+
+// ── Hierarchical paths: {termpath:…} and {pagepath} ──
+
+// coywolf.com-style categories: news > seo, guides > method-seo > structure,
+// books (parent only in the termParents option), and a cycle loop-a <-> loop-b.
+const HIERARCHY = `
+	INSERT INTO taxonomies VALUES
+		('n1','category','news','News',NULL,'en','n1'),
+		('n2','category','seo','SEO','n1','en','n2'),
+		('n3','category','guides','Guides',NULL,'en','n3'),
+		('n4','category','method-seo','Method SEO','n3','en','n4'),
+		('n5','category','structure','Structure','n4','en','n5'),
+		('n6','category','reviews','Reviews',NULL,'en','n6'),
+		('n7','category','books','Books',NULL,'en','n7'),
+		('n8','category','loop-a','Loop A','n9','en','n8'),
+		('n9','category','loop-b','Loop B','n8','en','n9'),
+		('n2es','category','seo-es','SEO ES','n1','es','n2');
+	INSERT INTO ec_posts VALUES
+		('h1','seo-post','published','2024-04-01 10:00:00','en','h1',NULL,'SEO post'),
+		('h2','part-1','published','2024-04-02 10:00:00','en','h2',NULL,'Part 1'),
+		('h3','a-book','published','2024-04-03 10:00:00','en','h3',NULL,'A book'),
+		('h4','loopy','published','2024-04-04 10:00:00','en','h4',NULL,'Loopy');
+	INSERT INTO content_taxonomies VALUES ('posts','h1','n2'), ('posts','h2','n5'), ('posts','h3','n7'), ('posts','h4','n8');
+	INSERT INTO ec_pages VALUES ('a2','apps','published','2024-01-01 00:00:00','en','a2',NULL,'Apps'),
+		('a3','coywolf-seo','published','2024-01-01 00:00:00','en','a3',NULL,'Coywolf SEO');
+`;
+const COYWOLF = {
+	urls: { posts: "/{termpath:category|uncategorized}/{slug}/", pages: "/{pagepath}/" },
+	termParents: { category: { books: "reviews", seo: "ignored-db-wins" } },
+	pageParents: { "coywolf-seo": "apps" },
+};
+
+test("ancestorTrail follows parents root first and stops at cycles", () => {
+	assert.deepEqual(ancestorTrail("structure", { structure: "method-seo", "method-seo": "guides" }), ["guides", "method-seo", "structure"]);
+	assert.deepEqual(ancestorTrail("a", new Map([["a", "b"], ["b", "a"]])), ["b", "a"]);
+	assert.deepEqual(ancestorTrail("a", { a: "a" }), ["a"]);
+	assert.deepEqual(ancestorTrail("x", null), ["x"]);
+	assert.deepEqual(ancestorTrail("constructor", {}), ["constructor"], "no prototype keys");
+	const deep = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`t${i}`, `t${i + 1}`]));
+	assert.equal(ancestorTrail("t0", deep).length, 32);
+});
+
+test("termpath tokens: interpolation, taxonomies and the unresolved case", () => {
+	const base = { pattern: "/{termpath:category|uncategorized}/{slug}/", collection: "posts", slug: "hello", id: "1" };
+	assert.equal(interpolateUrlPattern({ ...base, terms: { category: "seo" }, termPaths: { category: ["news", "seo"] } }), "/news/seo/hello");
+	assert.equal(interpolateUrlPattern({ ...base, terms: { category: "seo" } }), "/seo/hello", "no trail: the bare term");
+	assert.equal(interpolateUrlPattern({ ...base, terms: {} }), "/uncategorized/hello");
+	assert.equal(interpolateUrlPattern({ ...base, termPaths: { category: ["a b", "c"] } }), "/a%20b/c/hello");
+	assert.equal(interpolateUrlPattern({ pattern: "/{pagepath}/", collection: "pages", slug: "x", id: "1", pagePath: ["apps", "x"] }), "/apps/x");
+	assert.equal(interpolateUrlPattern({ pattern: "/{pagepath}/", collection: "pages", slug: "x", id: "1" }), "/x");
+	assert.equal(overridePath("/{termpath:category}/{slug}/", { collection: "posts", id: "1", slug: "s" }, "ignore"), null);
+	assert.deepEqual(patternTaxonomies("/{termpath:category}/{term:tag}/{slug}"), ["category", "tag"]);
+	assert.deepEqual(patternTermPathTaxonomies("/{termpath:category}/{term:tag}/{slug}"), ["category"]);
+});
+
+test("compilePattern: termpath and pagepath match one or more segments", () => {
+	const c = compilePattern("/{termpath:category|uncategorized}/{slug}/");
+	assert.equal(c.regex.exec("/news/seo/hello")[c.slug], "hello");
+	assert.equal(c.regex.exec("/seo/hello")[c.slug], "hello");
+	assert.equal(c.regex.exec("/hello"), null);
+	const p = compilePattern("/{pagepath}/");
+	assert.equal(p.regex.exec("/apps/coywolf-seo")[p.pagePath], "apps/coywolf-seo");
+	assert.equal(p.slug, 0);
+});
+
+test("termParentMaps: database parents in one query, the option only where the database has none", async () => {
+	configureContentUrls(COYWOLF);
+	const d1 = fakeD1(HIERARCHY);
+	const maps = await termParentMaps(d1, ["category"]);
+	const cat = maps.get("category");
+	assert.equal(cat.get("seo"), "news", "database wins over the option");
+	assert.equal(cat.get("structure"), "method-seo");
+	assert.equal(cat.get("books"), "reviews", "option fills a missing parent");
+	assert.equal(cat.get("seo-es"), "news", "other locales resolve the parent group");
+	assert.equal(cat.has("news"), false);
+	assert.equal(d1.log.filter((sql) => sql.includes("FROM taxonomies WHERE name IN")).length, 1);
+});
+
+test("entryUrls: full category paths, fallback parents, cycles, and one parents query per resolver", async () => {
+	configureContentUrls(COYWOLF);
+	const d1 = fakeD1(HIERARCHY);
+	const urls = await entryUrls(d1, "posts", [
+		{ id: "h1", slug: "seo-post" },
+		{ id: "h2", slug: "part-1" },
+		{ id: "h3", slug: "a-book" },
+		{ id: "h4", slug: "loopy" },
+		{ id: "p2", slug: "second" },
+		{ id: "p4", slug: "fourth" },
+	]);
+	assert.equal(urls.get("h1"), "/news/seo/seo-post/");
+	assert.equal(urls.get("h2"), "/guides/method-seo/structure/part-1/");
+	assert.equal(urls.get("h3"), "/reviews/books/a-book/");
+	assert.equal(urls.get("h4"), "/loop-b/loop-a/loopy/", "a cycle stops at the repeat");
+	assert.equal(urls.get("p2"), "/uncategorized/second/");
+	assert.equal(urls.get("p4"), "/mind/fourth/", "no parent: the term alone");
+	assert.equal(d1.log.filter((sql) => sql.includes("FROM taxonomies WHERE name IN")).length, 1);
+	assert.equal(await entryUrl(d1, "pages", { id: "a3", slug: "coywolf-seo" }), "/apps/coywolf-seo/");
+	assert.equal(await entryUrl(d1, "pages", { id: "a2", slug: "apps" }), "/apps/");
+});
+
+test("termpath without parents in the database or option is the leaf path", async () => {
+	configureContentUrls({ urls: COYWOLF.urls });
+	const d1 = fakeD1(HIERARCHY);
+	assert.equal(await entryUrl(d1, "posts", { id: "h3", slug: "a-book" }), "/books/a-book/");
+});
+
+test("matchEntryPath: termpath needs the full category path; pagepath the full page path", async () => {
+	configureContentUrls(COYWOLF);
+	const d1 = fakeD1(HIERARCHY);
+	assert.deepEqual(await matchEntryPath(d1, "/news/seo/seo-post/"), { collection: "posts", id: "h1", path: "/news/seo/seo-post/" });
+	assert.deepEqual(await matchEntryPath(d1, "/guides/method-seo/structure/part-1"), { collection: "posts", id: "h2", path: "/guides/method-seo/structure/part-1/" });
+	assert.equal(await matchEntryPath(d1, "/seo/seo-post/"), null, "the leaf-only path isn't canonical (the site redirects it)");
+	assert.equal(await matchEntryPath(d1, "/other/seo/seo-post/"), null);
+	assert.deepEqual(await matchEntryPath(d1, "/apps/coywolf-seo/"), { collection: "pages", id: "a3", path: "/apps/coywolf-seo/" });
+	assert.equal(await matchEntryPath(d1, "/coywolf-seo/"), null, "a page under a parent needs the parent");
+	assert.deepEqual(await matchEntryPath(d1, "/apps"), { collection: "pages", id: "a2", path: "/apps/" });
+	configureContentUrls({});
 });
