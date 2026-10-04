@@ -656,7 +656,7 @@ Every change is checked in the browser as you type and again on the server befor
 
 ### Automatic lines and the sitemap
 
-**Discovery files stay readable.** Any crawler that your rules would block from `/.well-known/` (security.txt, ai-plugin.json and future machine-discovery manifests), from `/llms.txt` and `/llms-full.txt` while Discovery's llms.txt feature is on, or from discovery paths you add, gets an `Allow` line for them. The Rules tab lists these as **Automatic** lines with the reason. Turn the allowance off, or add paths, under **Settings and history**. Feature switches are read when the file is generated (middleware and admin preview), the self-check confirms each allowance, and a rule that targets a discovery file gets a warning.
+**Discovery files stay readable.** Any crawler that your rules would block from `/.well-known/` (security.txt, ai-plugin.json and future machine-discovery manifests), from `/llms.txt` while Discovery's llms.txt feature is on (`/llms-full.txt` holds your full text, so add it yourself if you want it), or from discovery paths you add, gets an `Allow` line for them. The Rules tab lists these as **Automatic** lines with the reason. Turn the allowance off, or add paths, under **Settings and history**. Feature switches are read when the file is generated (middleware and admin preview), the self-check confirms each allowance, and a rule that targets a discovery file gets a warning.
 
 **List the site's sitemap** sits at the top of the Rules tab. It's on for new and imported setups. A saved choice to turn it off is kept (for example when you submit sitemaps in Search Console), with a small note you can dismiss.
 
