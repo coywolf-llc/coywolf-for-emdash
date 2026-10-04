@@ -528,6 +528,7 @@ Use the block from theme code too: `import { CoywolfVideo } from "@coywolf/emdas
 npx tsc --noEmit -p .        # typecheck
 node --test test/*.test.mjs  # unit tests (Node 22.15+; runs the TypeScript sources directly)
 ```
+
 ## License
 
 MIT

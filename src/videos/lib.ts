@@ -1,7 +1,7 @@
 /**
  * Videos module: pure helpers (no I/O, no imports) for Stream URLs, the
  * coywolf-video block, VideoObject schema, the video sitemap, Portable Text
- * walking and webhook signatures. Unit-tested in lib.test.mjs.
+ * walking and webhook signatures. Unit-tested in test/videos.test.mjs.
  */
 
 export const BLOCK_TYPE = "coywolf-video";

@@ -1,4 +1,4 @@
-// Run: node --experimental-strip-types --test src/videos/lib.test.mjs
+// Run: node --test test/videos.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -23,7 +23,7 @@ import {
 	utf8Bytes,
 	verifyWebhookSignature,
 	vttToTranscript,
-} from "./lib.ts";
+} from "../src/videos/lib.ts";
 
 const UID = "0123456789abcdef0123456789abcdef";
 const UID2 = "fedcba9876543210fedcba9876543210";
