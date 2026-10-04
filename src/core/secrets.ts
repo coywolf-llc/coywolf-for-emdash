@@ -25,19 +25,19 @@ export const SECRET_SETTINGS = {
 		type: "secret",
 		label: "AI Enrichment — API key",
 		description:
-			"For Anthropic, OpenAI or Gemini (Workers AI needs no key). You can also enter it on the AI Enrichment page, which has the provider, models and the other AI settings.",
+			"For Anthropic, OpenAI or Gemini (Workers AI needs no key). To get one: (1) sign in to your provider's developer console: platform.claude.com (Anthropic), platform.openai.com (OpenAI) or aistudio.google.com (Gemini); (2) add billing; (3) create an API key and copy it; (4) paste it here and save. Step-by-step guides for each provider, and the provider and model settings, are on the AI Enrichment page.",
 	},
 	filesR2SecretAccessKey: {
 		type: "secret",
 		label: "File Downloads — R2 secret access key",
 		description:
-			"For large uploads. You can also enter it on the Files page → Settings, with the R2 account ID, access key ID and bucket.",
+			"For large uploads. To get one: (1) Cloudflare dashboard → R2 → Manage API tokens → Create Account API token; (2) choose Object Read & Write on the bucket bound as MEDIA; (3) create it and copy the Secret Access Key (shown once); (4) paste it here and save. The account ID, access key ID and bucket name go on the Files page → Settings, which has the full step-by-step guide.",
 	},
 	videosApiToken: {
 		type: "secret",
 		label: "Videos — Cloudflare Stream API token",
 		description:
-			"An API token with Account → Stream → Edit (or set the CF_STREAM_TOKEN Worker secret). You can also enter it on the Videos page → Settings, with the account ID and player settings.",
+			"To get one: (1) Cloudflare dashboard → My Profile → API Tokens → Create Token → Create Custom Token; (2) add the permission Account → Stream → Edit and include your account; (3) create it and copy the token (shown once); (4) paste it here and save. Or set the CF_STREAM_TOKEN Worker secret. The account ID and the full step-by-step guide are on the Videos page → Settings.",
 	},
 	videosWebhookSecret: {
 		type: "secret",
@@ -48,7 +48,7 @@ export const SECRET_SETTINGS = {
 		type: "secret",
 		label: "Robots.txt Rules — Cloudflare Radar API token",
 		description:
-			"Optional. Keeps the crawler list current from Cloudflare Radar each week (Account → Radar → Read, or the RADAR_API_TOKEN Worker secret). You can also enter it on the Robots.txt page.",
+			"Optional. Keeps the crawler list current from Cloudflare Radar each week. To get one: (1) Cloudflare dashboard → My Profile → API Tokens → Create Token → Create Custom Token; (2) add the permission Account → Radar → Read and include your account; (3) create it and copy the token (shown once); (4) paste it here and save. Or set the RADAR_API_TOKEN Worker secret. The full step-by-step guide is on the Robots.txt page → Bots.",
 	},
 } as const satisfies Record<string, SecretSettingField>;
 

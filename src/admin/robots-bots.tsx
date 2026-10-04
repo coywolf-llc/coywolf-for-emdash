@@ -11,6 +11,7 @@ import { type BotEntry, type BotPurpose, CATEGORY_LABELS, PURPOSE_LABELS, catego
 import type { RobotsRule } from "../robots/rules.js";
 import { isValidToken } from "../robots/rules.js";
 import { EVIDENCE_LABELS, StatusBadge, TriCheckbox, UnverifiedIcon, dateFormat, errorText, post, tokenIndex } from "./robots-shared.js";
+import { CredentialGuide } from "./guides.js";
 import { SecretField, SetupCard } from "./settings-ui.js";
 
 const catName = (c: string) => CATEGORY_LABELS[c] ?? categoryLabel(c);
@@ -616,6 +617,9 @@ function RadarTokenForm(props: { source: RadarInfo["tokenSource"]; onChanged: (s
 					clearing={pending === "clear"}
 					disabled={Boolean(pending)}
 				/>
+			</div>
+			<div className="sm:max-w-md">
+				<CredentialGuide id="radar" />
 			</div>
 			{error && <Banner variant="error" role="alert" description={error} />}
 			<div className="flex gap-2">
