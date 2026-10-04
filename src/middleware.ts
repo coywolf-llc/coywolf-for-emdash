@@ -14,6 +14,7 @@
 import type { MiddlewareHandler } from "astro";
 
 import { siteFeatures, isOn } from "./core/features.js";
+import { injectAdminEnhancements } from "./core/settings-enhance.js";
 import type { PackMiddleware } from "./core/module.js";
 import { MIDDLEWARE } from "./modules.js";
 
@@ -23,10 +24,13 @@ export interface CoywolfPackMiddlewareOptions {
 }
 
 const PASS_THROUGH = /^\/(_astro|_image)\//;
+/** EmDash admin pages (not its API): the pack adds its admin enhancements (step-by-step guides on the plugin Settings page). */
+const ADMIN_PAGE = /^\/_emdash\/admin(\/|$)/;
 
 export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers: PackMiddleware[] = MIDDLEWARE): MiddlewareHandler {
 	return async (context, next) => {
 		if (PASS_THROUGH.test(context.url.pathname)) return next();
+		if (ADMIN_PAGE.test(context.url.pathname) && context.request.method === "GET") return injectAdminEnhancements(await next());
 		let workers: { env: Record<string, unknown>; waitUntil?: (p: Promise<unknown>) => void };
 		try {
 			workers = (await import("cloudflare:workers")) as unknown as typeof workers;

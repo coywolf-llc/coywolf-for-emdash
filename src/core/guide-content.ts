@@ -1,0 +1,136 @@
+/**
+ * Step-by-step guides for the API keys and tokens some features need, as
+ * static HTML strings (trusted: written here, never from user data). Shown in
+ * a closed <details> next to each credential field on module pages
+ * (src/admin/guides.tsx) and on EmDash's generic plugin Settings page, where
+ * the admin enhancement script (src/core/settings-enhance.ts) swaps each
+ * field's plain-text description for the same guide.
+ *
+ * Kept free of imports so tests can load it directly.
+ */
+
+export type GuideId = "anthropic" | "openai" | "gemini" | "workers-ai" | "r2" | "stream" | "radar";
+
+export interface Guide {
+	summary: string;
+	/** Each step's HTML. */
+	steps: string[];
+	/** Optional note under the steps (HTML). */
+	note?: string;
+}
+
+const link = (href: string, text: string) => `<a href="${href}" target="_blank" rel="noreferrer" class="text-kumo-link underline">${text}</a>`;
+const code = (text: string) => `<code class="rounded bg-kumo-tint px-1 text-xs">${text}</code>`;
+const b = (text: string) => `<strong class="font-medium">${text}</strong>`;
+
+/** Creating a Cloudflare API token: the steps every token guide shares. */
+const cloudflareTokenSteps = (permission: string) => [
+	`Sign in to the ${link("https://dash.cloudflare.com/profile/api-tokens", "Cloudflare dashboard → My Profile → API Tokens")}.`,
+	`Select ${b("Create Token")}, then ${b("Create Custom Token → Get started")}.`,
+	"Name it after this site so you'll recognize it later.",
+	`Under Permissions, choose ${b(permission)}.`,
+	`Under Account Resources, choose ${b("Include → your account")}.`,
+	`Select ${b("Continue to summary")}, then ${b("Create Token")}.`,
+	"Copy the token right away. Cloudflare shows it only once.",
+];
+
+export const GUIDES: Record<GuideId, Guide> = {
+	anthropic: {
+		summary: "How to get an Anthropic API key",
+		steps: [
+			`Sign in to the ${link("https://platform.claude.com/settings/keys", "Claude Console")} (create an account if you don't have one).`,
+			`Add a payment method or credits under ${b("Billing")}. Keys don't work without them.`,
+			`Go to ${b("API Keys")} and select ${b("Create Key")}. Name it after this site.`,
+			"Copy the key (it starts with sk-ant-). It's shown only once.",
+			"Paste it into the API key field and save.",
+		],
+		note: "Each analyzed entry or image is one model call, billed by Anthropic. The daily call limit caps what you spend.",
+	},
+	openai: {
+		summary: "How to get an OpenAI API key",
+		steps: [
+			`Sign in to the ${link("https://platform.openai.com/api-keys", "OpenAI Platform → API keys")}.`,
+			`Add a payment method or credits under ${b("Settings → Billing")}. Keys don't work without them.`,
+			`Select ${b("Create new secret key")}, name it after this site, and keep the default permissions.`,
+			"Copy the key (it starts with sk-). It's shown only once.",
+			"Paste it into the API key field and save.",
+		],
+		note: "Each analyzed entry or image is one model call, billed by OpenAI. The daily call limit caps what you spend.",
+	},
+	gemini: {
+		summary: "How to get a Google Gemini API key",
+		steps: [
+			`Sign in to ${link("https://aistudio.google.com/apikey", "Google AI Studio → API keys")} with a Google account.`,
+			`Select ${b("Create API key")} and pick (or create) a Google Cloud project.`,
+			"Copy the key.",
+			"Paste it into the API key field and save.",
+		],
+		note: "The free tier has low rate limits. For steady use, turn on billing for the project in Google AI Studio.",
+	},
+	"workers-ai": {
+		summary: "How to connect Workers AI (no key needed)",
+		steps: [
+			`Open your site's ${code("wrangler.jsonc")}.`,
+			`Add ${code('"ai": { "binding": "AI" }')} at the top level.`,
+			"Deploy the site. This page then shows the binding as connected.",
+		],
+		note: "Workers AI is billed to your Cloudflare account, with a daily free allowance.",
+	},
+	r2: {
+		summary: "How to get the R2 account ID and keys",
+		steps: [
+			`In the ${link("https://dash.cloudflare.com/?to=/:account/r2/overview", "Cloudflare dashboard → R2")}, copy your ${b("Account ID")} (shown on the R2 overview page) into R2 account ID on the Files page → Settings.`,
+			`Under Buckets, note the name of the bucket bound as ${code("MEDIA")} in your ${code("wrangler.jsonc")}. Enter it as the R2 bucket name.`,
+			`Select ${b("Manage API tokens")} (on the R2 overview page), then ${b("Create Account API token")}.`,
+			`Choose the ${b("Object Read &amp; Write")} permission and ${b("Apply to specific buckets only")} → that bucket.`,
+			`Select ${b("Create API Token")}. Copy the ${b("Access Key ID")} and ${b("Secret Access Key")}. The secret is shown only once.`,
+			"Paste them into their fields and save. The secret is stored encrypted.",
+			`Add a CORS policy to the bucket so browsers can upload to it (see the README), then use ${b("Check CORS")} on the Files page.`,
+		],
+	},
+	stream: {
+		summary: "How to get the Stream account ID and API token",
+		steps: [
+			`In the ${link("https://dash.cloudflare.com/?to=/:account/stream", "Cloudflare dashboard → Stream")}, copy your ${b("Account ID")} (in the right-hand column, or from the address bar after dash.cloudflare.com/) into Cloudflare account ID on the Videos page → Settings.`,
+			...cloudflareTokenSteps("Account → Stream → Edit"),
+			"Paste the token into Stream API token and save. It's stored encrypted.",
+		],
+		note: `Or set them as Worker variables instead: ${code("CF_ACCOUNT_ID")}, and the token with ${code("npx wrangler secret put CF_STREAM_TOKEN")}.`,
+	},
+	radar: {
+		summary: "How to get a Cloudflare Radar API token",
+		steps: [...cloudflareTokenSteps("Account → Radar → Read"), "Paste the token into Cloudflare Radar API token and save. It's stored encrypted."],
+		note: `Radar's API is free. Or set the token as a Worker secret instead: ${code("npx wrangler secret put RADAR_API_TOKEN")}.`,
+	},
+};
+
+/**
+ * What the generic Settings page shows for each secret once enhanced: a short
+ * plain description, then the guides (closed). Keys match SECRET_SETTINGS.
+ */
+export const SETTINGS_PAGE_GUIDES: Record<string, { intro: string; guides: GuideId[] }> = {
+	aiApiKey: {
+		intro: "For Anthropic, OpenAI or Gemini (Workers AI needs no key). The provider and model settings are on the AI Enrichment page.",
+		guides: ["anthropic", "openai", "gemini"],
+	},
+	filesR2SecretAccessKey: {
+		intro: "For large uploads. The account ID, access key ID and bucket name go on the Files page → Settings.",
+		guides: ["r2"],
+	},
+	videosApiToken: {
+		intro: "Or set the CF_STREAM_TOKEN Worker secret. The account ID goes on the Videos page → Settings.",
+		guides: ["stream"],
+	},
+	robotsRadarToken: {
+		intro: "Optional. Keeps the crawler list current from Cloudflare Radar each week. Or set the RADAR_API_TOKEN Worker secret.",
+		guides: ["radar"],
+	},
+};
+
+/** A guide as a closed <details> (HTML), styled with the admin's own classes. */
+export function guideHtml(guide: Guide): string {
+	const steps = guide.steps.map((s) => `<li>${s}</li>`).join("");
+	return `<details class="rounded-md border border-kumo-line text-sm"><summary class="cursor-pointer px-3 py-2 font-medium" style="display:list-item">${guide.summary}</summary><div class="space-y-2 border-t border-kumo-line px-3 py-3"><ol class="space-y-1.5" style="list-style:decimal;padding-inline-start:1.25rem">${steps}</ol>${
+		guide.note ? `<p class="text-xs text-kumo-subtle">${guide.note}</p>` : ""
+	}</div></details>`;
+}
