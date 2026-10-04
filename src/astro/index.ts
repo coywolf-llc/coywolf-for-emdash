@@ -35,3 +35,5 @@ export const portableTextComponents = { block: HeadingBlock };
 export { default as SearchBox } from "./search/SearchBox.astro";
 export { searchWithFallback } from "../search/query.js";
 export type { PackSearchOptions, PackSearchResponse, PackSearchResult } from "../search/query.js";
+export { entryUrl, entryUrls, matchEntryPath } from "../core/content-url.js";
+export type { EntryRef, MatchedEntry } from "../core/content-url.js";

@@ -12,6 +12,7 @@ import type { PageMetadataContribution, PluginContext, PublicPageContext } from 
 import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
+import { absoluteUrl, entryUrl } from "../core/content-url.js";
 import { type FeatureMap, cachedCtxFeatures, ctxFeatures, isOn, requireFeature } from "../core/features.js";
 import { parseInput, workerEnv } from "../shared.js";
 import { ARTICLE_TYPES, ORGANIZATION_PROPERTIES, PAGE_TYPES, PERSON_PROPERTIES, PROPERTY_INPUTS } from "./catalog.js";
@@ -737,7 +738,8 @@ export function schemaModule(options: SchemaOptions) {
 					if (!input.collection || !input.entryId || !ctx.content) throw PluginRouteError.badRequest("Choose an entry.");
 					const [item, info] = await Promise.all([ctx.content.get(input.collection, input.entryId), ctx.schema?.getCollection(input.collection)]);
 					if (!item) throw PluginRouteError.notFound("Entry not found.");
-					const publicUrl = (await ctx.content.getPublicUrl?.(input.collection, input.entryId).catch(() => null)) ?? `${siteUrl}/${item.slug ?? item.id}/`;
+					const publicPath = await entryUrl(ctx, input.collection, item).catch(() => null);
+					const publicUrl = publicPath ? absoluteUrl(publicPath, siteUrl) : `${siteUrl}/${item.slug ?? item.id}/`;
 					const url = absolute(publicUrl, siteUrl) ?? publicUrl;
 					const title = item.seo?.title || entryTitle(item.data, info?.titleField) || item.slug || item.id;
 					const image = item.seo?.image ? (item.seo.image.startsWith("/") || /^https?:/i.test(item.seo.image) ? item.seo.image : `/_emdash/api/media/file/${item.seo.image}`) : null;

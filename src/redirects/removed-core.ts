@@ -13,7 +13,7 @@ export interface PendingDecision {
 	id: string;
 	collection: string;
 	entryId: string;
-	/** Former public path, resolved from the collection's URL pattern. */
+	/** Former public path (the site's `urls` override, or the collection's URL pattern). */
 	url: string;
 	title: string;
 	reason: RemovalReason;
@@ -69,20 +69,23 @@ export function snapshotFromContent(content: Record<string, unknown>, titleField
 export function buildPending(
 	collection: string,
 	entry: EntrySnapshot,
-	info: Pick<CollectionInfo, "urlPattern"> | undefined,
+	/** The former path when already resolved (core/content-url.ts entryUrl), else the collection's URL pattern. */
+	info: { url?: string | null; urlPattern?: CollectionInfo["urlPattern"] } | undefined,
 	reason: RemovalReason,
 	now: Date = new Date(),
 ): PendingDecision | null {
 	if (!entry.slug) return null;
 	if (reason === "deleted" && entry.status !== "published") return null;
 	if (reason === "unpublished" && !entry.publishedAt) return null;
-	const url = interpolateUrlPattern({
-		pattern: info?.urlPattern ?? null,
-		collection,
-		slug: entry.slug,
-		id: entry.id,
-		date: entry.publishedAt,
-	});
+	const url =
+		info?.url ||
+		interpolateUrlPattern({
+			pattern: info?.urlPattern ?? null,
+			collection,
+			slug: entry.slug,
+			id: entry.id,
+			date: entry.publishedAt,
+		});
 	return {
 		id: pendingId(collection, entry.id),
 		collection,

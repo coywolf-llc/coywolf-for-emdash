@@ -6,6 +6,7 @@
 import { type PluginContext, PluginRouteError, after, definePluginRoute } from "emdash";
 import { z } from "zod";
 
+import { absoluteUrl, entryUrl } from "../core/content-url.js";
 import { ctxFeatures, isOn, requireFeature } from "../core/features.js";
 import { parseInput } from "../shared.js";
 import { LLMS_CACHE, NEWS_CACHE, type CachedDocument, type DocKind, buildMarkdown, readDoc, rebuildNow, scheduleRebuild } from "./build.js";
@@ -98,14 +99,15 @@ async function queueIndexNow(ctx: PluginContext, settings: DiscoverySettings, co
 
 	if (kind === "publish" || kind === "update") {
 		const item = await ctx.content?.get(collection, id);
-		const url = item && !item.seo?.noIndex ? await ctx.content?.getPublicUrl?.(collection, id) : null;
+		const path = item && !item.seo?.noIndex ? await entryUrl(ctx, collection, item) : null;
+		const url = path ? absoluteUrl(path, siteOrigin(ctx)) : null;
 		if (url) urls.push(url);
 		// A changed slug: tell engines about the old URL too.
 		if (known && known !== url) urls.push(known);
 		if (url && url !== known) await ctx.kv.set(urlKey(collection, id), url);
 		if (!url && known) await ctx.kv.delete(urlKey(collection, id));
 	} else {
-		// Unpublished or deleted: getPublicUrl() no longer answers, so use the URL remembered at publish.
+		// Unpublished or deleted: the entry has no public URL any more, so use the URL remembered at publish.
 		if (known) urls.push(known);
 		if (known && (kind === "unpublish" || permanent)) await ctx.kv.delete(urlKey(collection, id));
 	}

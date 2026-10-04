@@ -10,6 +10,7 @@ import type { SchemaOptions } from "./schema/module.js";
 import type { SearchOptions } from "./search/module.js";
 import type { VideosOptions } from "./videos/module.js";
 import type { RobotsOptions } from "./robots/module.js";
+import type { TrailingSlash } from "./core/content-url.js";
 
 /**
  * Modules to include in the build. Backups needs its bindings, so it's
@@ -29,4 +30,12 @@ export interface CoywolfOptions {
 	links?: LinksOptions | false;
 	videos?: VideosOptions | false;
 	robots?: RobotsOptions | false;
+	/**
+	 * Entry URL patterns for collections the theme routes differently from
+	 * EmDash's url_pattern, e.g. `{ posts: "/{term:category|uncategorized}/{slug}/" }`.
+	 * Used by every module that builds entry URLs (see README, "Content URLs").
+	 */
+	urls?: Record<string, string>;
+	/** Trailing-slash policy for entry URLs. Default: EmDash's (Astro's `trailingSlash`). */
+	trailingSlash?: TrailingSlash;
 }

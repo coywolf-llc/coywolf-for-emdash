@@ -8,7 +8,7 @@ import type { PluginContext } from "emdash";
 import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
-import { COLLECTION_SLUG, readCollections } from "../core/content-url.js";
+import { COLLECTION_SLUG, entryUrl, readCollections } from "../core/content-url.js";
 import { requireFeature } from "../core/features.js";
 import { parseInput, workerEnv } from "../shared.js";
 import { invalidateRedirectCache } from "./middleware.js";
@@ -40,8 +40,15 @@ const store = (ctx: PluginContext) => (ctx.storage as Record<string, any>)[STORE
 	query(o: { orderBy?: Record<string, "asc" | "desc">; limit?: number }): Promise<{ items: Array<{ id: string; data: PendingDecision }> }>;
 };
 
+/** A snapshot plus its former path, resolved while the row and its terms still exist. */
+interface Taken {
+	entry: EntrySnapshot;
+	urlPattern: string | null;
+	url: string | null;
+}
+
 /** Snapshots taken in content:beforeDelete, while the row still exists (a permanent delete removes it). */
-const beforeDelete = new Map<string, { entry: EntrySnapshot; urlPattern: string | null }>();
+const beforeDelete = new Map<string, Taken>();
 
 export function removedModule(options: Options) {
 	async function db(): Promise<D1Database | undefined> {
@@ -58,12 +65,19 @@ export function removedModule(options: Options) {
 		const info = (await readCollections(d1, [collection])).get(collection);
 		const row = await d1.prepare(`SELECT * FROM "ec_${collection}" WHERE id = ?`).bind(id).first<Record<string, unknown>>();
 		if (!row) return null;
-		return { entry: snapshotFromRow(row, info?.titleField ?? null), urlPattern: info?.urlPattern ?? null };
+		const entry = snapshotFromRow(row, info?.titleField ?? null);
+		return { entry, urlPattern: info?.urlPattern ?? null, url: await formerUrl(d1, collection, entry) };
 	}
 
-	async function record(ctx: PluginContext, collection: string, reason: RemovalReason, taken: { entry: EntrySnapshot; urlPattern: string | null } | null) {
+	/** The entry's public path via the pack-wide resolver (honors the site's `urls` overrides). */
+	async function formerUrl(d1: D1Database, collection: string, entry: EntrySnapshot): Promise<string | null> {
+		if (!entry.slug) return null;
+		return entryUrl(d1, collection, { id: entry.id, slug: entry.slug, publishedAt: entry.publishedAt, locale: entry.locale }).catch(() => null);
+	}
+
+	async function record(ctx: PluginContext, collection: string, reason: RemovalReason, taken: Taken | null) {
 		if (!taken) return;
-		const pending = buildPending(collection, taken.entry, { urlPattern: taken.urlPattern }, reason);
+		const pending = buildPending(collection, taken.entry, { url: taken.url, urlPattern: taken.urlPattern }, reason);
 		if (!pending) return;
 		const existing = await store(ctx).get(pending.id);
 		if (existing) return; // Keep the first record (e.g. trashed, then permanently deleted).
@@ -93,9 +107,11 @@ export function removedModule(options: Options) {
 		"content:afterUnpublish": async (event: { content: Record<string, unknown>; collection: string }, ctx: PluginContext) => {
 			const d1 = await db();
 			const info = d1 ? (await readCollections(d1, [event.collection])).get(event.collection) : undefined;
+			const entry = snapshotFromContent(event.content, info?.titleField ?? null);
 			await record(ctx, event.collection, "unpublished", {
-				entry: snapshotFromContent(event.content, info?.titleField ?? null),
+				entry,
 				urlPattern: info?.urlPattern ?? null,
+				url: d1 ? await formerUrl(d1, event.collection, entry) : null,
 			});
 		},
 
