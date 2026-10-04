@@ -37,7 +37,7 @@ let sepStyle: string | undefined;
 
 if (await siteFeatureOn("headings.breadcrumbs")) {
 	const settings = (await siteHeadingsSettings()).breadcrumbs;
-	const captured = props.items || props.page ? null : capturedPage(Astro.url.pathname);
+	const captured = props.items || props.page ? null : capturedPage(`${Astro.url.pathname}${Astro.url.search}`);
 	trail = resolveTrail({
 		path: Astro.url.pathname,
 		items: props.items ?? props.page?.breadcrumbs ?? captured?.items,
@@ -47,7 +47,7 @@ if (await siteFeatureOn("headings.breadcrumbs")) {
 		showCurrent: props.showCurrent ?? settings.showCurrent,
 	});
 	const separator = props.separator ?? (settings.customSeparator || settings.separator);
-	if (separator in SEPARATORS) sepClass = `cw-breadcrumbs--sep-${separator as SeparatorPreset}`;
+	if (Object.hasOwn(SEPARATORS, separator)) sepClass = `cw-breadcrumbs--sep-${separator as SeparatorPreset}`;
 	else sepStyle = `--cw-bc-sep:${cssString([...separator].slice(0, 8).join(""))}`;
 }
 const current = Astro.url.pathname.replace(/\/+$/, "") || "/";

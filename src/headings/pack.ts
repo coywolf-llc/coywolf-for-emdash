@@ -144,7 +144,7 @@ export function headingsPack(_options: HeadingsOptions): PackModule {
 		id: "headings",
 		label: "Headings & TOC",
 		features: FEATURES,
-		capabilities: ["content:read"],
+		capabilities: ["content:read", "content:write"],
 		portableTextBlocks: BLOCKS,
 		adminPages: [{ path: "/headings", label: "Headings & TOC", icon: "list" }],
 		hooks: {

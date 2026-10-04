@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { humanize, resolveTrail } from "./breadcrumbs.js";
+import { capturePage, capturedPage, humanize, resolveTrail } from "./breadcrumbs.js";
 import { blockText, slugify, uniqueSlug, validAnchor } from "./slug.js";
 import { stampContent } from "./stamp.js";
 import { buildTocTree, countToc } from "./toc.js";
@@ -163,4 +163,11 @@ test("breadcrumb trails", () => {
 	);
 	assert.equal(humanize("getting-started_now"), "Getting started now");
 	assert.equal(humanize("caf%C3%A9"), "Café");
+});
+
+test("captured theme trails are keyed by URL path and query", () => {
+	capturePage({ url: "https://ex.com/fr/guide/?v=2", breadcrumbs: [{ name: "Accueil", url: "/fr/" }], pageTitle: "Guide" });
+	assert.equal(capturedPage("/fr/guide?v=2")?.title, "Guide");
+	assert.equal(capturedPage("/fr/guide"), null);
+	assert.equal(capturedPage("/guide/?v=2"), null);
 });

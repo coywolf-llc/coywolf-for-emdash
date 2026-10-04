@@ -81,7 +81,10 @@ export function cssString(value: string): string {
 // EmDashHead runs the page:metadata hook (with the theme's
 // PublicPageContext) before the body renders. The hook records the page's
 // breadcrumbs and title here so a Breadcrumbs block in the body can use the
-// theme's trail without the theme wiring anything. Keyed by path; short-lived.
+// theme's trail without the theme wiring anything. This relies on the theme
+// rendering <EmDashHead page={page}> with an accurate `url`; without it the
+// block derives the trail from the URL path. Keyed by the page URL (path plus
+// query, so locales and variants don't mix); short-lived.
 
 interface Captured {
 	items?: Crumb[];
@@ -93,15 +96,28 @@ const CAPTURE_TTL_MS = 60_000;
 const CAPTURE_MAX = 200;
 const captured = new Map<string, Captured>();
 
-export function capturePage(page: { path?: string; url?: string; breadcrumbs?: Crumb[]; pageTitle?: string | null; title?: string | null }): void {
-	const path = normalizePath(page.path ?? crumbPath(page.url ?? "/"));
-	captured.delete(path);
-	captured.set(path, { items: page.breadcrumbs, title: page.pageTitle ?? page.title ?? null, at: Date.now() });
+/** Cache key for a page URL: normalized path plus query string, ignoring origin and fragment. */
+export function captureKey(url: string): string {
+	try {
+		const parsed = new URL(url, "https://x.invalid");
+		return `${normalizePath(parsed.pathname)}${parsed.search}`;
+	} catch {
+		return url;
+	}
+}
+
+export function capturePage(page: { path?: string; url?: string; locale?: string | null; breadcrumbs?: Crumb[]; pageTitle?: string | null; title?: string | null }): void {
+	const source = page.url ?? page.path;
+	if (!source) return;
+	const key = captureKey(source);
+	captured.delete(key);
+	captured.set(key, { items: page.breadcrumbs, title: page.pageTitle ?? page.title ?? null, at: Date.now() });
 	while (captured.size > CAPTURE_MAX) captured.delete(captured.keys().next().value as string);
 }
 
-export function capturedPage(path: string): Omit<Captured, "at"> | null {
-	const entry = captured.get(normalizePath(path));
+/** The trail captured for this request URL, if EmDashHead published one in the last minute. */
+export function capturedPage(url: string): Omit<Captured, "at"> | null {
+	const entry = captured.get(captureKey(url));
 	if (!entry || Date.now() - entry.at > CAPTURE_TTL_MS) return null;
 	return entry;
 }
