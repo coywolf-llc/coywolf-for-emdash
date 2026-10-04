@@ -15,6 +15,12 @@ export interface FeatureDef {
 	description: string;
 	/** Default when the site hasn't chosen. Keep new features off so installing changes nothing. */
 	default?: boolean;
+	/**
+	 * Legacy ids this feature took over (e.g. a sub-feature that became its own
+	 * module). When the stored map has no value for `id`, the first legacy id
+	 * found there decides, so existing sites keep their choice.
+	 */
+	replaces?: string[];
 }
 
 export interface AdminPageDef {

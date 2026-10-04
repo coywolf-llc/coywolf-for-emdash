@@ -10,16 +10,6 @@ import { validPrefix } from "./slug.js";
 export const SETTINGS_KEY = "headings";
 const OPTION_NAME = `plugin:${PLUGIN_ID}:settings:${SETTINGS_KEY}`;
 
-export const SEPARATORS = {
-	slash: "/",
-	chevron: "›",
-	guillemet: "»",
-	bullet: "•",
-	arrow: "→",
-	gt: ">",
-} as const;
-export type SeparatorPreset = keyof typeof SEPARATORS;
-
 export type TocListStyle = "none" | "bulleted" | "numbered";
 export type TocDisplay = "open" | "collapsible" | "collapsed";
 
@@ -43,14 +33,6 @@ export interface HeadingsSettings {
 		/** Smooth scrolling on TOC pages (always off for visitors who prefer reduced motion). */
 		smoothScroll: boolean;
 	};
-	breadcrumbs: {
-		separator: SeparatorPreset;
-		/** Overrides the preset when not empty (max 8 characters). */
-		customSeparator: string;
-		homeLabel: string;
-		showHome: boolean;
-		showCurrent: boolean;
-	};
 }
 
 export const DEFAULT_SETTINGS: HeadingsSettings = {
@@ -59,7 +41,6 @@ export const DEFAULT_SETTINGS: HeadingsSettings = {
 	scrollOffset: 0,
 	scrollUnit: "px",
 	toc: { title: "Table of contents", showTitle: true, levels: [2, 3], listStyle: "none", display: "open", minHeadings: 2, smoothScroll: true },
-	breadcrumbs: { separator: "slash", customSeparator: "", homeLabel: "Home", showHome: true, showCurrent: true },
 };
 
 const pick = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
@@ -83,7 +64,6 @@ export function parseLevels(value: unknown): number[] {
 export function normalizeSettings(raw: unknown): HeadingsSettings {
 	const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
 	const toc = (r.toc && typeof r.toc === "object" ? r.toc : {}) as Record<string, unknown>;
-	const bc = (r.breadcrumbs && typeof r.breadcrumbs === "object" ? r.breadcrumbs : {}) as Record<string, unknown>;
 	const d = DEFAULT_SETTINGS;
 	const levels = parseLevels(toc.levels);
 	return {
@@ -100,14 +80,18 @@ export function normalizeSettings(raw: unknown): HeadingsSettings {
 			minHeadings: int(toc.minHeadings, 1, 10, d.toc.minHeadings),
 			smoothScroll: bool(toc.smoothScroll, d.toc.smoothScroll),
 		},
-		breadcrumbs: {
-			separator: pick(bc.separator, Object.keys(SEPARATORS) as SeparatorPreset[], d.breadcrumbs.separator),
-			customSeparator: [...text(bc.customSeparator, 32, "")].slice(0, 8).join(""),
-			homeLabel: text(bc.homeLabel, 60, d.breadcrumbs.homeLabel) || d.breadcrumbs.homeLabel,
-			showHome: bool(bc.showHome, d.breadcrumbs.showHome),
-			showCurrent: bool(bc.showCurrent, d.breadcrumbs.showCurrent),
-		},
 	};
+}
+
+/**
+ * The value to store when Headings & TOC settings are saved. Breadcrumb
+ * defaults used to live in this setting (`breadcrumbs`); Breadcrumb Nav
+ * falls back to that sub-object until it saves its own setting, so it's
+ * carried over unchanged rather than dropped.
+ */
+export function withLegacyBreadcrumbs(previous: unknown, settings: HeadingsSettings): HeadingsSettings & { breadcrumbs?: unknown } {
+	const legacy = previous && typeof previous === "object" ? (previous as Record<string, unknown>).breadcrumbs : undefined;
+	return legacy && typeof legacy === "object" ? { ...settings, breadcrumbs: legacy } : settings;
 }
 
 // ── Outside the plugin context (Astro components) ────────────────

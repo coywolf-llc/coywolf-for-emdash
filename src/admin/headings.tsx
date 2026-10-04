@@ -1,6 +1,7 @@
 /**
- * Headings & TOC settings: site defaults for heading anchors, the Table of
- * Contents block, and breadcrumbs. Blocks can override most of them.
+ * Headings & TOC settings: site defaults for heading anchors and the Table
+ * of Contents block. Blocks can override most of them. (Breadcrumbs have
+ * their own page, Breadcrumb Nav.)
  */
 import { Banner, Button, Checkbox, Input, Loader, Select } from "@cloudflare/kumo";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
@@ -22,23 +23,7 @@ interface Settings {
 		smoothScroll: boolean;
 		showTitle: boolean;
 	};
-	breadcrumbs: {
-		separator: string;
-		customSeparator: string;
-		homeLabel: string;
-		showHome: boolean;
-		showCurrent: boolean;
-	};
 }
-
-const SEPARATORS = [
-	{ value: "slash", label: "/  Slash" },
-	{ value: "chevron", label: "›  Chevron" },
-	{ value: "guillemet", label: "»  Guillemet" },
-	{ value: "bullet", label: "•  Bullet" },
-	{ value: "arrow", label: "→  Arrow" },
-	{ value: "gt", label: ">  Greater-than" },
-];
 
 const errorText = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
 
@@ -76,8 +61,6 @@ export function HeadingsPage() {
 
 	const set = (patch: Partial<Settings>) => setSettings((s) => (s ? { ...s, ...patch } : s));
 	const setToc = (patch: Partial<Settings["toc"]>) => setSettings((s) => (s ? { ...s, toc: { ...s.toc, ...patch } } : s));
-	const setCrumbs = (patch: Partial<Settings["breadcrumbs"]>) =>
-		setSettings((s) => (s ? { ...s, breadcrumbs: { ...s.breadcrumbs, ...patch } } : s));
 
 	async function save() {
 		if (!settings) return;
@@ -104,7 +87,7 @@ export function HeadingsPage() {
 			<header className="grid min-w-0 gap-4 border-b border-kumo-line pb-4">
 				<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Headings &amp; TOC</h1>
 				<p className="text-sm leading-5 text-pretty text-kumo-subtle">
-					Defaults for heading anchors, the Table of Contents block, and breadcrumbs. Turn each one on under Features. Anchors
+					Defaults for heading anchors and the Table of Contents block. Turn each one on under Features. Anchors
 					are saved with the content, so they stay the same when a heading is reworded.
 				</p>
 			</header>
@@ -226,38 +209,6 @@ export function HeadingsPage() {
 							label="Smooth scrolling (skipped for visitors who prefer reduced motion)"
 							checked={settings.toc.smoothScroll}
 							onCheckedChange={(checked: boolean) => setToc({ smoothScroll: checked })}
-						/>
-					</Section>
-
-					<Section title="Breadcrumbs" description="Defaults for the Breadcrumbs block and the Breadcrumbs theme component.">
-						<Select
-							label="Separator"
-							value={settings.breadcrumbs.separator}
-							onValueChange={(value: string | null) => setCrumbs({ separator: value ?? "slash" })}
-							items={SEPARATORS}
-						/>
-						<Input
-							label="Custom separator"
-							description="Up to 8 characters. Overrides the separator above when set."
-							value={settings.breadcrumbs.customSeparator}
-							maxLength={8}
-							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCrumbs({ customSeparator: e.target.value })}
-						/>
-						<Input
-							label="Home label"
-							value={settings.breadcrumbs.homeLabel}
-							maxLength={60}
-							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCrumbs({ homeLabel: e.target.value })}
-						/>
-						<Checkbox
-							label="Start the trail with the home page"
-							checked={settings.breadcrumbs.showHome}
-							onCheckedChange={(checked: boolean) => setCrumbs({ showHome: checked })}
-						/>
-						<Checkbox
-							label="End the trail with the current page"
-							checked={settings.breadcrumbs.showCurrent}
-							onCheckedChange={(checked: boolean) => setCrumbs({ showCurrent: checked })}
 						/>
 					</Section>
 

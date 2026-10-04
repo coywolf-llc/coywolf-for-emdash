@@ -6,6 +6,7 @@ import { CodeBlocksPage } from "./codeBlocks.js";
 import { DiscoveryPage } from "./discovery.js";
 import { FeaturesPage } from "./features.js";
 import { HeadingsPage } from "./headings.js";
+import { BreadcrumbsPage } from "./breadcrumbs.js";
 import { FilesPage } from "./files.js";
 import { LinksPage, LinksWidget } from "./links.js";
 import { RedirectsPage } from "./redirects.js";
@@ -20,6 +21,7 @@ export const pages: PluginAdminExports["pages"] = {
 	"/backups": BackupsPage,
 	"/redirects": RedirectsPage,
 	"/headings": HeadingsPage,
+	"/breadcrumbs": BreadcrumbsPage,
 	"/code-blocks": CodeBlocksPage,
 	"/schema": SchemaPage,
 	"/files": FilesPage,

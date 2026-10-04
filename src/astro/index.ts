@@ -6,8 +6,8 @@
  */
 import CodeBlock from "./codeBlocks/CodeBlock.astro";
 import FileCard from "./files/FileCard.astro";
-import BreadcrumbsComponent from "./headings/Breadcrumbs.astro";
-import BreadcrumbsBlock from "./headings/BreadcrumbsBlock.astro";
+import BreadcrumbsComponent from "./breadcrumbs/Breadcrumbs.astro";
+import BreadcrumbsBlock from "./breadcrumbs/BreadcrumbsBlock.astro";
 import HeadingBlock from "./headings/HeadingBlock.astro";
 import TableOfContents from "./headings/TableOfContents.astro";
 import CoywolfVideo from "./videos/CoywolfVideo.astro";
@@ -26,7 +26,7 @@ export const blockComponents = {
 /** Videos module: the Stream player, for theme code. */
 export { CoywolfVideo };
 
-/** Breadcrumb trail for theme layouts (Headings & TOC module). */
+/** Breadcrumb trail for theme layouts (Breadcrumb Nav module). */
 export { BreadcrumbsComponent as Breadcrumbs };
 
 /**
