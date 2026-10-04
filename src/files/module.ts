@@ -10,7 +10,7 @@ import { z } from "zod";
 
 import { ctxFeatures, requireFeature } from "../core/features.js";
 import { parseInput, workerEnv } from "../shared.js";
-import { downloadPath, extensionOf, formatSize, newUploadId, safeFilename } from "./format.js";
+import { downloadPath, extensionOf, formatSize, isUploadId, newUploadId, safeFilename } from "./format.js";
 import { type R2Config, S3Error, corsPolicyFor, corsProblems, partSizeFor, r2Client } from "./s3.js";
 import { uploadsBindingName } from "./serve.js";
 import { COLLECTIONS, type UploadDoc, invalidateSiteCache, settingsFrom } from "./site.js";
@@ -253,7 +253,7 @@ export function filesModule(options: FilesOptions) {
 	}
 
 	async function getUpload(ctx: PluginContext, id: string): Promise<UploadDoc> {
-		const doc = id.startsWith("f") ? await col<UploadDoc>(ctx, COLLECTIONS.uploads).get(id) : null;
+		const doc = isUploadId(id) ? await col<UploadDoc>(ctx, COLLECTIONS.uploads).get(id) : null;
 		if (!doc) throw PluginRouteError.notFound("That upload doesn't exist.");
 		return doc;
 	}
@@ -328,7 +328,7 @@ export function filesModule(options: FilesOptions) {
 				}
 				const mediaIds = [...usedIn.keys()].filter((id) => !seen.has(id)).slice(0, 300);
 				for (const id of mediaIds) {
-					const m = ctx.media && !id.startsWith("f") ? await ctx.media.get(id) : null;
+					const m = ctx.media && !isUploadId(id) ? await ctx.media.get(id) : null;
 					items.push(
 						m
 							? {

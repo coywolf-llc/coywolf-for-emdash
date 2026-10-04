@@ -66,6 +66,15 @@ export interface Review {
 	cons: string[];
 	summary?: string;
 	headingLevel: 2 | 3 | 4;
+	/** Book details (schema only). */
+	bookAuthor?: string;
+	isbn?: string;
+	bookPublisher?: string;
+	genre?: string;
+	copyrightYear?: number;
+	/** Software details (schema only): "macOS, Windows". */
+	operatingSystem?: string;
+	applicationCategory?: string;
 }
 
 // ── Cleaning ─────────────────────────────────────────────────────
@@ -189,6 +198,24 @@ export function normalizeReview(input: unknown): Review | null {
 	if (image) review.image = image;
 	const summary = clean(v.summary, 2000);
 	if (summary) review.summary = summary;
+	if (itemType === "Book") {
+		const author = clean(v.bookAuthor, 200);
+		if (author) review.bookAuthor = author;
+		const isbn = clean(v.isbn, 20).replace(/[^0-9Xx-]/g, "");
+		if (isbn) review.isbn = isbn;
+		const publisher = clean(v.bookPublisher, 200);
+		if (publisher) review.bookPublisher = publisher;
+		const genre = clean(v.genre, 100);
+		if (genre) review.genre = genre;
+		const year = Number(clean(v.copyrightYear, 4));
+		if (Number.isInteger(year) && year >= 1000 && year <= 9999) review.copyrightYear = year;
+	}
+	if (itemType === "SoftwareApplication") {
+		const os = clean(v.operatingSystem, 300);
+		if (os) review.operatingSystem = os;
+		const category = clean(v.applicationCategory, 100);
+		if (category) review.applicationCategory = category;
+	}
 	if (review.rating === null && !review.pros.length && !review.cons.length && !review.summary) return null;
 	return review;
 }
@@ -196,7 +223,9 @@ export function normalizeReview(input: unknown): Review | null {
 /**
  * The fields of a legacy WordPress review marker (Coywolf Custom Blocks:
  * `{ name, brand, rating, strengths, shortcomings }`, pros and cons as <ul>
- * HTML) in the block's shape, for <Review> and `page.coywolf.reviews`.
+ * HTML, plus the book fields `author`, `isbn`, `publisher`, `genre`,
+ * `copyright` and the software fields `os`, `category`) in the block's shape,
+ * for <Review> and `page.coywolf.reviews`.
  */
 export function reviewFromAttrs(attrs: unknown): Record<string, unknown> {
 	if (!attrs || typeof attrs !== "object") return {};
@@ -212,6 +241,13 @@ export function reviewFromAttrs(attrs: unknown): Record<string, unknown> {
 		pros: listFromHtml(a.strengths),
 		cons: listFromHtml(a.shortcomings),
 		...(typeof a.summary === "string" ? { summary: htmlToText(a.summary) } : {}),
+		bookAuthor: text(a.author),
+		isbn: text(a.isbn),
+		bookPublisher: text(a.publisher),
+		genre: text(a.genre),
+		copyrightYear: text(a.copyright),
+		operatingSystem: text(a.os).replace(/"/g, "").replace(/\s*,\s*/g, ", "),
+		applicationCategory: text(a.category),
 	};
 }
 
@@ -399,6 +435,17 @@ export function reviewSchema(review: Review, n: number, ctx: ReviewSchemaContext
 	if (review.itemUrl) item.url = review.itemUrl;
 	const image = absoluteImage(review.image, ctx.origin);
 	if (image) item.image = image;
+	if (review.itemType === "Book") {
+		if (review.bookAuthor) item.author = { "@type": "Person", name: review.bookAuthor };
+		if (review.isbn) item.isbn = review.isbn;
+		if (review.bookPublisher) item.publisher = { "@type": "Organization", name: review.bookPublisher };
+		if (review.genre) item.genre = review.genre;
+		if (review.copyrightYear) item.copyrightYear = review.copyrightYear;
+	}
+	if (review.itemType === "SoftwareApplication") {
+		if (review.operatingSystem) item.operatingSystem = review.operatingSystem;
+		if (review.applicationCategory) item.applicationCategory = review.applicationCategory;
+	}
 
 	const node: Node = {
 		"@type": "Review",

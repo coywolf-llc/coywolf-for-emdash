@@ -1,0 +1,348 @@
+/**
+ * Prepare a WordPress export (WXR) for EmDash's importer.
+ *
+ * EmDash converts Gutenberg with @emdash-cms/gutenberg-to-portable-text,
+ * which plugins can't extend: blocks it doesn't know become an `htmlBlock`
+ * of the block's saved HTML, and self-closing blocks (which keep everything in
+ * their attributes, like most Coywolf blocks) are dropped. Heading ids are
+ * dropped too. This rewrites, inside each post's content:
+ *
+ * - Coywolf blocks the pack has native blocks for (Cloudflare Stream videos and
+ *   their embed HTML, Video Manager videos, reviews, tables of contents, file
+ *   downloads) into marker HTML blocks (see ./markers.ts) that the pack's
+ *   import hook turns into Coywolf Video, Coywolf Review, Table of Contents and
+ *   File download blocks;
+ * - heading ids into "anchor" markers, so imported headings keep their ids and
+ *   old #links keep working;
+ * - Coywolf Custom Blocks that are only templates (blockquote, sidenote,
+ *   editor's note, transcript, accordion, testimonial) and Yoast's related
+ *   links into Custom HTML with
+ *   the markup WordPress rendered, so their content isn't lost;
+ * - Code Block Enhancer's bold markup and WordPress's &#91; inside code
+ *   blocks, which would otherwise show up as literal text;
+ * - blocks with nothing to import (affiliate disclosures, the podcast links,
+ *   Gravity Forms) into empty markers a theme can find, and core Details
+ *   blocks into HTML (EmDash would drop the summary).
+ *
+ * Everything else is left byte for byte. Pure (no imports beyond siblings), so
+ * it runs in the admin (browser), a Node script, and tests.
+ */
+import { type GBlock, blockHtml, htmlBlock, parseBlocks, serializeBlocks } from "./gutenberg.js";
+import { escapeAttr, markerHtml, parseMarker } from "./markers.js";
+import { hasStreamPlayer, parseStreamEmbed } from "./stream.js";
+
+export interface PrepareOptions {
+	/** WordPress attachment id → URL (from the WXR), for testimonial headshots. */
+	attachments?: Map<number, string>;
+}
+
+/** What happened to one kind of block. */
+export type PrepareAction =
+	| "video"
+	| "video-embed"
+	| "review"
+	| "toc"
+	| "file"
+	| "anchor"
+	| "html"
+	| "flag"
+	| "code"
+	| "removed";
+
+export interface PrepareCounts {
+	/** `${wordpress block name} → ${action}` → count. */
+	[key: string]: number;
+}
+
+export interface PrepareResult {
+	content: string;
+	counts: PrepareCounts;
+	changed: boolean;
+}
+
+const WRAP = (html: string) => htmlBlock(html);
+
+/** Blocks that render nothing on WordPress and are removed. */
+const REMOVE = new Set(["coywolf-custom-blocks/newsletter"]);
+/** Blocks kept as empty markers for the theme (their output came from the theme or another plugin). */
+const FLAG: Record<string, string> = {
+	"coywolf-custom-blocks/ftc": "disclosure",
+	"coywolf-custom-blocks/amazon": "disclosure",
+	"genesis-custom-blocks/disclosure": "disclosure",
+	"coywolf-custom-blocks/podcast-rss": "podcast-links",
+	"gravityforms/form": "gravity-form",
+};
+
+const str = (v: unknown) => (typeof v === "string" ? v : typeof v === "number" ? String(v) : "");
+
+/** Repair JSON-escaped HTML that lost its backslashes on the way into the database ("u003cpu003e" → "<p>"). */
+export function repairUnicodeEscapes(html: string): string {
+	if (!/u003[ce]/.test(html)) return html;
+	return html.replace(/u00([0-9a-f]{2})/gi, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+}
+
+/** Wrap bare text (no block-level tags) in a paragraph. */
+const asParagraphs = (html: string) => (/<(p|ul|ol|div|blockquote|figure|h[1-6]|table|pre)\b/i.test(html) ? html : `<p>${html}</p>`);
+
+function blockquoteHtml(attrs: Record<string, unknown>): string {
+	const cite = str(attrs["block-url"]).match(/cite\s*=\s*"([^"]*)"/)?.[1] ?? "";
+	const quote = str(attrs["block-quote"]).trim();
+	const by = str(attrs["block-cite"]).trim();
+	return `<figure class="wp-custom-blockquote"><blockquote${cite ? ` cite="${escapeAttr(cite)}"` : ""}>${asParagraphs(quote)}</blockquote>${
+		by ? `<figcaption><cite>${by}</cite></figcaption>` : ""
+	}</figure>`;
+}
+
+function noteHtml(kind: "sidenote" | "editorsnote", text: string): string {
+	const heading = kind === "sidenote" ? "&#x1F4CC; Sidenote" : "&#x1F4DD; Editor's Note";
+	return `<aside class="sidenote${kind === "editorsnote" ? " editorsnote" : ""}"><h2>${heading}</h2>${asParagraphs(text.trim())}</aside>`;
+}
+
+function detailsHtml(summary: string, body: string, className: string): string {
+	return `<details class="${className}"><summary>${summary}</summary><div class="${className}__body">${repairUnicodeEscapes(body).trim()}</div></details>`;
+}
+
+function testimonialHtml(attrs: Record<string, unknown>, attachments?: Map<number, string>): string {
+	const name = str(attrs["t-name"]);
+	const image = attachments?.get(Number(attrs["t-image"]));
+	const link = (href: string, text: string) => (href ? `<a href="${escapeAttr(href)}">${text}</a>` : text);
+	return `<blockquote class="testimonial"><div class="quote"><p><q>${str(attrs["t-quote"])}</q></p></div><div class="influencer">${
+		image ? `<img alt="${escapeAttr(name)}" height="60" width="60" src="${escapeAttr(image)}">` : ""
+	}<p>${link(str(attrs["t-social"]), name)}</p><p>${link(str(attrs["t-work"]), str(attrs["t-title"]))}</p></div></blockquote>`;
+}
+
+/**
+ * Code Block Enhancer let authors bold parts of a code block (real <strong>
+ * tags inside <code>), and WordPress stores "[" as &#91; to keep shortcodes
+ * from running. EmDash's importer decodes only the basic entities and keeps
+ * tags as text, so both would show up literally: drop the formatting tags and
+ * decode the brackets. Returns null when there's nothing to fix.
+ */
+export function cleanCodeHtml(html: string): string | null {
+	const m = html.match(/^([\s\S]*?<code\b[^>]*>)([\s\S]*)(<\/code>[\s\S]*)$/i);
+	if (!m) return null;
+	const body = (m[2] as string)
+		.replace(/<\/?(?:strong|b|em|i|mark|u|code|span)\b[^>]*>/gi, "")
+		.replace(/<br\s*\/?>/gi, "\n")
+		.replace(/&#0*91;/g, "[")
+		.replace(/&#0*93;/g, "]");
+	return body === m[2] ? null : `${m[1]}${body}${m[3]}`;
+}
+
+/** The marker HTML block replacing a WordPress block, plus its action for the report. */
+function replacement(block: GBlock, opts: PrepareOptions): { blocks: GBlock[]; action: PrepareAction } | null {
+	const a = block.attrs;
+	switch (block.name) {
+		case "coywolf-custom-blocks/cloudflare-stream":
+			return { blocks: [WRAP(markerHtml("cloudflare-stream", { ...a, embed: null }))], action: "video" };
+		case "coywolf/video":
+			return { blocks: [WRAP(markerHtml("video", a, block.innerHTML.trim()))], action: "video" };
+		case "coywolf-custom-blocks/review":
+			return { blocks: [WRAP(markerHtml("review", a))], action: "review" };
+		case "coywolf-seo/table-of-contents":
+			return { blocks: [WRAP(markerHtml("toc", a))], action: "toc" };
+		case "coywolf/file":
+			return { blocks: [WRAP(markerHtml("file", a, block.innerHTML.trim()))], action: "file" };
+		case "coywolf-custom-blocks/blockquote":
+			return { blocks: [WRAP(markerHtml("blockquote", {}, blockquoteHtml(a)))], action: "html" };
+		case "coywolf-custom-blocks/sidenote":
+			return { blocks: [WRAP(markerHtml("sidenote", {}, noteHtml("sidenote", str(a.sidenote))))], action: "html" };
+		case "coywolf-custom-blocks/editorsnote":
+			return { blocks: [WRAP(markerHtml("editorsnote", {}, noteHtml("editorsnote", str(a.editorsnote))))], action: "html" };
+		case "coywolf-custom-blocks/transcript":
+			return {
+				blocks: [WRAP(markerHtml("transcript", {}, detailsHtml(str(a.summary) || "Read the audio transcript", str(a.details), "transcript")))],
+				action: "html",
+			};
+		case "coywolf-custom-blocks/accordion":
+			return { blocks: [WRAP(markerHtml("accordion", {}, detailsHtml(str(a.summary), str(a.details), "accordion")))], action: "html" };
+		case "coywolf-custom-blocks/testimonial":
+			return { blocks: [WRAP(markerHtml("testimonial", {}, testimonialHtml(a, opts.attachments)))], action: "html" };
+		case "core/details":
+			return { blocks: [WRAP(markerHtml("details", {}, blockHtml(block).trim()))], action: "html" };
+		case "yoast-seo/related-links":
+			// EmDash would turn each list item into its own HTML block.
+			return { blocks: [WRAP(markerHtml("related-links", {}, blockHtml(block).trim()))], action: "html" };
+		default:
+			if (block.name && REMOVE.has(block.name)) return { blocks: [], action: "removed" };
+			if (block.name && FLAG[block.name]) return { blocks: [WRAP(markerHtml(FLAG[block.name] as string, { block: block.name, ...a }))], action: "flag" };
+			return null;
+	}
+}
+
+const isBlank = (b: GBlock) => b.name === null && !b.innerHTML.trim();
+
+/** Transform one list of sibling blocks. Returns, for each original block, what replaces it. */
+function transformList(list: GBlock[], opts: PrepareOptions, counts: PrepareCounts): GBlock[][] {
+	const out: GBlock[][] = list.map((b) => [b]);
+	const count = (name: string | null, action: PrepareAction) => {
+		const key = `${name ?? "html"} → ${action}`;
+		counts[key] = (counts[key] ?? 0) + 1;
+	};
+	for (let i = 0; i < list.length; i++) {
+		const block = list[i] as GBlock;
+		if (block.name === "coywolf-custom-blocks/cloudflare-stream") {
+			// Pair with the embed HTML right before it (the schema block followed the player).
+			let j = i - 1;
+			while (j >= 0 && isBlank(list[j] as GBlock)) j--;
+			const prev = j >= 0 ? (list[j] as GBlock) : null;
+			const embed = prev?.name === "core/html" && out[j]?.[0] === prev ? parseStreamEmbed(prev.innerHTML.trim()) : null;
+			const uid = typeof block.attrs["cs-id"] === "string" ? block.attrs["cs-id"].toLowerCase() : "";
+			if (embed && (embed.uid === null || embed.uid === uid)) {
+				out[j] = [];
+				count("core/html", "removed");
+			}
+			out[i] = [WRAP(markerHtml("cloudflare-stream", { ...block.attrs, embed: embed && (embed.uid === null || embed.uid === uid) ? embed : null }))];
+			count(block.name, "video");
+			continue;
+		}
+		if (block.name === "core/html" && hasStreamPlayer(block.innerHTML)) {
+			// A player with no schema block after it.
+			let k = i + 1;
+			while (k < list.length && isBlank(list[k] as GBlock)) k++;
+			if (list[k]?.name === "coywolf-custom-blocks/cloudflare-stream") continue; // Paired above.
+			const embed = parseStreamEmbed(block.innerHTML.trim());
+			if (embed?.uid) {
+				out[i] = [WRAP(markerHtml("stream-embed", { embed }))];
+				count(block.name, "video-embed");
+			}
+			continue;
+		}
+		if (block.name === "core/heading") {
+			const id = block.innerHTML.match(/<h[1-6]\b[^>]*\sid="([^"]+)"/i)?.[1];
+			let j = i - 1;
+			while (j >= 0 && isBlank(list[j] as GBlock)) j--;
+			const prev = j >= 0 ? parseMarker((list[j] as GBlock).innerHTML.trim()) : null;
+			const marked = prev?.name === "anchor" && prev.attrs.id === id;
+			if (id && !marked) {
+				out[i] = [WRAP(markerHtml("anchor", { id })), block];
+				count(block.name, "anchor");
+			}
+			continue;
+		}
+		if (block.name === "core/code") {
+			const cleaned = cleanCodeHtml(block.innerHTML);
+			if (cleaned !== null) {
+				// innerContent is the HTML alone (code blocks have no inner blocks).
+				out[i] = [{ ...block, innerHTML: cleaned, innerContent: [cleaned] }];
+				count(block.name, "code");
+			}
+			continue;
+		}
+		const rep = replacement(block, opts);
+		if (rep) {
+			out[i] = rep.blocks;
+			count(block.name, rep.action);
+			continue;
+		}
+		if (block.innerBlocks.length) rebuildInner(block, opts, counts);
+	}
+	return out;
+}
+
+/** Transform a block's inner blocks in place, keeping its own markup. */
+function rebuildInner(block: GBlock, opts: PrepareOptions, counts: PrepareCounts): void {
+	const replaced = transformList(block.innerBlocks, opts, counts);
+	const innerBlocks: GBlock[] = [];
+	const innerContent: Array<string | null> = [];
+	let slot = 0;
+	for (const chunk of block.innerContent) {
+		if (chunk !== null) {
+			innerContent.push(chunk);
+			continue;
+		}
+		const group = replaced[slot++] ?? [];
+		group.forEach((b, n) => {
+			if (n > 0) innerContent.push("\n\n");
+			innerBlocks.push(b);
+			innerContent.push(null);
+		});
+	}
+	block.innerBlocks = innerBlocks;
+	block.innerContent = innerContent;
+}
+
+/** Prepare one post's content. */
+export function prepareContent(content: string, opts: PrepareOptions = {}): PrepareResult {
+	const counts: PrepareCounts = {};
+	if (!content || !content.includes("<!-- wp:")) return { content, counts, changed: false };
+	const blocks = parseBlocks(content);
+	const replaced = transformList(blocks, opts, counts);
+	const flat: GBlock[] = [];
+	for (const group of replaced) {
+		group.forEach((b, n) => {
+			if (n > 0) flat.push({ name: null, attrs: {}, innerHTML: "\n\n", innerBlocks: [], innerContent: ["\n\n"], opener: "", closer: "", void: false });
+			flat.push(b);
+		});
+	}
+	const next = serializeBlocks(flat);
+	return { content: next, counts, changed: next !== content };
+}
+
+// ── WXR ──────────────────────────────────────────────────────────
+
+const CDATA = /<!\[CDATA\[([\s\S]*?)\]\]>/g;
+
+/** The text of an element body that may be CDATA (WordPress splits "]]>" across sections). */
+function cdataText(body: string): string {
+	if (!body.includes("<![CDATA[")) return body.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+	let text = "";
+	for (const m of body.matchAll(CDATA)) text += m[1];
+	return text;
+}
+
+const toCdata = (text: string) => `<![CDATA[${text.replace(/\]\]>/g, "]]]]><![CDATA[>")}]]>`;
+
+function tag(item: string, name: string): string | null {
+	const m = item.match(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`));
+	return m ? cdataText(m[1] as string) : null;
+}
+
+/** Attachment id → URL from a WXR file. */
+export function wxrAttachments(xml: string): Map<number, string> {
+	const map = new Map<number, string>();
+	for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
+		const item = m[1] as string;
+		if (tag(item, "wp:post_type") !== "attachment") continue;
+		const id = Number(tag(item, "wp:post_id"));
+		const url = tag(item, "wp:attachment_url");
+		if (Number.isInteger(id) && url) map.set(id, url.trim());
+	}
+	return map;
+}
+
+export interface PreparedPost {
+	id: number | null;
+	title: string;
+	type: string;
+	counts: PrepareCounts;
+}
+
+export interface PrepareWxrResult {
+	xml: string;
+	posts: PreparedPost[];
+	/** Totals over every post. */
+	counts: PrepareCounts;
+}
+
+/** Prepare a whole WXR export. Only `content:encoded` bodies change. */
+export function prepareWxr(xml: string, opts: PrepareOptions = {}): PrepareWxrResult {
+	const attachments = opts.attachments ?? wxrAttachments(xml);
+	const posts: PreparedPost[] = [];
+	const totals: PrepareCounts = {};
+	const out = xml.replace(/<item>([\s\S]*?)<\/item>/g, (whole, item: string) => {
+		const m = item.match(/<content:encoded>([\s\S]*?)<\/content:encoded>/);
+		if (!m) return whole;
+		const result = prepareContent(cdataText(m[1] as string), { ...opts, attachments });
+		if (!result.changed) return whole;
+		posts.push({
+			id: Number(tag(item, "wp:post_id")) || null,
+			title: tag(item, "title") ?? "",
+			type: tag(item, "wp:post_type") ?? "",
+			counts: result.counts,
+		});
+		for (const [k, v] of Object.entries(result.counts)) totals[k] = (totals[k] ?? 0) + v;
+		return `<item>${item.replace(m[0], () => `<content:encoded>${toCdata(result.content)}</content:encoded>`)}</item>`;
+	});
+	return { xml: out, posts, counts: totals };
+}

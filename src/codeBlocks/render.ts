@@ -24,7 +24,8 @@ const LANGUAGES: Record<string, { label: string; grammar?: string | null; aliase
 	dockerfile: { label: "Dockerfile", aliases: ["docker"] },
 	go: { label: "Go", aliases: ["golang"] },
 	graphql: { label: "GraphQL", aliases: ["gql"] },
-	html: { label: "HTML", grammar: "xml" },
+	// "markup" is Prism's name for HTML (Code Block Enhancer for WordPress stored it).
+	html: { label: "HTML", grammar: "xml", aliases: ["markup"] },
 	java: { label: "Java" },
 	javascript: { label: "JavaScript", aliases: ["js"] },
 	json: { label: "JSON" },
@@ -45,7 +46,7 @@ const LANGUAGES: Record<string, { label: string; grammar?: string | null; aliase
 	tsx: { label: "TSX", grammar: "typescript" },
 	typescript: { label: "TypeScript", aliases: ["ts"] },
 	vue: { label: "Vue", grammar: "xml" },
-	xml: { label: "XML" },
+	xml: { label: "XML", aliases: ["svg", "mathml"] },
 	yaml: { label: "YAML", aliases: ["yml"] },
 	zig: { label: "Zig", grammar: null },
 	// Common highlight.js grammars the editor doesn't list but content may use.

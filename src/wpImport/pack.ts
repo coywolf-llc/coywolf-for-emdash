@@ -1,0 +1,359 @@
+/**
+ * WordPress import module: converts what Coywolf's WordPress plugins left in
+ * imported content into Coywolf Pack blocks.
+ *
+ * - While on, every save (including each entry EmDash's WordPress importer
+ *   creates) runs the converter (./convert.ts), so a prepared export
+ *   (./prepare.ts) imports straight into native blocks. It runs before
+ *   Headings & TOC, so imported heading ids become the headings' anchors.
+ * - "Convert imported content" scans every entry (dry run first) and converts
+ *   what's already in the database, draft-aware, never overwriting an entry
+ *   that changed while it ran.
+ * - Video facts from WordPress (name, length, upload date, size) fill the
+ *   Videos module's per-video data where it has none, so players size
+ *   correctly and VideoObject schema has a duration without a Stream token.
+ * - Coywolf Files records and Video Manager library data (descriptions,
+ *   posters, MP4 links) can be imported from WordPress's database.
+ */
+import type { PluginContext, StorageCollection } from "emdash";
+import { PluginRouteError, definePluginRoute } from "emdash";
+import { z } from "zod";
+
+import { registerFeatures, requireFeature } from "../core/features.js";
+import type { PackModule } from "../core/module.js";
+import { COLLECTIONS as FILE_COLLECTIONS, type UploadDoc, invalidateSiteCache } from "../files/site.js";
+import { WORDPRESS_FILE_ID } from "../files/format.js";
+import { latestData } from "../links/store.js";
+import { parseInput } from "../shared.js";
+import { type VideoMeta, invalidatePublicConfig, metaStore, SETTINGS as VIDEO_SETTINGS } from "../videos/store.js";
+import { type ConvertOptions, type VideoFact, convertEntryData, mightNeedConversion } from "./convert.js";
+import { type ImportDefaults, defaultsFromWordPress, parseFileRows } from "./sources.js";
+
+export const F = { main: "wpImport" } as const;
+
+const FEATURES = [
+	{
+		id: F.main,
+		label: "WordPress import",
+		description:
+			"Turn Coywolf's WordPress blocks (Stream and Video Manager videos, reviews, tables of contents, file downloads, heading ids) into Coywolf Pack blocks as content is imported or saved, plus tools to finish a WordPress move.",
+		default: false,
+	},
+];
+registerFeatures(FEATURES);
+
+export const DEFAULTS_SETTING = "wpImportDefaults";
+
+function normalizeDefaults(value: unknown): ImportDefaults {
+	if (!value || typeof value !== "object") return {};
+	const v = value as ImportDefaults;
+	return { video: v.video && typeof v.video === "object" ? v.video : undefined, files: v.files && typeof v.files === "object" ? v.files : undefined };
+}
+
+async function convertOptions(ctx: PluginContext): Promise<ConvertOptions> {
+	const d = normalizeDefaults(await ctx.settings.get(DEFAULTS_SETTING));
+	return { videoDefaults: d.video, fileDefaults: d.files };
+}
+
+// ── Video facts ──────────────────────────────────────────────────
+
+/**
+ * Fill in the Videos module's per-video data from WordPress where it has
+ * none. Stream's own data (library refresh, webhook) replaces it later.
+ * Returns how many videos were added.
+ */
+async function seedVideos(ctx: PluginContext, facts: VideoFact[]): Promise<number> {
+	const store = (ctx.storage as Record<string, StorageCollection<VideoMeta> | undefined>).videosMeta ? metaStore(ctx) : null;
+	if (!store || !facts.length) return 0;
+	const byUid = new Map<string, VideoFact>();
+	for (const f of facts) byUid.set(f.uid, { ...byUid.get(f.uid), ...Object.fromEntries(Object.entries(f).filter(([, v]) => v !== undefined)) } as VideoFact);
+	const uids = [...byUid.keys()].slice(0, 50);
+	const existing = await store.getMany(uids);
+	const add: Array<{ id: string; data: VideoMeta }> = [];
+	let host: string | undefined;
+	for (const uid of uids) {
+		const fact = byUid.get(uid) as VideoFact;
+		host ??= fact.host;
+		if (existing.has(uid)) continue;
+		const doc: VideoMeta = { uid, updatedAt: new Date().toISOString() };
+		if (fact.name) doc.name = fact.name;
+		if (fact.duration) doc.duration = fact.duration;
+		if (fact.created) doc.created = fact.created;
+		if (fact.width && fact.height) {
+			doc.width = fact.width;
+			doc.height = fact.height;
+		}
+		add.push({ id: uid, data: doc });
+	}
+	if (add.length) await store.putMany(add);
+	// The customer subdomain, when the Videos page hasn't learned one yet.
+	if (host && !(await ctx.settings.get<string>(VIDEO_SETTINGS.host))) {
+		await ctx.settings.set(VIDEO_SETTINGS.host, host);
+		invalidatePublicConfig();
+	}
+	return add.length;
+}
+
+// ── Save hook ────────────────────────────────────────────────────
+
+async function beforeSave(event: { content: Record<string, unknown>; collection: string }, ctx: PluginContext) {
+	if (!event.content || !mightNeedConversion(event.content)) return undefined;
+	const result = convertEntryData(event.content, await convertOptions(ctx));
+	if (result.videos.length) {
+		try {
+			await seedVideos(ctx, result.videos);
+		} catch (error) {
+			ctx.log.warn("WordPress import: could not record video details", { error: String(error) });
+		}
+	}
+	if (!result.changed) return undefined;
+	ctx.log.info("WordPress import: converted blocks", { collection: event.collection, changes: result.changes.length });
+	return result.value;
+}
+
+// ── Converting stored content ────────────────────────────────────
+
+interface ScanState {
+	collections: string[];
+	index: number;
+	cursor: string | null;
+}
+
+export interface ScanEntry {
+	collection: string;
+	id: string;
+	title: string;
+	status: string;
+	/** "coywolf-video" → 2, "anchor" → 14, … */
+	changes: Record<string, number>;
+	result?: "updated" | "published" | "draft" | "conflict" | "failed";
+	error?: string;
+}
+
+const scanInput = z.object({
+	apply: z.boolean(),
+	state: z.object({ collections: z.array(z.string().max(100)).max(200), index: z.number().int().min(0), cursor: z.string().max(2000).nullable() }).nullish(),
+});
+
+type Content = NonNullable<PluginContext["content"]>;
+type Writable = Content & Required<Pick<Content, "update">>;
+
+const versionOf = (item: { version?: number; updatedAt?: string; draftRevisionId?: string | null }) =>
+	`${item.version ?? ""}|${item.updatedAt ?? ""}|${item.draftRevisionId ?? ""}`;
+
+const PAGE_MS = 12_000;
+
+async function scan(ctx: PluginContext, apply: boolean, state: ScanState | null) {
+	if (!ctx.content || !ctx.schema) throw PluginRouteError.internal("Content access is unavailable.");
+	if (apply && !ctx.content.update) throw PluginRouteError.internal("WordPress import needs the content:write capability.");
+	const content = ctx.content as Writable;
+	const schemas = await ctx.schema.listCollections();
+	const info = new Map(schemas.map((c) => [c.slug, c]));
+	const collections = state?.collections ?? schemas.filter((c) => c.fields.some((f) => f.type === "portableText")).map((c) => c.slug);
+	let index = state?.index ?? 0;
+	let cursor = state?.cursor ?? null;
+	const opts = await convertOptions(ctx);
+	const entries: ScanEntry[] = [];
+	const leftovers: Record<string, number> = {};
+	let scanned = 0;
+	let videosAdded = 0;
+	const started = Date.now();
+
+	while (index < collections.length && Date.now() - started < PAGE_MS) {
+		const collection = collections[index] as string;
+		const page = await content.list(collection, { limit: 25, ...(cursor ? { cursor } : {}) });
+		for (const item of page.items) {
+			scanned++;
+			const data = await latestData(ctx, collection, item as unknown as { id: string; data: Record<string, unknown>; draftRevisionId?: string | null });
+			if (!mightNeedConversion(data)) continue;
+			const result = convertEntryData(data, opts);
+			for (const [k, v] of Object.entries(result.leftovers)) leftovers[k] = (leftovers[k] ?? 0) + v;
+			if (!result.changed) continue;
+			const changes: Record<string, number> = {};
+			for (const c of result.changes) changes[c.to] = (changes[c.to] ?? 0) + 1;
+			const schema = info.get(collection);
+			const titleField = schema?.titleField ?? "title";
+			const title = String(data[titleField] ?? data.title ?? item.slug ?? item.id).slice(0, 200);
+			const entry: ScanEntry = { collection, id: item.id, title, status: String(item.status ?? ""), changes };
+			entries.push(entry);
+			if (!apply) continue;
+			try {
+				const patch: Record<string, unknown> = {};
+				for (const [k, v] of Object.entries(result.value)) if (v !== data[k]) patch[k] = v;
+				const fresh = await content.get(collection, item.id);
+				if (!fresh || versionOf(fresh) !== versionOf(item)) {
+					entry.result = "conflict";
+					entry.error = "Changed while converting. Run it again.";
+					continue;
+				}
+				const hadDraft = Boolean(item.draftRevisionId);
+				await content.update(collection, item.id, patch);
+				entry.result = "updated";
+				if (schema?.supports.includes("revisions") && item.status === "published") {
+					entry.result = "draft";
+					if (!hadDraft && content.getVersioned && content.publish) {
+						const versioned = await content.getVersioned(collection, item.id);
+						// Publish only the draft this update made: exactly one version after the one read.
+						if (versioned && versioned.item.version === (fresh.version ?? 0) + 1) {
+							await content.publish(collection, item.id, { _rev: versioned._rev });
+							entry.result = "published";
+						}
+					}
+				}
+				videosAdded += await seedVideos(ctx, result.videos).catch(() => 0);
+			} catch (error) {
+				entry.result = "failed";
+				entry.error = String(error).slice(0, 300);
+				ctx.log.error("WordPress import: convert failed", { collection, id: item.id, error: String(error) });
+			}
+		}
+		if (page.hasMore && page.cursor) cursor = page.cursor;
+		else {
+			index++;
+			cursor = null;
+		}
+	}
+	const done = index >= collections.length;
+	return {
+		done,
+		scanned,
+		entries,
+		leftovers,
+		videosAdded,
+		state: done ? null : { collections, index, cursor },
+		progress: done ? "Done" : `Collection ${Math.min(index + 1, collections.length)} of ${collections.length}`,
+	};
+}
+
+// ── Coywolf Files records ────────────────────────────────────────
+
+const fileRow = z.object({
+	file_id: z.string().regex(WORDPRESS_FILE_ID, "file_id must be the 20-character Coywolf Files id."),
+	object_key: z
+		.string()
+		.min(1)
+		.max(512)
+		.regex(/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/, "object_key must be a plain bucket key.")
+		.refine((k) => !k.split("/").includes(".."), "object_key must be a plain bucket key."),
+	filename: z.string().min(1).max(255),
+	mime: z.string().max(150).optional().default("application/octet-stream"),
+	size: z.coerce.number().int().min(0),
+	downloads: z.coerce.number().int().min(0).optional().default(0),
+	created: z.string().max(40).optional().default(""),
+});
+
+const wpDate = (value: string) => {
+	const iso = value && !value.startsWith("0000") ? new Date(`${value.replace(" ", "T")}Z`) : null;
+	return iso && !Number.isNaN(iso.getTime()) ? iso.toISOString() : new Date().toISOString();
+};
+
+// ── Video Manager library data ───────────────────────────────────
+
+const videoLibraryInput = z.object({
+	descriptions: z.record(z.string(), z.string().max(5000)).optional(),
+	posters: z.record(z.string(), z.object({ mode: z.string().optional(), time: z.coerce.number().optional(), image_url: z.string().max(2000).optional() }).passthrough()).optional(),
+	downloads: z.record(z.string(), z.string().max(2000)).optional(),
+});
+
+const UID = /^[0-9a-f]{32}$/;
+
+export function wpImportPack(): PackModule {
+	return {
+		id: "wpImport",
+		label: "WordPress import",
+		features: FEATURES,
+		capabilities: ["content:read", "content:write", "schema:read"],
+		adminPages: [{ path: "/wordpress-import", label: "WordPress import", icon: "upload-simple" }],
+		hooks: { "content:beforeSave": beforeSave },
+		routes: {
+			"wpImport/settings": {
+				permission: "plugins:manage" as const,
+				handler: async (ctx: PluginContext) => ({ defaults: normalizeDefaults(await ctx.settings.get(DEFAULTS_SETTING)) }),
+			},
+			"wpImport/settings/save": definePluginRoute({
+				permission: "plugins:manage",
+				methods: ["POST"],
+				request: { body: "json" },
+				handler: async (ctx) => {
+					const input = parseInput(z.object({ cvm: z.unknown().optional(), files: z.unknown().optional() }), ctx.input);
+					const defaults = defaultsFromWordPress(input.cvm, input.files);
+					await ctx.settings.set(DEFAULTS_SETTING, defaults);
+					return { defaults };
+				},
+			}),
+			"wpImport/scan": definePluginRoute({
+				permission: "plugins:manage",
+				methods: ["POST"],
+				request: { body: "json" },
+				handler: async (ctx) => {
+					await requireFeature(ctx, F.main);
+					const input = parseInput(scanInput, ctx.input ?? {});
+					return scan(ctx, input.apply, input.state ?? null);
+				},
+			}),
+			"wpImport/files": definePluginRoute({
+				permission: "plugins:manage",
+				methods: ["POST"],
+				request: { body: "json", maxBytes: 1024 * 1024 },
+				handler: async (ctx) => {
+					await requireFeature(ctx, F.main);
+					const { text } = parseInput(z.object({ text: z.string().min(1).max(1_000_000) }), ctx.input);
+					let rows: Array<Record<string, string>>;
+					try {
+						rows = parseFileRows(text);
+					} catch {
+						throw PluginRouteError.badRequest("Paste the tab-separated output of the query, or a JSON array.");
+					}
+					const uploads = (ctx.storage as Record<string, StorageCollection<UploadDoc> | undefined>)[FILE_COLLECTIONS.uploads];
+					const counts = (ctx.storage as Record<string, StorageCollection<{ downloads: number; lastDownload?: string }> | undefined>)[FILE_COLLECTIONS.counts];
+					if (!uploads || !counts) throw PluginRouteError.badRequest("Turn on File Downloads first.");
+					const added: string[] = [];
+					const errors: Array<{ row: number; error: string }> = [];
+					for (const [i, raw] of rows.slice(0, 2000).entries()) {
+						const parsed = fileRow.safeParse(raw);
+						if (!parsed.success) {
+							errors.push({ row: i + 1, error: parsed.error.issues[0]?.message ?? "Invalid row" });
+							continue;
+						}
+						const r = parsed.data;
+						await uploads.put(r.file_id, { id: r.file_id, key: r.object_key, name: r.filename, size: r.size, type: r.mime || "application/octet-stream", uploadedAt: wpDate(r.created), status: "ready" });
+						if (r.downloads > 0 && !(await counts.get(r.file_id))) await counts.put(r.file_id, { downloads: r.downloads });
+						invalidateSiteCache(r.file_id);
+						added.push(r.file_id);
+					}
+					return { added: added.length, ids: added, errors };
+				},
+			}),
+			"wpImport/videos": definePluginRoute({
+				permission: "plugins:manage",
+				methods: ["POST"],
+				request: { body: "json", maxBytes: 1024 * 1024 },
+				handler: async (ctx) => {
+					await requireFeature(ctx, F.main);
+					if (!(ctx.storage as Record<string, unknown>).videosMeta) throw PluginRouteError.badRequest("Turn on Videos first.");
+					const input = parseInput(videoLibraryInput, ctx.input);
+					const store = metaStore(ctx);
+					const uids = new Set([...Object.keys(input.descriptions ?? {}), ...Object.keys(input.posters ?? {}), ...Object.keys(input.downloads ?? {})].filter((u) => UID.test(u)));
+					let updated = 0;
+					for (const uid of uids) {
+						const prev = (await store.get(uid)) ?? { uid };
+						const next: VideoMeta = { ...prev, uid, updatedAt: new Date().toISOString() };
+						const description = input.descriptions?.[uid]?.trim();
+						if (description) next.description = description;
+						const poster = input.posters?.[uid];
+						if (poster?.mode === "image" && poster.image_url && /^https?:\/\//i.test(poster.image_url)) next.posterImage = poster.image_url;
+						else if (poster?.mode === "timestamp" && typeof poster.time === "number" && poster.time > 0) next.posterTime = poster.time;
+						const download = input.downloads?.[uid];
+						if (download && /^https:\/\/\S+\.mp4$/i.test(download)) {
+							next.downloadUrl = download;
+							next.downloadStatus = "ready";
+						}
+						await store.put(uid, next);
+						updated++;
+					}
+					return { updated };
+				},
+			}),
+		},
+	};
+}

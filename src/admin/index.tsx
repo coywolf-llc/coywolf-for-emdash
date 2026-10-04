@@ -14,6 +14,7 @@ import { SchemaPage } from "./schema.js";
 import { SearchPage } from "./search.js";
 import { VideosPage } from "./videos.js";
 import { RobotsPage } from "./robots.js";
+import { WpImportPage } from "./wpImport.js";
 import { ReviewsPage } from "./reviews.js";
 
 export const pages: PluginAdminExports["pages"] = {
@@ -32,6 +33,7 @@ export const pages: PluginAdminExports["pages"] = {
 	"/videos": VideosPage,
 	"/robots": RobotsPage,
 	"/reviews": ReviewsPage,
+	"/wordpress-import": WpImportPage,
 };
 
 export const widgets: PluginAdminExports["widgets"] = {
