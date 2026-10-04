@@ -204,7 +204,7 @@ test("converted reviews render and give valid Review schema, with book and softw
 
 	const product = reviewSchema(normalizeReview(blocks[0]), 3, ctx);
 	assert.equal(product["@type"], "Product");
-	assert.equal(product.review.reviewRating.ratingValue, 4.5, "4.7 rounds to the block's half steps");
+	assert.equal(product.review.reviewRating.ratingValue, 4.7, "WordPress's 4.7 imports exactly");
 	assert.equal(product.review.positiveNotes.itemListElement.length, 5);
 	// Book fields never leak onto other types.
 	assert.equal(product.isbn, undefined);
@@ -273,24 +273,40 @@ test("Coywolf Files records parse from wp db query output", () => {
 
 // ── Template blocks, code, others ────────────────────────────────
 
-test("template blocks keep their content as HTML; disclosures and forms leave markers; the newsletter block goes", () => {
+test("template blocks become Content Blocks; testimonials stay HTML; forms leave markers; the newsletter block goes", () => {
 	const { prepared, result } = importFixture("templates.html");
 	assert.equal(prepared.counts["coywolf-custom-blocks/newsletter → removed"], 1);
-	const html = ofType(result.value, "htmlBlock").map((b) => parseMarker(b.html));
 	assert.deepEqual(
-		html.map((m) => m.name),
-		["blockquote", "sidenote", "editorsnote", "transcript", "testimonial", "disclosure", "gravity-form"],
+		result.value.filter((b) => b._type !== "block").map((b) => (b._type === "htmlBlock" ? `html:${parseMarker(b.html).name}` : b._type)),
+		["coywolf-quote", "coywolf-note", "coywolf-note", "coywolf-details", "html:testimonial", "coywolf-disclosure", "html:gravity-form"],
 	);
-	assert.match(html[0].inner, /<blockquote cite="https:\/\/web\.archive\.org\/[^"]+"><p>My question is/);
+	const [quote, sidenote, editorsnote, transcript] = result.value.filter((b) => b._type.startsWith("coywolf-"));
+	assert.equal(quote.sourceUrl, "https://web.archive.org/web/20200912191950/https://twitter.com/joncooperseo/status/1131615301123039232");
+	assert.equal(quote.citation, "Jon Cooper, Senior Interaction Designer, Twitter");
+	assert.match(quote.quote, /^My question is - how the hell/);
+	assert.deepEqual([sidenote.variant, sidenote.title, sidenote.titleTag], ["note", "📌 Sidenote", "h2"]);
+	assert.equal(sidenote.body, '<a href="https://coywolf.com/news/entrepreneurship/rusty-mitchell-kelly-merrell-interview/">Listen to the full 45-minute interview</a>');
+	assert.deepEqual([editorsnote.variant, editorsnote.title], ["editor", "📝 Editor's Note"]);
+	assert.match(editorsnote.body, /^WP Engine discontinued DevKit and replaced it with <a href=/);
+	// The transcript's broken escapes (u003cp) are repaired; the summary is WordPress's default.
+	assert.equal(transcript.variant, "transcript");
+	assert.equal(transcript.summary, "Read the audio transcript");
+	assert.match(transcript.body, /^<p>Jon Henshaw: I'm with Paul Jarvis/);
+	assert.ok(!transcript.body.includes("u003c"));
+	const markers = ofType(result.value, "htmlBlock").map((b) => parseMarker(b.html));
+	assert.deepEqual(markers[1].attrs, { block: "gravityforms/form", formId: "1", title: false });
+	assert.equal(result.leftovers["marker:testimonial"], 1);
+});
+
+test("with a Content Block switched off, its markers stay HTML (with WordPress's markup) and convert later", () => {
+	const { result } = importFixture("templates.html", { contentBlocks: { note: false, quote: false } });
+	const html = ofType(result.value, "htmlBlock").map((b) => parseMarker(b.html));
+	assert.deepEqual(html.map((m) => m.name), ["blockquote", "sidenote", "editorsnote", "testimonial", "gravity-form"]);
 	assert.match(html[0].inner, /<figcaption><cite>Jon Cooper, Senior Interaction Designer, Twitter<\/cite><\/figcaption>/);
 	assert.match(html[1].inner, /<aside class="sidenote"><h2>&#x1F4CC; Sidenote<\/h2><p><a href=/);
-	// The transcript's broken escapes (u003cp) are repaired.
-	assert.match(html[3].inner, /<summary>Read the audio transcript<\/summary><div class="transcript__body"><p>Jon Henshaw: I'm with Paul Jarvis/);
-	assert.ok(!html[3].inner.includes("u003c"));
-	assert.deepEqual(html[6].attrs, { block: "gravityforms/form", formId: "1", title: false });
-	// Converting leaves them alone (reported as leftovers).
-	assert.equal(result.changes.length, 0);
-	assert.equal(result.leftovers["marker:blockquote"], 1);
+	assert.equal(result.leftovers["marker:sidenote"], 1);
+	const later = convertPortableText(result.value, { key: keys() });
+	assert.deepEqual(later.changes.map((c) => c.to), ["coywolf-quote", "coywolf-note", "coywolf-note"]);
 });
 
 test("testimonial headshots come from the WXR's attachments", () => {
@@ -299,10 +315,15 @@ test("testimonial headshots come from the WXR's attachments", () => {
 	assert.match(parseMarker(gutenbergToPortableText(out.content)[0].html).inner, /<img alt="AJ Kohn" height="60" width="60" src="https:\/\/coywolf\.com\/wp-content\/uploads\/aj\.jpg">/);
 });
 
-test("core Details blocks keep their summary", () => {
-	const { result } = importFixture("details.html");
+test("core Details blocks become Details blocks with their summary and paragraphs", () => {
+	const { prepared, result } = importFixture("details.html");
+	assert.equal(prepared.counts["core/details → details"], 1);
 	assert.equal(result.value.length, 1);
-	assert.match(parseMarker(result.value[0].html).inner, /^<details class="wp-block-details"><summary>Read full transcript<\/summary>\n<p>Jon Henshaw: Welcome/);
+	const [d] = result.value;
+	assert.deepEqual([d._type, d.variant, d.summary, d.open], ["coywolf-details", "details", "Read full transcript", undefined]);
+	assert.match(d.body, /^<p>Jon Henshaw: Welcome to the fifth episode/);
+	assert.ok(d.body.endsWith("</p>"));
+	assert.ok(!d.body.includes("<!-- wp:"), "the inner blocks' comments are gone");
 });
 
 test("code blocks: Prism language names map to the editor's, bold markup and &#91; are cleaned", () => {

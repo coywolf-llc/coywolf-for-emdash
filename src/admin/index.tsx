@@ -3,6 +3,7 @@ import type { PluginAdminExports } from "emdash";
 import { AiPage } from "./ai.js";
 import { BackupStatusWidget, BackupsPage } from "./backups.js";
 import { CodeBlocksPage } from "./codeBlocks.js";
+import { ContentBlocksPage } from "./contentBlocks.js";
 import { DiscoveryPage } from "./discovery.js";
 import { FeaturesPage } from "./features.js";
 import { HeadingsPage } from "./headings.js";
@@ -33,6 +34,7 @@ export const pages: PluginAdminExports["pages"] = {
 	"/videos": VideosPage,
 	"/robots": RobotsPage,
 	"/reviews": ReviewsPage,
+	"/content-blocks": ContentBlocksPage,
 	"/wordpress-import": WpImportPage,
 };
 

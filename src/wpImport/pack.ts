@@ -19,7 +19,7 @@ import type { PluginContext, StorageCollection } from "emdash";
 import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
-import { registerFeatures, requireFeature } from "../core/features.js";
+import { ctxFeatures, isOn, registerFeatures, requireFeature } from "../core/features.js";
 import type { PackModule } from "../core/module.js";
 import { COLLECTIONS as FILE_COLLECTIONS, type UploadDoc, invalidateSiteCache } from "../files/site.js";
 import { WORDPRESS_FILE_ID } from "../files/format.js";
@@ -52,7 +52,15 @@ function normalizeDefaults(value: unknown): ImportDefaults {
 
 async function convertOptions(ctx: PluginContext): Promise<ConvertOptions> {
 	const d = normalizeDefaults(await ctx.settings.get(DEFAULTS_SETTING));
-	return { videoDefaults: d.video, fileDefaults: d.files };
+	const features = await ctxFeatures(ctx);
+	// Content Blocks that are off aren't converted to: their markers stay HTML until the block is turned on.
+	const contentBlocks = {
+		note: isOn(features, "contentBlocks.note"),
+		details: isOn(features, "contentBlocks.details"),
+		disclosure: isOn(features, "contentBlocks.disclosure"),
+		quote: isOn(features, "contentBlocks.quote"),
+	};
+	return { videoDefaults: d.video, fileDefaults: d.files, contentBlocks };
 }
 
 // ── Video facts ──────────────────────────────────────────────────

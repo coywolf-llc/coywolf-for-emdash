@@ -6,11 +6,12 @@
  * Coywolf Pack page.
  */
 import { Banner, Button, InputArea, Loader } from "@cloudflare/kumo";
-import { ArrowsClockwise, DownloadSimple, FileArrowUp, MagnifyingGlass, UploadSimple } from "@phosphor-icons/react";
+import { ArrowsClockwise, DownloadSimple, FileArrowUp, MagnifyingGlass, UploadSimple, UserPlus } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
-import { type PrepareWxrResult, prepareWxr } from "../wpImport/prepare.js";
+import { type GuestAuthor, type GuestByline, collectionFor, groupGuests, sameName, wxrGuestAuthors } from "../wpImport/guests.js";
+import { type PrepareWxrResult, prepareWxr, wxrAttachments } from "../wpImport/prepare.js";
 import { saveFile } from "./download.js";
 
 const API = "/_emdash/api/plugins/coywolf-pack/wpImport";
@@ -70,7 +71,7 @@ function CountsTable({ counts }: { counts: Record<string, number> }) {
 
 // ── 1. Prepare ───────────────────────────────────────────────────
 
-function PrepareStep() {
+function PrepareStep({ onGuests }: { onGuests: (guests: GuestAuthor[]) => void }) {
 	const fileRef = React.useRef<HTMLInputElement>(null);
 	const [busy, setBusy] = React.useState(false);
 	const [error, setError] = React.useState<string>();
@@ -85,7 +86,9 @@ function PrepareStep() {
 			if (!xml.includes("<rss") || !xml.includes("<wp:")) throw new Error("That doesn't look like a WordPress export (WXR) file.");
 			// Let the "Reading…" state paint before the synchronous work.
 			await new Promise((r) => setTimeout(r, 0));
-			setResult({ ...prepareWxr(xml), name: file.name });
+			const prepared = prepareWxr(xml);
+			setResult({ ...prepared, name: file.name });
+			onGuests(prepared.guestAuthors);
 		} catch (cause) {
 			setError(errorText(cause, "Could not read that file."));
 		} finally {
@@ -134,8 +137,9 @@ function PrepareStep() {
 			{result && (
 				<div className="space-y-2" role="status">
 					<p className="text-sm">
-						{result.posts.length.toLocaleString()} {result.posts.length === 1 ? "entry" : "entries"} changed. Blocks marked “→ html” keep their
-						content as HTML blocks, “→ flag” leaves an empty marker for the theme, and “→ removed” rendered nothing on WordPress.
+						{result.posts.length.toLocaleString()} {result.posts.length === 1 ? "entry" : "entries"} changed. Blocks marked “→ note”, “→ details”, “→ quote” and
+						“→ disclosure” become Content Blocks, “→ html” keep their content as HTML blocks, “→ flag” leaves an empty marker for the theme, and “→ removed” rendered nothing on WordPress.
+						{result.guestAuthors.length ? ` ${result.guestAuthors.length} ${result.guestAuthors.length === 1 ? "post has" : "posts have"} a guest author: credit them in step 4 after importing.` : ""}
 					</p>
 					<CountsTable counts={result.counts} />
 				</div>
@@ -326,8 +330,9 @@ function ConvertStep() {
 						<div>
 							<h3 className="mb-1 text-sm font-medium">Kept as HTML blocks</h3>
 							<p className="mb-1 text-xs text-kumo-subtle">
-								No Coywolf Pack block for these (yet). Their content is kept; “marker:disclosure”, “marker:podcast-links” and “marker:gravity-form” are
-								empty placeholders for the theme. See the README.
+								No Coywolf Pack block for these (yet), or the block is turned off (notes, transcripts, quotes and disclosures convert once their
+								Content Blocks switch is on: run this again). Their content is kept; “marker:podcast-links” and “marker:gravity-form” are empty
+								placeholders for the theme. See the README.
 							</p>
 							<CountsTable counts={report.leftovers} />
 						</div>
@@ -377,7 +382,293 @@ function ConvertStep() {
 	);
 }
 
-// ── 4. Files and videos ──────────────────────────────────────────
+// ── 4. Guest author bylines ──────────────────────────────────────
+
+const EMDASH = "/_emdash/api";
+
+interface BylineSummary {
+	id: string;
+	slug: string;
+	displayName: string;
+	isGuest: boolean;
+	avatarMediaId: string | null;
+}
+
+interface PostPlan {
+	guest: GuestAuthor;
+	collection: string;
+	entryId?: string;
+	entryTitle?: string;
+	/** Names of the bylines credited now (explicitly). */
+	current: string[];
+	action: "credit" | "done" | "missing";
+	result?: string;
+}
+
+interface BylinePlan {
+	byline: GuestByline;
+	existing: BylineSummary | null;
+	avatarMediaId: string | null;
+	posts: PostPlan[];
+	result?: string;
+}
+
+async function getJson<T>(url: string, fallback: string): Promise<T> {
+	return parseApiResponse<T>(await apiFetch(url), fallback);
+}
+
+async function send<T>(url: string, method: "POST" | "PUT", body: unknown, fallback: string): Promise<T> {
+	const response = await apiFetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+	return parseApiResponse<T>(response, fallback);
+}
+
+/** Look up what's on the site for each guest: an existing byline with that name, the avatar in the media library, the imported entries and their credits. */
+async function planGuests(groups: GuestByline[]): Promise<BylinePlan[]> {
+	const plans: BylinePlan[] = [];
+	for (const byline of groups) {
+		const found = await getJson<{ items: BylineSummary[] }>(`${EMDASH}/admin/bylines?search=${encodeURIComponent(byline.name)}&limit=50`, "Could not list bylines");
+		const matches = found.items.filter((b) => sameName(b.displayName, byline.name));
+		const existing = matches.find((b) => b.isGuest) ?? matches[0] ?? null;
+		let avatarMediaId: string | null = existing?.avatarMediaId ?? null;
+		if (!avatarMediaId && byline.avatarFile) {
+			const media = await getJson<{ items: Array<{ id: string; filename: string }> }>(
+				`${EMDASH}/media?q=${encodeURIComponent(byline.avatarFile)}&limit=20`,
+				"Could not search the media library",
+			).catch(() => ({ items: [] }));
+			avatarMediaId = media.items.find((m) => m.filename.toLowerCase() === byline.avatarFile.toLowerCase())?.id ?? null;
+		}
+		const posts: PostPlan[] = [];
+		for (const guest of byline.posts) {
+			const collection = collectionFor(guest.postType);
+			try {
+				const { item } = await getJson<{ item: { id: string; data?: Record<string, unknown>; bylines?: Array<{ byline: { id: string; displayName: string }; source?: string }> } }>(
+					`${EMDASH}/content/${encodeURIComponent(collection)}/${encodeURIComponent(guest.slug)}`,
+					"Not found",
+				);
+				const explicit = (item.bylines ?? []).filter((c) => c.source !== "inferred");
+				const done = Boolean(existing) && explicit.length === 1 && explicit[0]?.byline.id === existing?.id;
+				posts.push({
+					guest,
+					collection,
+					entryId: item.id,
+					entryTitle: typeof item.data?.title === "string" ? item.data.title : guest.title,
+					current: (item.bylines ?? []).map((c) => c.byline.displayName),
+					action: done ? "done" : "credit",
+				});
+			} catch {
+				posts.push({ guest, collection, current: [], action: "missing" });
+			}
+		}
+		plans.push({ byline, existing, avatarMediaId, posts });
+	}
+	return plans;
+}
+
+/** Create a guest byline, trying "-2", "-3", … if the slug is taken. */
+async function createByline(plan: BylinePlan): Promise<BylineSummary> {
+	const b = plan.byline;
+	let lastError: unknown;
+	for (let n = 1; n <= 5; n++) {
+		try {
+			return await send<BylineSummary>(
+				`${EMDASH}/admin/bylines`,
+				"POST",
+				{ slug: n === 1 ? b.slug : `${b.slug}-${n}`, displayName: b.name, bio: b.bio || null, websiteUrl: b.url || null, avatarMediaId: plan.avatarMediaId, isGuest: true },
+				"Could not create the byline",
+			);
+		} catch (error) {
+			lastError = error;
+			if (!/slug|exists|unique|conflict/i.test(String(error))) break;
+		}
+	}
+	throw lastError instanceof Error ? lastError : new Error("Could not create the byline");
+}
+
+function GuestBylinesStep({ guests, onGuests }: { guests: GuestAuthor[] | null; onGuests: (guests: GuestAuthor[]) => void }) {
+	const fileRef = React.useRef<HTMLInputElement>(null);
+	const [plans, setPlans] = React.useState<BylinePlan[] | null>(null);
+	const [running, setRunning] = React.useState<false | "read" | "dry" | "apply">(false);
+	const [applied, setApplied] = React.useState(false);
+	const [error, setError] = React.useState<string>();
+	const groups = React.useMemo(() => (guests ? groupGuests(guests) : []), [guests]);
+
+	React.useEffect(() => {
+		setPlans(null);
+		setApplied(false);
+	}, [guests]);
+
+	const choose = async (file: File) => {
+		setRunning("read");
+		setError(undefined);
+		try {
+			const xml = await file.text();
+			if (!xml.includes("<rss") || !xml.includes("<wp:")) throw new Error("That doesn't look like a WordPress export (WXR) file.");
+			onGuests(wxrGuestAuthors(xml, wxrAttachments(xml)));
+		} catch (cause) {
+			setError(errorText(cause, "Could not read that file."));
+		} finally {
+			setRunning(false);
+		}
+	};
+
+	const dryRun = async () => {
+		setRunning("dry");
+		setError(undefined);
+		setApplied(false);
+		try {
+			setPlans(await planGuests(groups));
+		} catch (cause) {
+			setError(errorText(cause, "The dry run failed"));
+		} finally {
+			setRunning(false);
+		}
+	};
+
+	const apply = async () => {
+		if (!plans) return;
+		if (!window.confirm("Create the guest bylines and credit the posts listed? Each post's current byline is replaced by its guest.")) return;
+		setRunning("apply");
+		setError(undefined);
+		const next = plans.map((p) => ({ ...p, posts: p.posts.map((x) => ({ ...x })) }));
+		for (const plan of next) {
+			let bylineId = plan.existing?.id;
+			if (!bylineId && plan.posts.some((x) => x.action === "credit")) {
+				try {
+					const created = await createByline(plan);
+					plan.existing = created;
+					bylineId = created.id;
+					plan.result = `Created byline “${created.displayName}” (${created.slug})`;
+				} catch (cause) {
+					plan.result = `Could not create the byline: ${errorText(cause, "unknown error")}`;
+					continue;
+				}
+			}
+			for (const post of plan.posts) {
+				if (post.action !== "credit" || !post.entryId || !bylineId) continue;
+				try {
+					await send(`${EMDASH}/content/${encodeURIComponent(post.collection)}/${encodeURIComponent(post.entryId)}`, "PUT", { bylines: [{ bylineId }] }, "Could not update the entry");
+					post.action = "done";
+					post.result = "Credited";
+				} catch (cause) {
+					post.result = `Failed: ${errorText(cause, "unknown error")}`;
+				}
+			}
+			setPlans(next.map((p) => ({ ...p })));
+		}
+		setPlans(next);
+		setApplied(true);
+		setRunning(false);
+	};
+
+	const toCredit = plans?.reduce((n, p) => n + p.posts.filter((x) => x.action === "credit").length, 0) ?? 0;
+	const toCreate = plans?.filter((p) => !p.existing && p.posts.some((x) => x.action === "credit")).length ?? 0;
+
+	return (
+		<Section
+			title="4. Guest author bylines"
+			description={
+				<>
+					Posts that had a guest author (Coywolf Guest Author plugin) were imported under their WordPress user. This creates a guest byline for
+					each guest (name, website, bio, and avatar when it's in the media library) and credits their posts to it, so the byline, author schema
+					and Review schema name the guest. It uses EmDash's own byline and content API with your account, a dry run first. Running it again
+					changes nothing.
+				</>
+			}
+		>
+			<input
+				ref={fileRef}
+				type="file"
+				accept=".xml,text/xml,application/xml"
+				className="sr-only"
+				tabIndex={-1}
+				aria-hidden="true"
+				onChange={(e) => {
+					const file = e.target.files?.[0];
+					e.target.value = "";
+					if (file) void choose(file);
+				}}
+			/>
+			<div className="flex flex-wrap items-center gap-2">
+				{guests === null && (
+					<Button variant="secondary" icon={<FileArrowUp />} disabled={Boolean(running)} onClick={() => fileRef.current?.click()}>
+						{running === "read" ? "Reading…" : "Choose export file"}
+					</Button>
+				)}
+				<Button variant="secondary" icon={<MagnifyingGlass />} disabled={Boolean(running) || !groups.length} onClick={() => void dryRun()}>
+					{running === "dry" ? "Checking…" : "Dry run"}
+				</Button>
+				<Button variant="primary" icon={<UserPlus />} disabled={Boolean(running) || !plans || applied || (!toCredit && !toCreate)} onClick={() => void apply()}>
+					{running === "apply" ? "Crediting…" : "Create bylines and credit posts"}
+				</Button>
+				{running && <Loader size="sm" />}
+			</div>
+			{error && <Banner variant="error" role="alert" description={error} />}
+			{guests !== null && (
+				<p className="text-sm" role="status">
+					{guests.length
+						? `${guests.length.toLocaleString()} ${guests.length === 1 ? "post has" : "posts have"} a guest author (${groups.length} ${groups.length === 1 ? "guest" : "guests"}).`
+						: "No guest authors in this export."}
+					{plans && !applied ? ` Dry run: ${toCreate} ${toCreate === 1 ? "byline" : "bylines"} to create, ${toCredit} ${toCredit === 1 ? "post" : "posts"} to credit.` : ""}
+				</p>
+			)}
+			{plans && (
+				<div className="overflow-x-auto">
+					<table className="w-full text-left text-sm">
+						<thead className="text-kumo-subtle">
+							<tr>
+								<th className="py-1 pe-3 font-medium">Guest</th>
+								<th className="py-1 pe-3 font-medium">Post</th>
+								<th className="py-1 pe-3 font-medium">Byline now</th>
+								<th className="py-1 font-medium">{applied ? "Result" : "Will"}</th>
+							</tr>
+						</thead>
+						<tbody>
+							{plans.flatMap((plan) =>
+								plan.posts.map((post, i) => (
+									<tr key={`${plan.byline.slug}/${post.guest.slug}`} className="border-t border-kumo-line align-top">
+										<td className="py-1 pe-3">
+											{i === 0 ? (
+												<>
+													{plan.byline.name}
+													<span className="block text-xs text-kumo-subtle">
+														{plan.existing ? "Byline exists" : "New guest byline"}
+														{plan.byline.url ? ` · ${plan.byline.url}` : ""}
+														{plan.byline.avatarFile ? (plan.avatarMediaId ? " · avatar found" : ` · avatar ${plan.byline.avatarFile} not in the media library`) : ""}
+													</span>
+													{plan.result && <span className="block text-xs">{plan.result}</span>}
+												</>
+											) : null}
+										</td>
+										<td className="py-1 pe-3">
+											{post.entryId ? (
+												<a className="text-kumo-link underline" href={`/_emdash/admin/content/${encodeURIComponent(post.collection)}/${encodeURIComponent(post.entryId)}`}>
+													{post.entryTitle || post.guest.title || post.guest.slug}
+												</a>
+											) : (
+												post.guest.title || post.guest.slug
+											)}
+										</td>
+										<td className="py-1 pe-3 text-xs">{post.current.join(", ") || "—"}</td>
+										<td className="py-1 text-xs">
+											{post.result ??
+												(post.action === "done"
+													? "Already credited"
+													: post.action === "missing"
+														? `Not found: no ${post.collection} entry with the slug “${post.guest.slug}”`
+														: `Credit ${plan.byline.name}`)}
+										</td>
+									</tr>
+								)),
+							)}
+						</tbody>
+					</table>
+				</div>
+			)}
+		</Section>
+	);
+}
+
+// ── 5. Files and videos ──────────────────────────────────────────
 
 const FILES_QUERY =
 	'wp db query "SELECT file_id, object_key, filename, mime, size, downloads, created FROM wp_coywolf_files"';
@@ -402,7 +693,7 @@ function FilesStep() {
 	};
 	return (
 		<Section
-			title="4. Coywolf Files downloads"
+			title="5. Coywolf Files downloads"
 			description={
 				<>
 					Registers files uploaded with Coywolf Files so File download blocks and old download links keep working (they keep their WordPress ids;
@@ -465,7 +756,7 @@ function VideosStep() {
 	);
 	return (
 		<Section
-			title="5. Video Manager library"
+			title="6. Video Manager library"
 			description="Per-video descriptions, poster frames or images, and MP4 download links set on Video Manager's Edit Video page. They're used in VideoObject schema and the video sitemap."
 		>
 			<div className="grid gap-4 lg:grid-cols-3">
@@ -487,19 +778,23 @@ function VideosStep() {
 }
 
 export function WpImportPage() {
+	const [guests, setGuests] = React.useState<GuestAuthor[] | null>(null);
 	return (
 		<div className="space-y-6">
 			<header className="grid min-w-0 gap-2 border-b border-kumo-line pb-4">
 				<h1 className="flex min-h-9 items-center text-2xl font-semibold leading-tight">WordPress import</h1>
 				<p className="text-sm leading-5 text-pretty text-kumo-subtle">
 					Move content that used Coywolf's WordPress plugins: Cloudflare Stream and Video Manager videos become Coywolf Video blocks, reviews become
-					Coywolf Review blocks, tables of contents and heading ids carry over, and Coywolf Files downloads keep their links. Turn on Videos, Reviews,
-					Headings &amp; TOC and File Downloads on the Coywolf Pack page before importing. The README has the full checklist.
+					Coywolf Review blocks, sidenotes, transcripts, quotes and affiliate disclosures become Note, Details, Quote and Affiliate disclosure blocks,
+					tables of contents and heading ids carry over, guest authors get their own bylines, and Coywolf Files downloads keep their links. Turn on
+					Videos, Reviews, Content Blocks (and each block), Headings &amp; TOC and File Downloads on the Coywolf Pack page before importing. The
+					README has the full checklist.
 				</p>
 			</header>
-			<PrepareStep />
+			<PrepareStep onGuests={setGuests} />
 			<DefaultsStep />
 			<ConvertStep />
+			<GuestBylinesStep guests={guests} onGuests={setGuests} />
 			<FilesStep />
 			<VideosStep />
 		</div>

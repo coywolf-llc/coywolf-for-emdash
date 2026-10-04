@@ -14,6 +14,10 @@ const {
 	normalizeStyle,
 	pageCss,
 	parseRating,
+	ratingValue,
+	normalizeReviewRatings,
+	RATING_OPTIONS,
+	formatRating,
 	renderReviewHtml,
 	reviewCss,
 	reviewDocuments,
@@ -27,12 +31,16 @@ const {
 const URL_ = "https://example.com/health/best-decaf/";
 const ORIGIN = "https://example.com";
 
-test("parseRating clamps to 0–5 and rounds to halves", () => {
+test("parseRating clamps to 0–5 and keeps tenths", () => {
 	assert.equal(parseRating(4.5), 4.5);
 	assert.equal(parseRating("4.5"), 4.5);
 	assert.equal(parseRating("4,5"), 4.5);
-	assert.equal(parseRating(4.3), 4.5);
-	assert.equal(parseRating(4.2), 4);
+	assert.equal(parseRating(4.3), 4.3);
+	assert.equal(parseRating("4.7"), 4.7);
+	assert.equal(parseRating(4.25), 4.3);
+	assert.equal(parseRating(4.94), 4.9);
+	assert.equal(parseRating("4"), 4);
+	assert.equal(parseRating("4.0"), 4);
 	assert.equal(parseRating(7), 5);
 	assert.equal(parseRating(-1), 0);
 	assert.equal(parseRating(0), 0);
@@ -269,4 +277,43 @@ test("CSS follows the page's color-scheme, not the OS", () => {
 	const css = reviewCss();
 	assert.ok(!css.includes("prefers-color-scheme"));
 	assert.match(css, /light-dark\(#fff,var\(--cw-review-bg-dark,#1d1f23\)\)/);
+});
+
+test("rating menu: 51 values from 5.0 to 0.0, none integer-like (so the editor lists them in order)", () => {
+	assert.equal(RATING_OPTIONS.length, 51);
+	assert.deepEqual(RATING_OPTIONS.slice(0, 4), [
+		{ value: "5.0", label: "5 out of 5" },
+		{ value: "4.9", label: "4.9 out of 5" },
+		{ value: "4.8", label: "4.8 out of 5" },
+		{ value: "4.7", label: "4.7 out of 5" },
+	]);
+	assert.equal(RATING_OPTIONS.at(-1).value, "0.0");
+	// Object keys that look like integers sort first; the editor's menu builds an object from the values.
+	assert.deepEqual(Object.keys(Object.fromEntries(RATING_OPTIONS.map((o) => [o.value, o.label]))).slice(0, 3), ["5.0", "4.9", "4.8"]);
+	assert.equal(formatRating(4.7), "4.7");
+	assert.equal(formatRating(5), "5");
+});
+
+test("ratingValue stores one decimal; older half-step values normalize on save", () => {
+	assert.equal(ratingValue("4"), "4.0");
+	assert.equal(ratingValue(4.7), "4.7");
+	assert.equal(ratingValue("4.5"), "4.5");
+	assert.equal(ratingValue("9"), "5.0");
+	assert.equal(ratingValue(""), "");
+	assert.equal(ratingValue("great"), "");
+	const data = { title: "T", content: [{ _type: "block" }, { _type: "coywolf-review", _key: "a", rating: "4" }, { _type: "coywolf-review", _key: "b", rating: "4.7" }, { _type: "coywolf-review", _key: "c", rating: "n/a" }] };
+	const out = normalizeReviewRatings(data);
+	assert.deepEqual(out.content.map((b) => b.rating), [undefined, "4.0", "4.7", "n/a"]);
+	assert.equal(out.content[0], data.content[0], "other blocks are untouched");
+	assert.equal(normalizeReviewRatings(out), null, "nothing left to change");
+});
+
+test("decimal ratings render and go into schema exactly", () => {
+	const review = normalizeReview({ itemName: "Fastmail", rating: "4.9", pros: "Fast\nPrivate" });
+	assert.equal(review.rating, 4.9);
+	assert.match(renderReviewHtml(review), /<span class="cw-review__badge" aria-hidden="true">4\.9<\/span><span class="cw-review__caption"><span class="cw-review__sr">Rated <\/span>4\.9 out of 5<\/span>/);
+	const node = reviewSchema(review, 1, { pageUrl: URL_, origin: ORIGIN, author: { "@id": "a" } });
+	assert.equal(node.review.reviewRating.ratingValue, 4.9);
+	// A half-step value from before 0.11.0 still works.
+	assert.equal(normalizeReview({ itemName: "X", rating: "4.5" }).rating, 4.5);
 });
