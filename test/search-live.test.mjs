@@ -148,3 +148,18 @@ test("live options are clamped", async () => {
 	assert.ok(fragment.code.includes('"limit":20,"minChars":1,"debounce":0'), fragment.code.slice(-300));
 	invalidateFeatures();
 });
+
+test("portableTextProse keeps text blocks only (no image alt or captions)", async () => {
+	const { portableTextProse } = await import("../src/search/snippet.ts");
+	const pt = [
+		{ _type: "image", alt: "A close-up of coffee beans", caption: "Beans" },
+		{ _type: "block", style: "h2", children: [{ _type: "span", text: "Why " }, { _type: "span", text: "decaf" }] },
+		{ _type: "block", children: [{ _type: "span", text: "Decaf coffee is safe." }] },
+		{ _type: "coywolf-review", pros: "Tasty" },
+	];
+	assert.equal(portableTextProse(JSON.stringify(pt)), "Why decaf Decaf coffee is safe.");
+	assert.equal(portableTextProse(pt), "Why decaf Decaf coffee is safe.");
+	assert.equal(portableTextProse("not json"), "");
+	assert.equal(portableTextProse({}), "");
+	assert.equal(portableTextProse(JSON.stringify(pt), 5), "Why d");
+});

@@ -16,7 +16,7 @@ import { type SearchResult, search } from "emdash";
 import { COLLECTION_SLUG, type CollectionInfo, createEntryUrlResolver, interpolateUrlPattern, readCollections } from "../core/content-url.js";
 import { workerEnv } from "../shared.js";
 import { buildOrQuery, rankByCoverage } from "./fallback.js";
-import { buildSnippet, highlightHtml, highlightWords } from "./snippet.js";
+import { buildSnippet, highlightHtml, highlightWords, portableTextProse } from "./snippet.js";
 
 export interface PackSearchResult extends SearchResult {
 	/** Public path of the entry: the site's `urls` override for the collection, or its URL pattern. */
@@ -144,11 +144,10 @@ const SNIPPET_SOURCE_CHARS = 20_000;
 const FIELD_SLUG = /^[a-z][a-z0-9_]*$/;
 
 /**
- * Each result's indexed plain text, without the title: the searchable fields
- * as EmDash stored them in the collection's FTS5 table (Portable Text already
- * reduced to prose). Rows are found by rowid, which the FTS table shares with
- * the content table, so this never scans the index. Best effort: any failure
- * just means results without excerpts.
+ * Each result's readable text, without the title: the collection's other
+ * searchable fields, read from the content table by id. Portable Text keeps
+ * only its text blocks (no image alt text or captions), so an excerpt reads
+ * like the post. Best effort: any failure just means results without excerpts.
  */
 async function snippetTexts(items: PackSearchResult[], database = "DB"): Promise<Map<string, string>> {
 	const out = new Map<string, string>();
@@ -166,25 +165,33 @@ async function snippetTexts(items: PackSearchResult[], database = "DB"): Promise
 			readCollections(db, slugs),
 			db
 				.prepare(
-					`SELECT c.slug AS collection, f.slug AS field FROM _emdash_fields f JOIN _emdash_collections c ON c.id = f.collection_id WHERE f.searchable = 1 AND c.slug IN (${slugs.map(() => "?").join(",")}) ORDER BY f.sort_order`,
+					`SELECT c.slug AS collection, f.slug AS field, f.type AS type FROM _emdash_fields f JOIN _emdash_collections c ON c.id = f.collection_id WHERE f.searchable = 1 AND c.slug IN (${slugs.map(() => "?").join(",")}) ORDER BY f.sort_order`,
 				)
 				.bind(...slugs)
-				.all<{ collection: string; field: string }>(),
+				.all<{ collection: string; field: string; type: string }>(),
 		]);
 		await Promise.all(
 			slugs.map(async (slug) => {
 				const titleField = collections.get(slug)?.titleField || "title";
-				const columns = fields.results.filter((f) => f.collection === slug && f.field !== titleField && FIELD_SLUG.test(f.field)).map((f) => f.field);
+				const columns = fields.results.filter((f) => f.collection === slug && f.field !== titleField && FIELD_SLUG.test(f.field));
 				if (!columns.length) return;
 				const ids = items.filter((i) => i.collection === slug).map((i) => i.id);
-				const text = columns.map((c) => `COALESCE(substr(f."${c}", 1, ${SNIPPET_SOURCE_CHARS}), '')`).join(" || ' ' || ");
+				const select = columns.map((c, i) => `c."${c.field}" AS f${i}`).join(", ");
 				const { results } = await db
-					.prepare(
-						`SELECT c.id AS id, ${text} AS text FROM "ec_${slug}" c JOIN "_emdash_fts_${slug}" f ON f.rowid = c.rowid WHERE c.id IN (${ids.map(() => "?").join(",")})`,
-					)
+					.prepare(`SELECT c.id AS id, ${select} FROM "ec_${slug}" c WHERE c.id IN (${ids.map(() => "?").join(",")})`)
 					.bind(...ids)
-					.all<{ id: string; text: string | null }>();
-				for (const row of results) if (row.text) out.set(`${slug}:${row.id}`, row.text);
+					.all<Record<string, unknown>>();
+				for (const row of results) {
+					const text = columns
+						.map((c, i) => {
+							const value = row[`f${i}`];
+							if (c.type === "portableText") return portableTextProse(value, SNIPPET_SOURCE_CHARS);
+							return typeof value === "string" ? value.slice(0, SNIPPET_SOURCE_CHARS) : "";
+						})
+						.filter(Boolean)
+						.join(" ");
+					if (text) out.set(`${slug}:${String(row.id)}`, text);
+				}
 			}),
 		);
 	} catch {

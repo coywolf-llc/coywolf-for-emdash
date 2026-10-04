@@ -101,3 +101,35 @@ export function buildSnippet(text: string, words: string[], width = SNIPPET_WIDT
 	const body = highlightHtml(clean.slice(start, end).trim(), words);
 	return `${start > 0 ? "…" : ""}${body}${end < clean.length ? "…" : ""}`;
 }
+
+/**
+ * The readable text of a Portable Text field (stored as JSON): the spans of
+ * text blocks (paragraphs, headings, lists) only. Image alt text, captions
+ * and other blocks' data, which EmDash's search index includes, are left out
+ * so excerpts read like the post. Returns "" for anything that isn't Portable
+ * Text.
+ */
+export function portableTextProse(value: unknown, maxChars = 20_000): string {
+	let blocks: unknown = value;
+	if (typeof value === "string") {
+		try {
+			blocks = JSON.parse(value);
+		} catch {
+			return "";
+		}
+	}
+	if (!Array.isArray(blocks)) return "";
+	const parts: string[] = [];
+	let length = 0;
+	for (const block of blocks) {
+		if (!block || typeof block !== "object" || (block as { _type?: unknown })._type !== "block") continue;
+		const children = (block as { children?: unknown }).children;
+		if (!Array.isArray(children)) continue;
+		const text = children.map((c) => (c && typeof c === "object" && typeof (c as { text?: unknown }).text === "string" ? (c as { text: string }).text : "")).join("");
+		if (!text.trim()) continue;
+		parts.push(text);
+		length += text.length + 1;
+		if (length >= maxChars) break;
+	}
+	return parts.join(" ").slice(0, maxChars);
+}

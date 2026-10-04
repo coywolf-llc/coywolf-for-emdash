@@ -67,11 +67,12 @@ export const LIVE_CSS = String.raw`.cw-live-list {
 }
 .cw-live-title {
 	display: block;
-	font-weight: 600;
+	font-weight: 700;
 	overflow-wrap: anywhere;
 }
 .cw-live-snippet {
 	display: block;
+	font-weight: 400;
 	margin-top: 0.2em;
 	font-size: 0.85em;
 	opacity: 0.8;
