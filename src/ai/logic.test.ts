@@ -1,6 +1,6 @@
 /**
  * Unit tests for AI Enrichment's pure logic.
- * Run: node --experimental-strip-types --test src/ai/*.test.ts
+ * Run: node --test test/*.test.mjs (or node --test src/ai/*.test.ts)
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";

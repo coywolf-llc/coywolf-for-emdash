@@ -392,13 +392,6 @@ coywolfPlugin({ search: { rateLimiter: "SEARCH_RATE_LIMITER" } });
 
 For a hard limit that never reaches your Worker, use a Cloudflare WAF rate limiting rule instead of (or as well as) this feature. The free plan includes one: **Security → WAF → Rate limiting rules**, match `URI Path starts with /_emdash/api/search` or `URI Path equals /_emdash/api/plugins/coywolf-pack/search/query`, counted per IP, for example 60 requests per 10 seconds with a 10-second block.
 
-## Development
-
-```bash
-npx tsc --noEmit -p .        # typecheck
-node --test test/*.test.mjs  # unit tests (Node 22.15+; runs the TypeScript sources directly)
-```
-
 ## AI Enrichment
 
 Ported from Coywolf SEO's AI features, with the same prompts and validation:
@@ -436,6 +429,13 @@ Set `ai: false` in `coywolfPlugin()` to leave the module out entirely. The modul
 - Only published entries are analyzed. Change the model or switch features and entries are re-analyzed the next time they're saved (or with **Re-analyze unchanged entries**).
 - The daily limit is counted in UTC days. Each call's token usage is in the usage log; costs depend on your provider.
 - Wikidata lookups are cached per Worker isolate. If Wikidata doesn't answer, the item is retried rather than saved unverified.
+
+## Development
+
+```bash
+npx tsc --noEmit -p .        # typecheck
+node --test test/*.test.mjs  # unit tests (Node 22.15+; runs the TypeScript sources directly)
+```
 
 ## License
 
