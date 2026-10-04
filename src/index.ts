@@ -1,98 +1,86 @@
 /**
- * Coywolf Pack for EmDash: one native plugin with Coywolf's features for EmDash
- * sites on Cloudflare. Enable modules in astro.config.mjs:
+ * Coywolf Pack for EmDash: one native plugin with Coywolf's features for
+ * EmDash sites on Cloudflare. Register it in astro.config.mjs:
  *
  * ```js
  * import { coywolfPlugin } from "@coywolf/emdash";
- * emdash({
- *   plugins: [coywolfPlugin({ backups: { name: "mysite" }, redirects: {} })],
- * });
+ * emdash({ plugins: [coywolfPlugin({ backups: { name: "mysite" } })] });
  * ```
  *
- * Modules:
- * - backups: D1 + media backups, rewind/undo, restore to a new database.
- * - redirects: external and file-path redirects with an admin editor
- *   (also add `coywolfRedirects()` from "@coywolf/emdash/middleware").
+ * and add `coywolfPack()` from "@coywolf/emdash/middleware" to the site's
+ * middleware. Every feature can be turned on or off under Plugins → Features.
  */
-import type { PluginDescriptor } from "emdash";
+import type { PluginCapability, PluginDescriptor } from "emdash";
 import { definePlugin } from "emdash";
 
-import { BACKUPS_TASK, type BackupsOptions, backupsModule, backupsSettingsSchema, ensureBackupsTask } from "./backups/module.js";
-import { type RedirectsOptions, redirectsModule } from "./redirects/module.js";
+import { composeHooks } from "./core/compose.js";
+import { PLUGIN_ID } from "./core/features.js";
+import { featuresRoutes } from "./core/features-module.js";
+import type { PackModule } from "./core/module.js";
+import { MODULES } from "./modules.js";
+import type { CoywolfOptions } from "./options.js";
 
 export type { BackupsOptions } from "./backups/module.js";
 export type { RedirectsOptions } from "./redirects/module.js";
+export type { CoywolfOptions } from "./options.js";
 
-const ID = "coywolf-pack";
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const PACKAGE = "@coywolf/emdash";
 
-export interface CoywolfOptions {
-	/** Full backups and restore. Omit or set false to disable. */
-	backups?: BackupsOptions | false;
-	/** Redirect manager. Omit or set false to disable. */
-	redirects?: RedirectsOptions | false;
+function buildModules(options: CoywolfOptions): PackModule[] {
+	return MODULES.map((factory) => factory(options)).filter((m): m is PackModule => m !== null);
 }
 
-function adminSurfaces(options: CoywolfOptions) {
-	const pages = [
-		...(options.backups ? [{ path: "/backups", label: "Backups", icon: "database" }] : []),
-		...(options.redirects ? [{ path: "/redirects", label: "Redirects", icon: "arrow-bend-up-right" }] : []),
-	];
-	const widgets = options.backups ? [{ id: "backup-status", title: "Backups", size: "third" as const }] : [];
-	return { pages, widgets };
+function surfaces(modules: PackModule[]) {
+	return {
+		pages: [{ path: "/features", label: "Features", icon: "toggle-right" }, ...modules.flatMap((m) => m.adminPages ?? [])],
+		widgets: modules.flatMap((m) => m.widgets ?? []),
+		blocks: modules.flatMap((m) => m.portableTextBlocks ?? []),
+		settingsSchema: Object.assign({}, ...modules.map((m) => m.settingsSchema ?? {})),
+		storage: Object.assign({}, ...modules.map((m) => m.storage ?? {})),
+		capabilities: [...new Set(modules.flatMap((m) => m.capabilities ?? []))] as PluginCapability[],
+		allowedHosts: [...new Set(modules.flatMap((m) => m.allowedHosts ?? []))],
+	};
 }
 
 export function coywolfPlugin(options: CoywolfOptions = {}): PluginDescriptor<CoywolfOptions> {
-	const { pages, widgets } = adminSurfaces(options);
+	const s = surfaces(buildModules(options));
 	return {
-		id: ID,
+		id: PLUGIN_ID,
 		version: VERSION,
 		format: "native",
 		entrypoint: PACKAGE,
 		adminEntry: `${PACKAGE}/admin`,
+		componentsEntry: `${PACKAGE}/astro`,
 		options,
-		adminPages: pages,
-		adminWidgets: widgets,
+		adminPages: s.pages,
+		adminWidgets: s.widgets,
+		portableTextBlocks: s.blocks,
+		...(s.capabilities.length ? { capabilities: s.capabilities } : {}),
 	};
 }
 
-/** Scheduled jobs need far longer than EmDash's 5-second hook default (Workers cron allows 15 minutes). */
-const CRON_TIMEOUT_MS = 14 * 60_000;
-
 export function createPlugin(options: CoywolfOptions = {}) {
-	const backups = options.backups ? backupsModule(options.backups) : null;
-	const redirects = options.redirects ? redirectsModule(options.redirects) : null;
-	const { pages, widgets } = adminSurfaces(options);
+	const modules = buildModules(options);
+	const s = surfaces(modules);
+	const { hooks, tasks } = composeHooks(modules, { tasks: [] });
 
 	return definePlugin({
-		id: ID,
+		id: PLUGIN_ID,
 		version: VERSION,
+		...(s.capabilities.length ? { capabilities: s.capabilities } : {}),
+		...(s.allowedHosts.length ? { allowedHosts: s.allowedHosts } : {}),
+		storage: s.storage,
 		admin: {
 			entry: `${PACKAGE}/admin`,
-			pages,
-			widgets,
-			settingsSchema: backups ? backupsSettingsSchema : {},
+			pages: s.pages,
+			widgets: s.widgets,
+			settingsSchema: s.settingsSchema,
+			...(s.blocks.length ? { portableTextBlocks: s.blocks } : {}),
 		},
-		hooks: {
-			// Config-registered native plugins don't get activate hooks at boot, so
-			// the backups routes also ensure the task exists.
-			"plugin:activate": {
-				handler: async (_event, ctx) => {
-					if (backups) await ensureBackupsTask(ctx);
-				},
-			},
-			cron: {
-				timeout: CRON_TIMEOUT_MS,
-				handler: async (event, ctx) => {
-					if (event.name === BACKUPS_TASK && backups) await backups.daily(ctx);
-				},
-			},
-		},
-		routes: {
-			...(backups?.routes ?? {}),
-			...(redirects?.routes ?? {}),
-		},
+		// biome-ignore lint/suspicious/noExplicitAny: composed handlers match EmDash's hook types at runtime.
+		hooks: hooks as any,
+		routes: Object.assign({}, featuresRoutes(modules, tasks), ...modules.map((m) => m.routes ?? {})),
 	});
 }
 
