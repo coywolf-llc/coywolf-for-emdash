@@ -1,3 +1,4 @@
+import type { AiOptions } from "./ai/store.js";
 import type { BackupsOptions } from "./backups/module.js";
 import type { HeadingsOptions } from "./headings/pack.js";
 import type { CodeBlocksOptions } from "./codeBlocks/pack.js";
@@ -19,4 +20,5 @@ export interface CoywolfOptions {
 	schema?: SchemaOptions | false;
 	files?: FilesOptions | false;
 	search?: SearchOptions | false;
+	ai?: AiOptions | false;
 }

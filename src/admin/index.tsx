@@ -1,5 +1,6 @@
 import type { PluginAdminExports } from "emdash";
 
+import { AiPage } from "./ai.js";
 import { BackupStatusWidget, BackupsPage } from "./backups.js";
 import { CodeBlocksPage } from "./codeBlocks.js";
 import { FeaturesPage } from "./features.js";
@@ -18,6 +19,7 @@ export const pages: PluginAdminExports["pages"] = {
 	"/schema": SchemaPage,
 	"/files": FilesPage,
 	"/search": SearchPage,
+	"/ai": AiPage,
 };
 
 export const widgets: PluginAdminExports["widgets"] = {
