@@ -20,6 +20,7 @@ interface Settings {
 		display: "open" | "collapsible" | "collapsed";
 		minHeadings: number;
 		smoothScroll: boolean;
+		showTitle: boolean;
 	};
 	breadcrumbs: {
 		separator: string;
@@ -161,12 +162,17 @@ export function HeadingsPage() {
 						</div>
 					</Section>
 
-					<Section title="Table of Contents" description="Defaults for Table of Contents blocks. Each block can override the title, levels, list style, and display.">
+					<Section title="Table of Contents" description="Defaults for Table of Contents blocks. Each block can override the title (or hide it), levels, list style, and display. Uncheck H3–H6 to list only H2 headings.">
 						<Input
 							label="Title"
 							value={settings.toc.title}
 							maxLength={100}
 							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setToc({ title: e.target.value })}
+						/>
+						<Checkbox
+							label="Show the title (a collapsible table always shows it, since it's the toggle)"
+							checked={settings.toc.showTitle}
+							onCheckedChange={(checked: boolean) => setToc({ showTitle: checked })}
 						/>
 						<fieldset style={{ minWidth: 0 }}>
 							<legend className="mb-2 text-sm font-medium">Heading levels</legend>
