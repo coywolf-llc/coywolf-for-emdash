@@ -1,0 +1,53 @@
+---
+/**
+ * Portable Text `code` block, replacing EmDash's built-in renderer when the
+ * Code blocks feature is on. Highlighting runs here on the server (lowlight);
+ * the chrome CSS, the active theme's CSS and the tiny copy script are inlined
+ * once per page, by the first code block, so pages without code get nothing.
+ * When the feature is off this renders EmDash's own code block markup
+ * (EmDashCode.astro).
+ */
+import { CHROME_CSS, COPY_SCRIPT, renderBlock } from "../../codeBlocks/render.js";
+import { siteTheme } from "../../codeBlocks/settings.js";
+import { themeCss } from "../../codeBlocks/themes.js";
+import { siteFeatures } from "../../core/features.js";
+import EmDashCode from "./EmDashCode.astro";
+
+interface Props {
+	node: { _type: "code"; _key: string; code: string; language?: string; filename?: string };
+	[key: string]: unknown;
+}
+
+const { node } = Astro.props;
+
+// Claim the per-page assets synchronously, before any await, so the first
+// block in document order carries them even when siblings render in parallel.
+const locals = (Astro.locals ?? {}) as Record<string, unknown>;
+const hasCode = Boolean(node?.code);
+const firstBlock = hasCode && !locals.__cwCodeAssets;
+if (hasCode) locals.__cwCodeAssets = true;
+
+const features = await siteFeatures();
+const on = hasCode && features.codeBlocks === true;
+const copy = features["codeBlocks.copy"] === true;
+
+const html = on
+	? renderBlock(node, {
+			label: features["codeBlocks.label"] === true,
+			copy,
+			lineNumbers: features["codeBlocks.lineNumbers"] === true,
+		})
+	: "";
+const css = on && firstBlock ? CHROME_CSS + themeCss(await siteTheme()) : "";
+const script = on && copy && firstBlock ? COPY_SCRIPT : "";
+---
+
+{on ? (
+	<>
+		{css && <style is:inline set:html={css} />}
+		<Fragment set:html={html} />
+		{script && <script is:inline set:html={script} />}
+	</>
+) : (
+	<EmDashCode {...Astro.props} />
+)}
