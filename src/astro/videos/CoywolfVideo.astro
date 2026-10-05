@@ -6,8 +6,8 @@
  *
  * Light embed (the default; Videos → Player): the page shows only the poster,
  * sized for the screen, and loads Stream's player (~350 KB of JavaScript) when
- * someone presses play, or for autoplaying videos once the page has loaded and
- * the video is on screen. Without it a video near the top of a page loaded
+ * someone presses play, or for autoplaying videos on the visitor's first
+ * interaction once the video is on screen. Without it a video near the top of a page loaded
  * with the page and, on a slow phone connection, became the page's largest
  * paint several seconds late. Without JavaScript the player loads as before.
  *
@@ -355,23 +355,39 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 		frameEl.querySelector<HTMLButtonElement>("[data-cw-play]")?.addEventListener("click", () => load(frameEl, true));
 	});
 
-	// Autoplaying videos: once the page has loaded and the video is (nearly) on screen.
+	// Autoplaying videos: on the visitor's first interaction (scroll, touch, pointer or
+	// key), once the video is (nearly) on screen. Loading on idle instead still ran
+	// Stream's player (about 1.5 s of script on a mid-range phone) inside the page's
+	// load window, which PageSpeed counts as blocking time.
 	const autos = document.querySelectorAll<HTMLElement>("[data-cw-player][data-cw-auto]");
 	if (autos.length) {
-		const start = () => {
-			const idle = (fn: () => void) => ("requestIdleCallback" in window ? requestIdleCallback(fn, { timeout: 2000 }) : setTimeout(fn, 200));
-			if (!("IntersectionObserver" in window)) return autos.forEach((el) => idle(() => load(el, false)));
+		let interacted = false;
+		const visible = new Set<HTMLElement>();
+		const flush = () => {
+			if (!interacted) return;
+			visible.forEach((el) => load(el, false));
+			visible.clear();
+		};
+		const events = ["scroll", "pointermove", "pointerdown", "touchstart", "keydown", "wheel"] as const;
+		const onFirst = () => {
+			interacted = true;
+			events.forEach((e) => removeEventListener(e, onFirst));
+			flush();
+		};
+		events.forEach((e) => addEventListener(e, onFirst, { passive: true, once: true }));
+		if ("IntersectionObserver" in window) {
 			const seen = new IntersectionObserver((entries) => {
 				for (const entry of entries) {
 					if (!entry.isIntersecting) continue;
 					seen.unobserve(entry.target);
-					idle(() => load(entry.target as HTMLElement, false));
+					visible.add(entry.target as HTMLElement);
 				}
+				flush();
 			}, { rootMargin: "200px" });
 			autos.forEach((el) => seen.observe(el));
-		};
-		if (document.readyState === "complete") start();
-		else addEventListener("load", start, { once: true });
+		} else {
+			autos.forEach((el) => visible.add(el));
+		}
 	}
 
 	// Players rendered with the page (light embed off): count plays once they're near the screen.

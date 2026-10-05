@@ -639,7 +639,7 @@ function SettingsPanel(props: { onSaved: (message: string) => void }) {
 					/>
 					<p className="text-sm leading-5 text-pretty text-kumo-subtle">
 						Pages show the video's poster, sized for the screen, and load Stream's player (about 350 KB) when someone presses play.
-						Autoplaying videos start once the page has loaded and the video is on screen. On mobile, a video near the top of a
+						Autoplaying videos start on the visitor's first scroll or tap once they're on screen. On mobile, a video near the top of a
 						page otherwise loads with it and can hold back the page's first paint by several seconds. Turn this off to load the
 						player with the page.
 					</p>
