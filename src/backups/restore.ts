@@ -206,30 +206,4 @@ async function importAndVerify(
 	};
 }
 
-/** Copy media files that are in the backup mirror but missing from the media bucket. Never overwrites. */
-export async function restoreMissingMedia(media: R2Bucket, backups: R2Bucket): Promise<{ restored: number; checked: number }> {
-	const present = new Set<string>();
-	let cursor: string | undefined;
-	do {
-		const page = await media.list({ cursor });
-		for (const o of page.objects) present.add(o.key);
-		cursor = page.truncated ? page.cursor : undefined;
-	} while (cursor);
-
-	let restored = 0;
-	let checked = 0;
-	do {
-		const page = await backups.list({ prefix: "media/current/", cursor });
-		for (const o of page.objects) {
-			checked++;
-			const key = o.key.slice("media/current/".length);
-			if (present.has(key)) continue;
-			const object = await backups.get(o.key);
-			if (!object) continue;
-			await media.put(key, object.body, { httpMetadata: object.httpMetadata });
-			restored++;
-		}
-		cursor = page.truncated ? page.cursor : undefined;
-	} while (cursor);
-	return { restored, checked };
-}
+export { restoreMissingMedia } from "./store.js";
