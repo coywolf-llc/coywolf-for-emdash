@@ -12,6 +12,7 @@ import { headingsPack } from "./headings/pack.js";
 import { imagesMiddleware, imagesPack } from "./images/pack.js";
 import { breadcrumbsPack } from "./breadcrumbs/pack.js";
 import { filesMiddleware, filesPack } from "./files/pack.js";
+import { formUploadsPack } from "./formUploads/pack.js";
 import { discoveryMiddleware, discoveryPack } from "./discovery/pack.js";
 import { linksPack } from "./links/pack.js";
 import { redirectsMiddleware, redirectsPack } from "./redirects/pack.js";
@@ -35,6 +36,7 @@ export const MODULES: Factory[] = [
 	(o) => (o.codeBlocks === false ? null : codeBlocksPack(o.codeBlocks ?? {})),
 	(o) => (o.schema === false ? null : schemaPack(o.schema ?? {})),
 	(o) => (o.files === false ? null : filesPack(o.files ?? {})),
+	(o) => (o.formUploads === false ? null : formUploadsPack()),
 	(o) => (o.search === false ? null : searchPack(o.search ?? {})),
 	(o) => (o.ai === false ? null : aiPack(o.ai ?? {})),
 	(o) => (o.discovery === false ? null : discoveryPack(o.discovery ?? {})),

@@ -27,6 +27,8 @@ export type { RedirectsOptions } from "./redirects/module.js";
 export type { VideosOptions } from "./videos/module.js";
 export type { RobotsOptions } from "./robots/module.js";
 export type { CoywolfOptions } from "./options.js";
+export type { PrivateFormUploadsOptions } from "./formUploads/pack.js";
+export { privateFormUploads } from "./formUploads/pack.js";
 export type { ContentUrlOptions, TrailingSlash } from "./core/content-url.js";
 
 const VERSION = "0.14.0";

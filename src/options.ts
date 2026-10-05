@@ -27,6 +27,8 @@ export interface CoywolfOptions {
 	codeBlocks?: CodeBlocksOptions | false;
 	schema?: SchemaOptions | false;
 	files?: FilesOptions | false;
+	/** Private form uploads (no options here; the Forms plugin is wrapped with privateFormUploads()). `false` leaves the module out. */
+	formUploads?: Record<string, never> | false;
 	search?: SearchOptions | false;
 	ai?: AiOptions | false;
 	discovery?: DiscoveryOptions | false;
