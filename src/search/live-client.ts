@@ -2,8 +2,11 @@
  * Live results client (feature "search.live"): the script and styles that
  * turn any search form on the page into one that shows matching entries in
  * a dropdown as the visitor types. A port of the Coywolf Search WordPress
- * plugin's typeahead, minus its in-browser title index: results come from
- * the pack's search/live route (titles first, then full text, with excerpts).
+ * plugin's typeahead: on first focus of a search field it loads a compact
+ * title index (search/index, cached by the browser per content version) and
+ * sends a tiny warm-up request, then shows title matches the moment the
+ * visitor types (title-match.ts), while the search/live route's answer
+ * (titles first, then full text, with excerpts) merges in without reshuffling.
  *
  * Served inline by the search module's page:fragments hook, so it needs no
  * build step and no asset route. Written as plain ES2020 inside String.raw
@@ -13,8 +16,14 @@
  * enhancement: without it, or before it runs, the form submits as before.
  */
 
+import { MATCH_SOURCE } from "./title-match.js";
+
 export interface LiveClientConfig {
 	endpoint: string;
+	/** The title index route, or null for server results only. */
+	indexEndpoint: string | null;
+	/** The search content version (cache-busts the index and live URLs after publishing). */
+	version: string;
 	limit: number;
 	minChars: number;
 	debounce: number;
@@ -164,7 +173,7 @@ input[data-cw-live]::-webkit-search-decoration {
 	to { opacity: 0; transform: translateY(-2px); }
 }`;
 
-const SCRIPT = String.raw`function (config, css) {
+const SCRIPT = String.raw`function (config, css, tools) {
 	"use strict";
 	if (window.__cwLive || !window.fetch || !window.AbortController) return;
 	window.__cwLive = 1;
@@ -177,6 +186,39 @@ const SCRIPT = String.raw`function (config, css) {
 	var MARK = /<(?!\/?mark>)/g;
 	var counter = 0;
 	var styled = false;
+	// Shared by every field on the page: one title index, one warm-up.
+	var titles = { promise: null, prepared: null, listeners: [] };
+	var warmed = false;
+
+	function loadTitles() {
+		if (!config.indexEndpoint || titles.promise) return;
+		var params = new URLSearchParams({ v: config.version });
+		if (config.locale) params.set("locale", config.locale);
+		titles.promise = fetch(config.indexEndpoint + "?" + params, { credentials: "same-origin", headers: { Accept: "application/json" } })
+			.then(function (r) {
+				return r.ok ? r.json() : null;
+			})
+			.then(function (body) {
+				var data = body && (body.entries ? body : body.data);
+				titles.prepared = tools.prepare(data);
+			})
+			.catch(function () {
+				titles.prepared = [];
+			})
+			.then(function () {
+				titles.listeners.forEach(function (fn) {
+					fn();
+				});
+			});
+	}
+
+	/** First focus: fetch the title index and wake a server isolate, so the first real search is quick. */
+	function prime() {
+		loadTitles();
+		if (warmed) return;
+		warmed = true;
+		fetch(config.endpoint + "?warm=1", { credentials: "same-origin" }).catch(function () {});
+	}
 
 	function addStyles() {
 		if (styled) return;
@@ -229,6 +271,10 @@ const SCRIPT = String.raw`function (config, css) {
 		var announced = "";
 		var hinted = false;
 		var lastQuery = "";
+		var announceTimer = 0;
+		// Set when the visitor picks a row (arrows, pointer), so a second render keeps it selected.
+		var userMoved = false;
+		var activeUrl = "";
 
 		// Nothing is wrapped around the field: themes lay search forms out with flexbox and
 		// direct-child selectors, so the panel and clear button are positioned against the document.
@@ -338,6 +384,7 @@ const SCRIPT = String.raw`function (config, css) {
 			token++;
 			if (controller) controller.abort();
 			clearTimeout(timer);
+			clearTimeout(announceTimer);
 			close();
 			showClear();
 			status.textContent = "";
@@ -363,9 +410,19 @@ const SCRIPT = String.raw`function (config, css) {
 		}
 
 		function announce(message) {
+			clearTimeout(announceTimer);
 			if (message === announced) return;
 			announced = message;
 			status.textContent = message;
+		}
+
+		// Instant (local) results are announced only if the server's answer is slow, so a screen
+		// reader hears one count, not two in quick succession.
+		function announceLater(message) {
+			clearTimeout(announceTimer);
+			announceTimer = setTimeout(function () {
+				announce(message);
+			}, 700);
 		}
 
 		function paint() {
@@ -394,7 +451,7 @@ const SCRIPT = String.raw`function (config, css) {
 			return a;
 		}
 
-		function render(query, data) {
+		function render(query, data, partial) {
 			if (!visible()) return close();
 			items = (data && data.items) || [];
 			rows = [];
@@ -444,28 +501,56 @@ const SCRIPT = String.raw`function (config, css) {
 				rows.push(more);
 			}
 
-			// The first result selects itself, so what Enter will open is visible before it's pressed.
+			// The first result selects itself, so what Enter will open is visible before it's pressed;
+			// a row the visitor picked stays picked when the server's answer arrives.
 			active = config.enterOpensTop && count ? 0 : -1;
+			if (userMoved && activeUrl) {
+				for (var r = 0; r < rows.length; r++) if (rows[r].href === activeUrl) active = r;
+			}
 			show();
 			open = true;
 			input.setAttribute("aria-expanded", "true");
 			var message = count + (count === 1 ? " result" : " results") + (data.fallback ? " matching some of your words." : ".");
-			if (!hinted) {
+			if (!hinted && !partial) {
 				message += " Use the up and down arrows to review, Enter to open, and Escape to close.";
 				hinted = true;
 			}
-			announce(message);
+			if (partial) announceLater(message);
+			else announce(message);
 			paint();
 		}
 
+		/** Title matches from the index, at once (false when there's no index yet or nothing matches). */
+		function showLocal(query) {
+			if (!titles.prepared) return false;
+			var local = tools.localItems(titles.prepared, query, config.limit);
+			if (!local.length) return false;
+			render(query, { items: local, fallback: false }, true);
+			return true;
+		}
+
+		/** The server's answer, merged into the title matches already showing. */
+		function showServer(query, data) {
+			var local = titles.prepared ? tools.localItems(titles.prepared, query, config.limit) : [];
+			var server = (data && data.items) || [];
+			render(query, { items: tools.merge(local, server, config.limit), fallback: !!(data && data.fallback) && !local.length }, false);
+		}
+
+		// The index arrived while the visitor was typing: show its matches unless the server already answered.
+		titles.listeners.push(function () {
+			var query = input.value.trim();
+			if (document.activeElement === input && query.length >= config.minChars && query === lastQuery && !cache.has(query)) showLocal(query);
+		});
+
 		function fetchResults(query) {
 			var cached = cache.get(query);
-			if (cached) return render(query, cached);
+			if (cached) return showServer(query, cached);
 			if (controller) controller.abort();
 			controller = new AbortController();
 			var mine = ++token;
 			var params = new URLSearchParams({ q: query, limit: String(config.limit) });
 			if (config.locale) params.set("locale", config.locale);
+			params.set("v", config.version);
 			fetch(config.endpoint + "?" + params, { signal: controller.signal, credentials: "same-origin", headers: { Accept: "application/json" } })
 				.then(function (r) {
 					return r.ok ? r.json() : null;
@@ -475,7 +560,7 @@ const SCRIPT = String.raw`function (config, css) {
 					var data = body.data || body;
 					cache.set(query, data);
 					// A slower earlier answer must not replace a newer one.
-					if (mine === token && input.value.trim() === query) render(query, data);
+					if (mine === token && input.value.trim() === query) showServer(query, data);
 				})
 				.catch(function () {
 					// Aborted or offline: whatever is showing stands; the form still submits.
@@ -492,11 +577,16 @@ const SCRIPT = String.raw`function (config, css) {
 				if (controller) controller.abort();
 				items = [];
 				announced = "";
+				clearTimeout(announceTimer);
 				status.textContent = "";
 				return close();
 			}
 			if (query === lastQuery && open) return;
 			lastQuery = query;
+			userMoved = false;
+			activeUrl = "";
+			if (cache.has(query)) return showServer(query, cache.get(query));
+			showLocal(query);
 			timer = setTimeout(function () {
 				fetchResults(query);
 			}, config.debounce);
@@ -505,6 +595,8 @@ const SCRIPT = String.raw`function (config, css) {
 		function move(step) {
 			if (!rows.length) return;
 			active = active < 0 ? (step > 0 ? 0 : rows.length - 1) : (active + step + rows.length) % rows.length;
+			userMoved = true;
+			activeUrl = rows[active].href;
 			paint();
 		}
 
@@ -513,10 +605,17 @@ const SCRIPT = String.raw`function (config, css) {
 				case "ArrowDown":
 				case "ArrowUp":
 					// Reopen a list closed with Escape, for the same query.
-					if (!open && e.key === "ArrowDown" && cache.has(input.value.trim()) && input.value.trim().length >= config.minChars) {
-						e.preventDefault();
-						render(input.value.trim(), cache.get(input.value.trim()));
-						return;
+					if (!open && e.key === "ArrowDown" && input.value.trim().length >= config.minChars) {
+						var again = input.value.trim();
+						if (cache.has(again)) {
+							e.preventDefault();
+							showServer(again, cache.get(again));
+							return;
+						}
+						if (showLocal(again)) {
+							e.preventDefault();
+							return;
+						}
 					}
 					if (!open || !rows.length) return;
 					e.preventDefault();
@@ -549,9 +648,10 @@ const SCRIPT = String.raw`function (config, css) {
 		});
 
 		input.addEventListener("focus", function () {
+			prime();
 			showClear();
 			var query = input.value.trim();
-			if (items.length && query.length >= config.minChars && cache.has(query)) render(query, cache.get(query));
+			if (items.length && query.length >= config.minChars && cache.has(query)) showServer(query, cache.get(query));
 		});
 
 		// Keep focus in the field while clicking a result; the link itself navigates (so
@@ -565,6 +665,8 @@ const SCRIPT = String.raw`function (config, css) {
 			var index = Number(row.dataset.index);
 			if (index !== active) {
 				active = index;
+				userMoved = true;
+				activeUrl = row.href;
 				paint();
 			}
 		});
@@ -592,6 +694,8 @@ const SCRIPT = String.raw`function (config, css) {
 
 		if (form) form.addEventListener("submit", close);
 		showClear();
+		// Attached on focus (a search form rendered later): that focus has already happened.
+		if (document.activeElement === input) prime();
 	}
 
 	var FIELDS = 'form input[type="search"], form input[name="s"], form input[name="q"]';
@@ -623,7 +727,9 @@ const SCRIPT = String.raw`function (config, css) {
  * dropped (line breaks stay, so semicolon insertion is unaffected). It ships
  * on every page while the feature is on, so this halves its size.
  */
-const COMPACT_SCRIPT = SCRIPT.replace(/^\s*(\/\/.*|\/\*\*.*\*\/)$/gm, "").replace(/^\s+/gm, "").replace(/\n{2,}/g, "\n");
+const compact = (source: string) => source.replace(/^\s*(\/\/.*|\/\*\*.*\*\/)$/gm, "").replace(/^\s+/gm, "").replace(/\n{2,}/g, "\n");
+const COMPACT_SCRIPT = compact(SCRIPT);
+const COMPACT_MATCH = compact(MATCH_SOURCE);
 const COMPACT_CSS = LIVE_CSS.replace(/\n\s*/g, "");
 
 /** The inline script for one page: the client above, called with this config. */
@@ -631,5 +737,5 @@ export function liveScript(config: LiveClientConfig): string {
 	// JSON in a script element: escape "<" so nothing in it can close the tag or open a comment.
 	// (U+2028/2029 are legal in JS string literals since ES2019, so JSON needs nothing more.)
 	const json = (value: unknown) => JSON.stringify(value).replace(/</g, "\\u003c");
-	return `(${COMPACT_SCRIPT})(${json(config)},${json(COMPACT_CSS)});`;
+	return `(${COMPACT_SCRIPT})(${json(config)},${json(COMPACT_CSS)},(${COMPACT_MATCH})());`;
 }

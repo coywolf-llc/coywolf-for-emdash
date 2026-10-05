@@ -17,7 +17,7 @@ import { discoveryMiddleware, discoveryPack } from "./discovery/pack.js";
 import { linksPack } from "./links/pack.js";
 import { redirectsMiddleware, redirectsPack } from "./redirects/pack.js";
 import { schemaPack } from "./schema/pack.js";
-import { searchPack, searchRateLimitMiddleware } from "./search/pack.js";
+import { searchLiveMiddleware, searchPack, searchRateLimitMiddleware } from "./search/pack.js";
 import { robotsMiddleware, robotsPack } from "./robots/pack.js";
 import { reviewsPack } from "./reviews/pack.js";
 import type { CoywolfOptions } from "./options.js";
@@ -48,4 +48,4 @@ export const MODULES: Factory[] = [
 	(o) => (o.images === false ? null : imagesPack(o.images ?? {})),
 ];
 
-export const MIDDLEWARE: PackMiddleware[] = [imagesMiddleware, backupsDownloadMiddleware, redirectsMiddleware, robotsMiddleware, filesMiddleware, searchRateLimitMiddleware, ...discoveryMiddleware, videosSitemapMiddleware, videosCaptionsMiddleware];
+export const MIDDLEWARE: PackMiddleware[] = [imagesMiddleware, backupsDownloadMiddleware, redirectsMiddleware, robotsMiddleware, filesMiddleware, searchLiveMiddleware, searchRateLimitMiddleware, ...discoveryMiddleware, videosSitemapMiddleware, videosCaptionsMiddleware];

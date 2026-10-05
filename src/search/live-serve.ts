@@ -1,0 +1,205 @@
+/**
+ * Live results and the title index, served by the pack middleware (feature
+ * "search.live") ahead of EmDash's plugin route dispatch, with Cloudflare's
+ * Cache API in front.
+ *
+ * Worker responses aren't cached by the CDN on their own, so every answer is
+ * stored in caches.default (per Cloudflare location) and in a small
+ * per-isolate memory cache, keyed by the normalized query, limit,
+ * collections, locale and the search content version. Publishing changes the
+ * version, so new keys miss and old answers simply expire. Cache hits skip
+ * the rate limit and the database entirely; misses count against
+ * search.rateLimit when it's on.
+ *
+ * The plugin routes (search/live, search/index) stay as the fallback for
+ * sites without the middleware; they run the same engine.
+ */
+import { contentUrlFingerprint } from "../core/content-url.js";
+import { isOn, registerSiteSetting, rememberSiteSetting, siteFeatures, siteSetting } from "../core/features.js";
+import type { PackMiddleware } from "../core/module.js";
+import { type QueryStats, countingD1, liveSearchD1, loadSearchMeta } from "./engine.js";
+import { Lru, effectiveVersion, fingerprint, indexCacheKey, liveCacheKey, newContentVersion, normalizeCollections, normalizeLiveQuery, normalizeLocale } from "./live-cache.js";
+import { rateLimitResponse } from "./ratelimit.js";
+import { TITLE_INDEX_MAX, buildTitleIndex } from "./title-index.js";
+
+export const LIVE_ENDPOINT = "/_emdash/api/plugins/coywolf-pack/search/live";
+export const INDEX_ENDPOINT = "/_emdash/api/plugins/coywolf-pack/search/index";
+
+/** Plugin setting holding the search content version. */
+export const VERSION_SETTING = "searchVersion";
+registerSiteSetting(VERSION_SETTING);
+
+/** Seconds a live answer is kept at the edge (the version in its key retires it sooner after a publish). */
+export const LIVE_EDGE_TTL = 300;
+/** Seconds browsers keep a live answer. */
+export const LIVE_BROWSER_TTL = 60;
+/** Seconds a title index is kept at the edge. */
+const INDEX_EDGE_TTL = 86_400;
+
+interface LiveServeConfig {
+	database: string;
+	limit: number;
+	indexMax: number;
+}
+
+let config: LiveServeConfig = { database: "DB", limit: 8, indexMax: TITLE_INDEX_MAX };
+
+/** Set from coywolfPlugin({ search }) when the Worker starts (same pattern as the rate limit options). */
+export function configureSearchLive(options: Partial<LiveServeConfig>): void {
+	config = { ...config, ...Object.fromEntries(Object.entries(options).filter(([, v]) => v !== undefined)) };
+}
+
+export function liveServeConfig(): LiveServeConfig {
+	return config;
+}
+
+/** The current search content version (from the per-isolate settings cache; no query on most requests). */
+export async function searchVersion(database = config.database): Promise<string> {
+	return effectiveVersion(await siteSetting<string>(VERSION_SETTING, database), contentUrlFingerprint());
+}
+
+/** Give published content a new version (content hooks, search settings changes). */
+export async function bumpSearchVersion(ctx: { settings: { set(key: string, value: unknown): Promise<void> } }): Promise<string> {
+	const version = newContentVersion();
+	await ctx.settings.set(VERSION_SETTING, version);
+	rememberSiteSetting(VERSION_SETTING, version);
+	return version;
+}
+
+let liveMemory = new Lru<string>(500);
+let indexMemory = new Lru<string>(4);
+
+/** Empty this isolate's memory caches (tests; the edge cache is untouched). */
+export function resetLiveMemory(): void {
+	liveMemory = new Lru<string>(500);
+	indexMemory = new Lru<string>(4);
+}
+
+const JSON_TYPE = "application/json; charset=utf-8";
+
+function edgeCache(): Cache | undefined {
+	return (globalThis as unknown as { caches?: { default?: Cache } }).caches?.default;
+}
+
+function timing(state: string, started: number, stats?: QueryStats): string {
+	const parts = [`cw-search;desc="${state}";dur=${Date.now() - started}`];
+	if (stats) parts.push(`cw-d1;desc="${stats.statements} statements, ${stats.roundTrips} round trips"`);
+	return parts.join(", ");
+}
+
+/** A fresh response with mutable headers (cached responses' headers are immutable, and later middleware may set some). */
+function jsonResponse(body: string | null, status: number, headers: Record<string, string>): Response {
+	return new Response(body, { status, headers: new Headers({ "Content-Type": JSON_TYPE, "X-Content-Type-Options": "nosniff", ...headers }) });
+}
+
+function badRequest(message: string): Response {
+	return jsonResponse(JSON.stringify({ success: false, error: { code: "VALIDATION_ERROR", message } }), 400, { "Cache-Control": "no-store" });
+}
+
+/** Text of a cached answer: this isolate's memory, then the edge cache. */
+async function cachedBody(memory: Lru<string>, key: string): Promise<{ body: string; where: string } | null> {
+	const inMemory = memory.get(key);
+	if (inMemory !== undefined) return { body: inMemory, where: "hit-memory" };
+	const cache = edgeCache();
+	const hit = cache ? await cache.match(key).catch(() => undefined) : undefined;
+	if (!hit) return null;
+	const body = await hit.text();
+	memory.set(key, body);
+	return { body, where: "hit-edge" };
+}
+
+function store(memory: Lru<string>, key: string, body: string, edgeTtl: number, waitUntil: (p: Promise<unknown>) => void): void {
+	memory.set(key, body);
+	const cache = edgeCache();
+	if (cache) waitUntil(cache.put(key, new Response(body, { headers: { "Content-Type": JSON_TYPE, "Cache-Control": `public, max-age=${edgeTtl}` } })).catch(() => undefined));
+}
+
+type Context = Parameters<PackMiddleware["handle"]>[0];
+
+async function rateLimited(context: Context, env: Record<string, unknown>): Promise<Response | undefined> {
+	return isOn(await siteFeatures(config.database), "search.rateLimit") ? rateLimitResponse(context, env) : undefined;
+}
+
+async function serveLive(context: Context, env: Record<string, unknown>, waitUntil: (p: Promise<unknown>) => void, db: D1Database): Promise<Response> {
+	const started = Date.now();
+	const params = context.url.searchParams;
+	const version = await searchVersion();
+
+	// Warm-up (first focus of a search field): wake this isolate and load the search metadata, nothing else.
+	if (params.get("warm") === "1") {
+		const stats: QueryStats = { statements: 0, roundTrips: 0 };
+		await loadSearchMeta(countingD1(db, stats), config.database, version).catch(() => undefined);
+		return new Response(null, { status: 204, headers: new Headers({ "Cache-Control": "no-store", "Server-Timing": timing("warm", started, stats) }) });
+	}
+
+	const query = normalizeLiveQuery(params.get("q") ?? "");
+	if (!query) return badRequest("Enter a search.");
+	if (query.length > 200) return badRequest("That search is too long.");
+	const rawLimit = params.get("limit");
+	const limit = rawLimit === null || rawLimit === "" ? config.limit : Number(rawLimit);
+	if (!Number.isInteger(limit) || limit < 1 || limit > 20) return badRequest("Limit must be a whole number from 1 to 20.");
+	const rawCollections = params.get("collections");
+	if (rawCollections && rawCollections.length > 500) return badRequest("Too many collections.");
+	const collections = normalizeCollections(rawCollections);
+	const locale = normalizeLocale(params.get("locale"));
+
+	const key = liveCacheKey(context.url.origin, { version, query, limit, collections, locale });
+	const browser = { "Cache-Control": `public, max-age=${LIVE_BROWSER_TTL}` };
+	const hit = await cachedBody(liveMemory, key);
+	if (hit) return jsonResponse(hit.body, 200, { ...browser, "Server-Timing": timing(hit.where, started), "X-Coywolf-Cache": "HIT" });
+
+	const limited = await rateLimited(context, env);
+	if (limited) return limited;
+
+	const stats: QueryStats = { statements: 0, roundTrips: 0 };
+	const data = await liveSearchD1(countingD1(db, stats), query, { collections, locale, limit, database: config.database, version });
+	const body = JSON.stringify({ success: true, data });
+	store(liveMemory, key, body, LIVE_EDGE_TTL, waitUntil);
+	return jsonResponse(body, 200, { ...browser, "Server-Timing": timing("miss", started, stats), "X-Coywolf-Cache": "MISS" });
+}
+
+async function serveIndex(context: Context, env: Record<string, unknown>, waitUntil: (p: Promise<unknown>) => void, db: D1Database): Promise<Response> {
+	const started = Date.now();
+	const params = context.url.searchParams;
+	const version = await searchVersion();
+	const rawCollections = params.get("collections");
+	if (rawCollections && rawCollections.length > 500) return badRequest("Too many collections.");
+	const collections = normalizeCollections(rawCollections);
+	const locale = normalizeLocale(params.get("locale"));
+	const key = indexCacheKey(context.url.origin, { version, collections, locale });
+
+	// Pages carry the version in the index URL: a matching one never changes, so browsers keep it.
+	// A stale page (an old version) still gets the current index, just not for long.
+	const headers = {
+		"Cache-Control": params.get("v") === version ? "public, max-age=31536000, immutable" : "public, max-age=300",
+		ETag: `"${fingerprint(key)}"`,
+	};
+	if (context.request.headers.get("If-None-Match") === headers.ETag) return new Response(null, { status: 304, headers: new Headers(headers) });
+
+	const hit = await cachedBody(indexMemory, key);
+	if (hit) return jsonResponse(hit.body, 200, { ...headers, "Server-Timing": timing(hit.where, started), "X-Coywolf-Cache": "HIT" });
+
+	const limited = await rateLimited(context, env);
+	if (limited) return limited;
+
+	const stats: QueryStats = { statements: 0, roundTrips: 0 };
+	const counted = countingD1(db, stats);
+	const meta = await loadSearchMeta(counted, config.database, version);
+	const index = await buildTitleIndex(counted, meta, { collections, locale, version, max: config.indexMax });
+	const body = JSON.stringify(index);
+	store(indexMemory, key, body, INDEX_EDGE_TTL, waitUntil);
+	return jsonResponse(body, 200, { ...headers, "Server-Timing": timing("miss", started, stats), "X-Coywolf-Cache": "MISS" });
+}
+
+export const searchLiveMiddleware: PackMiddleware = {
+	module: "search",
+	feature: "search.live",
+	handle: async (context, env, waitUntil) => {
+		const path = context.url.pathname.length > 1 ? context.url.pathname.replace(/\/+$/, "") : context.url.pathname;
+		if (path !== LIVE_ENDPOINT && path !== INDEX_ENDPOINT) return undefined;
+		if (context.request.method !== "GET") return undefined;
+		const db = env[config.database] as D1Database | undefined;
+		if (!db) return undefined;
+		return path === LIVE_ENDPOINT ? serveLive(context, env, waitUntil, db) : serveIndex(context, env, waitUntil, db);
+	},
+};

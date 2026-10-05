@@ -35,7 +35,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.16.3
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.17.0
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -622,23 +622,45 @@ EmDash has full-text search built in: SQLite FTS5 with BM25 ranking, English ste
 
 ### Live results
 
-With **Live results** on, every public page gets a small inline script (about 14 KB, 4.5 KB compressed, at the end of the body via EmDash's page fragments, so the layout needs `<EmDashBodyEnd>`). It attaches to any GET form with a search field (`type="search"`, or a field named `s` or `q`), so a theme's own search form works as is; the pack's `SearchBox` has the same dropdown built in. Pages without a search form do nothing with it, and its styles are added only when a form is found.
+With **Live results** on, every public page gets a small inline script (about 21 KB, 6.5 KB compressed, at the end of the body via EmDash's page fragments, so the layout needs `<EmDashBodyEnd>`). It attaches to any GET form with a search field (`type="search"`, or a field named `s` or `q`), so a theme's own search form works as is; the pack's `SearchBox` has the same dropdown built in. Pages without a search form do nothing with it, and its styles are added only when a form is found.
 
-- From 2 characters, 200 ms after the last keystroke, it shows up to 8 entries: title matches first, then full-text matches (with the any-word fallback). Each row has the title, with the typed words underlined, and an excerpt of about 180 characters around the first match, with the matches in bold and "…" where it was cut. A final **View all results** row opens the search page, the same URL the form submits.
+- **Instant title matches.** The first time a visitor focuses a search field, the script loads a compact title index (every published entry's title, URL and type, newest first, up to 5,000) and sends a tiny warm-up request so the server is ready. From then on, title matches appear as soon as a key is pressed, with no server round trip. Matching ignores case and accents ("ecole" finds "École"); titles that start with what was typed come first, then titles with every word at the start of a word, then titles that contain the words (3+ letters).
+- From 2 characters, 120 ms after the last keystroke, it also asks the server, which answers with up to 8 entries: title matches first, then full-text matches (with the any-word fallback). The answer merges into the list without reshuffling it: rows the server also found gain their excerpt in place, its other results are added below, and when the list is full, title matches the server didn't confirm make room. Each row has the title, with the typed words underlined, and an excerpt of about 180 characters around the first match, with the matches in bold and "…" where it was cut. A final **View all results** row opens the search page, the same URL the form submits.
 - The first result is selected as results appear, so Enter opens it. Arrow keys move (wrapping, and through View all results), Escape closes the list and a second Escape clears the field, Tab or a click elsewhere closes it, and submitting the form searches as before. Results are real links, so middle-click and "open in new tab" work.
-- Accessible as an ARIA combobox: `role="combobox"` with `aria-expanded`, `aria-controls` and `aria-activedescendant` on the field, a `listbox` of `option`s, and a polite live region announcing the result count (with a one-time keyboard hint). A clear (×) button sits inside the field for pointer and touch; Escape does the same from the keyboard. Forced colors are respected, and the fade is skipped for reduced motion.
+- Accessible as an ARIA combobox: `role="combobox"` with `aria-expanded`, `aria-controls` and `aria-activedescendant` on the field, a `listbox` of `option`s, and a polite live region announcing the result count (with a one-time keyboard hint). When the list fills in twice (instant matches, then the server's answer), the count is announced once, for the final list, unless the server takes longer than 0.7 seconds. A result picked with the arrow keys or the pointer stays picked when the server's answer arrives. A clear (×) button sits inside the field for pointer and touch; Escape does the same from the keyboard. Forced colors are respected, and the fade is skipped for reduced motion.
 - It takes the theme's font and text color from the form and its background from the nearest opaque ancestor, and tints with `currentColor`, so it fits light and dark themes without configuration.
 - In-flight requests are cancelled as you type, answers are cached per query for the page view, and a slow earlier answer never replaces a newer one. Without JavaScript the form works exactly as before.
 
-Results come from `GET /_emdash/api/plugins/coywolf-pack/search/live?q=…` (optional `limit` up to 20, `collections`, `locale`): published entries only, each with `title`, `titleHtml`, `url`, `type` and `snippet`. `titleHtml` and `snippet` are escaped HTML whose only tags are `<mark>`. Excerpts come from the text EmDash indexed (the searchable fields other than the title). Responses are cached for 60 seconds, and **Search rate limit** covers the route.
+Results come from `GET /_emdash/api/plugins/coywolf-pack/search/live?q=…` (optional `limit` up to 20, `collections`, `locale`): published entries only, each with `title`, `titleHtml`, `url`, `type` and `snippet`. `titleHtml` and `snippet` are escaped HTML whose only tags are `<mark>`. Excerpts come from the text EmDash indexed (the searchable fields other than the title). `?warm=1` does nothing but load the search setup into a server isolate (answers `204`). The title index is `GET /_emdash/api/plugins/coywolf-pack/search/index?v=…` (optional `locale`, `collections`): `{ v, types, entries: [[title, url, typeIndex], …] }`.
+
+**Speed and caching.** With the pack middleware installed (`coywolfPack()` in `src/middleware.ts`), the middleware answers both URLs itself, before EmDash's plugin routing:
+
+- Every answer is stored in Cloudflare's cache (the Cache API, per location; live answers for 5 minutes, title indexes for a day) and in a small per-isolate memory cache. The key is the query (trimmed, spaces collapsed, lower-cased), `limit`, `collections`, `locale` and the **search content version**. Browsers keep live answers for 60 seconds, and the title index for a year when the page's version matches (its URL changes with every version), 5 minutes otherwise.
+- The content version changes whenever published content does (publish, unpublish, update, delete, restore), and when search settings change on the **Search** admin page. New keys miss, so visitors never see results from before an edit; old copies just expire. Other Worker isolates pick up a new version within 30 seconds.
+- Cache hits skip the database and the rate limit. Misses count against **Search rate limit** when it's on.
+- A miss reads the database in a few batched round trips: search settings (cached per isolate for a minute), then title and full-text matches for every collection at once, then excerpts and URL terms at once. The any-word fallback adds one more. That's 2–3 D1 round trips (about 7 statements) where it was 25–31 queries.
+- Responses carry `Server-Timing` (`cw-search` says `hit-memory`, `hit-edge`, `miss` or `warm`; `cw-d1` counts statements and round trips) and `X-Coywolf-Cache: HIT` or `MISS`.
+
+Without the middleware, the plugin routes run the same batched search, without the Cache API layer.
 
 Tune it in `astro.config.mjs` (defaults shown):
 
 ```js
-coywolfPlugin({ search: { live: { limit: 8, minChars: 2, debounce: 200, enterOpensTop: true } } });
+coywolfPlugin({ search: { live: { limit: 8, minChars: 2, debounce: 120, enterOpensTop: true, instant: true, indexMax: 5000 } } });
 ```
 
-`enterOpensTop: false` leaves nothing selected until the visitor arrows to a result, so Enter runs a full search.
+`enterOpensTop: false` leaves nothing selected until the visitor arrows to a result, so Enter runs a full search. `instant: false` skips the title index (server results only). `indexMax` caps the title index (newest entries kept); at 5,000 entries it's roughly 100–150 KB compressed, loaded once per content version.
+
+To measure on a live site:
+
+```sh
+# A miss, then a hit (same query, any case or spacing).
+curl -s -o /dev/null -D - "https://example.com/_emdash/api/plugins/coywolf-pack/search/live?q=wolf%20$RANDOM" | grep -iE "server-timing|x-coywolf-cache|cache-control"
+curl -s -o /dev/null -D - "https://example.com/_emdash/api/plugins/coywolf-pack/search/live?q=wolf" | grep -iE "server-timing|x-coywolf-cache"
+# The title index and the warm-up.
+curl -s --compressed -o /dev/null -w "%{size_download} bytes, %{time_total}s\n" "https://example.com/_emdash/api/plugins/coywolf-pack/search/index?v=x"
+curl -s -o /dev/null -D - "https://example.com/_emdash/api/plugins/coywolf-pack/search/live?warm=1" | grep -i server-timing
+```
 
 ### Search box
 
@@ -649,7 +671,7 @@ import { SearchBox } from "@coywolf/emdash/astro";
 <SearchBox action="/search" collections={["posts", "pages"]} placeholder="Search articles" />
 ```
 
-Props: `action` (your search page, default `/search`), `name` (`q`), `label`, `showLabel`, `placeholder`, `collections`, `locale`, `minChars` (2), `debounce` (200 ms), `limit` (8), `showType`, `showSnippets`, `submitButton`, `value`, `class`, and `id` (set a different one for each box on a page). Its script (about 4 KB minified, 2 KB compressed) and styles load only on pages that render it, and nothing at all is sent while **Search box** is off. Suggestions are real links, so middle-click and "open in new tab" work.
+Props: `action` (your search page, default `/search`), `name` (`q`), `label`, `showLabel`, `placeholder`, `collections`, `locale`, `minChars` (2), `debounce` (200 ms; its answers come from the same edge-cached live results route), `limit` (8), `showType`, `showSnippets`, `submitButton`, `value`, `class`, and `id` (set a different one for each box on a page). Its script (about 4 KB minified, 2 KB compressed) and styles load only on pages that render it, and nothing at all is sent while **Search box** is off. Suggestions are real links, so middle-click and "open in new tab" work.
 
 Colors are CSS custom properties with light and dark defaults. Override them on `.cw-search`:
 

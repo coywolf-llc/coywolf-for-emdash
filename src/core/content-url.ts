@@ -295,6 +295,17 @@ export function pageTrail(slug: string): string[] {
 	return ancestorTrail(slug, config.pageParents);
 }
 
+/** The URL configuration as text, for cache keys (answers with URLs change when it does). */
+export function contentUrlFingerprint(): string {
+	const pairs = (m: Map<string, unknown>) => [...m.entries()].map(([k, v]) => [k, v instanceof Map ? [...v.entries()] : v]);
+	return JSON.stringify([pairs(config.urls), config.trailingSlash ?? "", pairs(config.termParents), pairs(config.pageParents)]);
+}
+
+/** Collections the `urls` option routes. */
+export function overriddenCollections(): string[] {
+	return [...config.urls.keys()];
+}
+
 /** The configured override pattern for a collection (shorthands expanded), if any. */
 export function urlOverride(collection: string): string | null {
 	return config.urls.get(collection) ?? null;
@@ -340,6 +351,117 @@ function chunks<T>(items: T[], size = SQL_CHUNK): T[][] {
 	return out;
 }
 
+/** A SQL statement and its bound values, for callers that batch statements (D1 batch). */
+export interface SqlQuery {
+	sql: string;
+	binds: unknown[];
+}
+
+export interface PrimaryTermRow {
+	entry_id: string;
+	name: string;
+	slug: string;
+}
+
+/** The site's default locale (EmDash's i18n config; "en" without one). */
+export async function hostDefaultLocale(): Promise<string> {
+	return (await readHostConfig()).defaultLocale ?? "en";
+}
+
+/**
+ * EmDash's selectEntryTermRows SQL for the given entries (or, with `ids`
+ * null, every published entry of the collection), for all wanted taxonomies
+ * at once, ordered by label. Feed the rows to collectPrimaryTerms.
+ */
+export function primaryTermsQuery(collection: string, ids: string[] | null, taxonomies: string[], defaultLocale: string): SqlQuery {
+	const where = ids ? `content.id IN (${ids.map(() => "?").join(",")})` : "content.status = 'published' AND content.deleted_at IS NULL";
+	return {
+		sql: `SELECT content.id AS entry_id,
+				coalesce(exact_term.name, default_term.name) AS name,
+				coalesce(exact_term.slug, default_term.slug) AS slug
+			FROM "ec_${collection}" AS content
+			INNER JOIN content_taxonomies AS pivot
+				ON pivot.entry_id = content.translation_group
+				AND pivot.collection = ?
+			LEFT JOIN taxonomies AS exact_term
+				ON exact_term.translation_group = pivot.taxonomy_id
+				AND exact_term.locale = content.locale
+			LEFT JOIN taxonomies AS default_term
+				ON default_term.translation_group = pivot.taxonomy_id
+				AND default_term.locale = ?
+			WHERE ${where}
+				AND coalesce(exact_term.id, default_term.id) IS NOT NULL
+				AND coalesce(exact_term.name, default_term.name) IN (${taxonomies.map(() => "?").join(",")})
+			ORDER BY coalesce(exact_term.label, default_term.label) ASC`,
+		binds: [collection, defaultLocale, ...(ids ?? []), ...taxonomies],
+	};
+}
+
+/** Fold primaryTermsQuery rows into entry id → taxonomy → first term slug (entries missing from `out` are added). */
+export function collectPrimaryTerms(rows: PrimaryTermRow[], out: Map<string, Record<string, string>> = new Map()): Map<string, Record<string, string>> {
+	for (const row of rows) {
+		let terms = out.get(row.entry_id);
+		if (!terms) {
+			terms = {};
+			out.set(row.entry_id, terms);
+		}
+		if (row.slug && !(row.name in terms)) terms[row.name] = row.slug;
+	}
+	return out;
+}
+
+export interface TermParentRow {
+	name: string;
+	id: string;
+	slug: string;
+	parent_id: string | null;
+	locale: string | null;
+	translation_group: string | null;
+}
+
+/** Taxonomy names usable in SQL and options. */
+export function validTaxonomies(taxonomies: string[]): string[] {
+	return [...new Set(taxonomies)].filter((t) => TAXONOMY_NAME.test(t));
+}
+
+/** The taxonomy rows termParentsFromRows needs, in one query. */
+export function termParentsQuery(taxonomies: string[]): SqlQuery {
+	const wanted = validTaxonomies(taxonomies);
+	return { sql: `SELECT name, id, slug, parent_id, locale, translation_group FROM taxonomies WHERE name IN (${wanted.map(() => "?").join(",")})`, binds: wanted };
+}
+
+/** Term parents per taxonomy from termParentsQuery rows, then the `termParents` option for terms with none. */
+export function termParentsFromRows(input: TermParentRow[], taxonomies: string[], defaultLocale: string): Map<string, Map<string, string>> {
+	const wanted = validTaxonomies(taxonomies);
+	const out = new Map<string, Map<string, string>>();
+	for (const taxonomy of wanted) out.set(taxonomy, new Map());
+	// Default locale first, so its slugs win where locales disagree.
+	const rows = [...input].sort((a, b) => Number(b.locale === defaultLocale) - Number(a.locale === defaultLocale));
+	const slugOf = new Map<string, string>();
+	for (const r of rows) {
+		for (const ref of [r.translation_group ?? r.id, r.id]) {
+			for (const key of [`${r.name}|${r.locale ?? ""}|${ref}`, `${r.name}||*|${ref}`]) if (!slugOf.has(key)) slugOf.set(key, r.slug);
+		}
+	}
+	for (const r of rows) {
+		if (!r.parent_id || !r.slug) continue;
+		const parent = slugOf.get(`${r.name}|${r.locale ?? ""}|${r.parent_id}`) ?? slugOf.get(`${r.name}||*|${r.parent_id}`);
+		const map = out.get(r.name);
+		if (map && parent && parent !== r.slug && !map.has(r.slug)) map.set(r.slug, parent);
+	}
+	applyTermParentOption(out, wanted);
+	return out;
+}
+
+function applyTermParentOption(out: Map<string, Map<string, string>>, wanted: string[]): void {
+	for (const taxonomy of wanted) {
+		const fallback = config.termParents.get(taxonomy);
+		if (!fallback) continue;
+		const map = out.get(taxonomy)!;
+		for (const [slug, parent] of fallback) if (!map.has(slug)) map.set(slug, parent);
+	}
+}
+
 /**
  * First term slug per entry for each taxonomy, ordered as EmDash's
  * getTermsForEntries orders them (label ascending, locale-resolved terms).
@@ -363,40 +485,16 @@ export async function primaryTerms(source: UrlSource, collection: string, ids: s
 	}
 
 	// The SQL of EmDash's selectEntryTermRows (taxonomies/index.ts), for all wanted taxonomies at once.
-	const defaultLocale = (await readHostConfig()).defaultLocale ?? "en";
+	const defaultLocale = await hostDefaultLocale();
 	for (const chunk of chunks(unique)) {
-		let rows: Array<{ entry_id: string; name: string; slug: string }>;
+		let rows: PrimaryTermRow[];
 		try {
-			const result = await source
-				.prepare(
-					`SELECT content.id AS entry_id,
-						coalesce(exact_term.name, default_term.name) AS name,
-						coalesce(exact_term.slug, default_term.slug) AS slug
-					FROM "ec_${collection}" AS content
-					INNER JOIN content_taxonomies AS pivot
-						ON pivot.entry_id = content.translation_group
-						AND pivot.collection = ?
-					LEFT JOIN taxonomies AS exact_term
-						ON exact_term.translation_group = pivot.taxonomy_id
-						AND exact_term.locale = content.locale
-					LEFT JOIN taxonomies AS default_term
-						ON default_term.translation_group = pivot.taxonomy_id
-						AND default_term.locale = ?
-					WHERE content.id IN (${chunk.map(() => "?").join(",")})
-						AND coalesce(exact_term.id, default_term.id) IS NOT NULL
-						AND coalesce(exact_term.name, default_term.name) IN (${taxonomies.map(() => "?").join(",")})
-					ORDER BY coalesce(exact_term.label, default_term.label) ASC`,
-				)
-				.bind(collection, defaultLocale, ...chunk, ...taxonomies)
-				.all<{ entry_id: string; name: string; slug: string }>();
-			rows = result.results;
+			const q = primaryTermsQuery(collection, chunk, taxonomies, defaultLocale);
+			rows = (await source.prepare(q.sql).bind(...q.binds).all<PrimaryTermRow>()).results;
 		} catch {
 			return out; // No taxonomy tables yet: no terms (fallbacks apply).
 		}
-		for (const row of rows) {
-			const terms = out.get(row.entry_id);
-			if (terms && row.slug && !(row.name in terms)) terms[row.name] = row.slug;
-		}
+		collectPrimaryTerms(rows, out);
 	}
 	return out;
 }
@@ -429,42 +527,17 @@ export async function termParentMaps(source: UrlSource, taxonomies: string[]): P
 			};
 			walk(roots, null, 0);
 		}
-	} else {
-		const defaultLocale = (await readHostConfig()).defaultLocale ?? "en";
-		let rows: Array<{ name: string; id: string; slug: string; parent_id: string | null; locale: string | null; translation_group: string | null }> = [];
-		try {
-			rows = (
-				await source
-					.prepare(`SELECT name, id, slug, parent_id, locale, translation_group FROM taxonomies WHERE name IN (${wanted.map(() => "?").join(",")})`)
-					.bind(...wanted)
-					.all<{ name: string; id: string; slug: string; parent_id: string | null; locale: string | null; translation_group: string | null }>()
-			).results;
-		} catch {
-			rows = []; // No taxonomy table yet: only the option applies.
-		}
-		// Default locale first, so its slugs win where locales disagree.
-		rows.sort((a, b) => Number(b.locale === defaultLocale) - Number(a.locale === defaultLocale));
-		const slugOf = new Map<string, string>();
-		for (const r of rows) {
-			for (const ref of [r.translation_group ?? r.id, r.id]) {
-				for (const key of [`${r.name}|${r.locale ?? ""}|${ref}`, `${r.name}||*|${ref}`]) if (!slugOf.has(key)) slugOf.set(key, r.slug);
-			}
-		}
-		for (const r of rows) {
-			if (!r.parent_id || !r.slug) continue;
-			const parent = slugOf.get(`${r.name}|${r.locale ?? ""}|${r.parent_id}`) ?? slugOf.get(`${r.name}||*|${r.parent_id}`);
-			const map = out.get(r.name);
-			if (map && parent && parent !== r.slug && !map.has(r.slug)) map.set(r.slug, parent);
-		}
+		applyTermParentOption(out, wanted);
+		return out;
 	}
-
-	for (const taxonomy of wanted) {
-		const fallback = config.termParents.get(taxonomy);
-		if (!fallback) continue;
-		const map = out.get(taxonomy)!;
-		for (const [slug, parent] of fallback) if (!map.has(slug)) map.set(slug, parent);
+	let rows: TermParentRow[] = [];
+	try {
+		const q = termParentsQuery(wanted);
+		rows = (await source.prepare(q.sql).bind(...q.binds).all<TermParentRow>()).results;
+	} catch {
+		rows = []; // No taxonomy table yet: only the option applies.
 	}
-	return out;
+	return termParentsFromRows(rows, wanted, await hostDefaultLocale());
 }
 
 // ── Collections (D1) ─────────────────────────────────────────────
@@ -506,6 +579,16 @@ export interface EntryRef {
 	locale?: string | null;
 	/** When known and not "published", context sources answer null (like getPublicUrl). */
 	status?: string | null;
+	/** First term slug per taxonomy, when the caller already read them (primaryTermsQuery); skips the terms query. */
+	terms?: Record<string, string>;
+}
+
+/** What a caller already knows, so the resolver doesn't read it again. */
+export interface EntryUrlResolverOptions {
+	/** Collection info (D1 sources): route patterns come from here instead of a query per collection. */
+	collections?: ReadonlyMap<string, CollectionInfo>;
+	/** Term parents per taxonomy (e.g. from a per-isolate cache), instead of termParentMaps. */
+	termParents?: (taxonomies: string[]) => Promise<Map<string, Map<string, string>>>;
 }
 
 interface CollectionRoute {
@@ -526,7 +609,7 @@ export interface EntryUrlResolver {
  * (with a context) whether local interpolation matches getPublicUrl for each
  * collection and locale. Use one per request or build.
  */
-export function createEntryUrlResolver(source: UrlSource): EntryUrlResolver {
+export function createEntryUrlResolver(source: UrlSource, options: EntryUrlResolverOptions = {}): EntryUrlResolver {
 	const routes = new Map<string, Promise<CollectionRoute | null>>();
 	const verdicts = new Map<string, "local" | "exact">();
 	let policy: Promise<TrailingSlash> | null = null;
@@ -537,7 +620,7 @@ export function createEntryUrlResolver(source: UrlSource): EntryUrlResolver {
 	async function termParents(taxonomies: string[]): Promise<Map<string, Map<string, string>>> {
 		const missing = taxonomies.filter((t) => !parents.has(t));
 		if (missing.length) {
-			const batch = termParentMaps(source, missing).catch(() => new Map<string, Map<string, string>>());
+			const batch = (options.termParents ? options.termParents(missing) : termParentMaps(source, missing)).catch(() => new Map<string, Map<string, string>>());
 			for (const t of missing) parents.set(t, batch.then((m) => m.get(t) ?? new Map()));
 		}
 		const out = new Map<string, Map<string, string>>();
@@ -552,7 +635,8 @@ export function createEntryUrlResolver(source: UrlSource): EntryUrlResolver {
 				const override = urlOverride(collection);
 				if (override) return { pattern: override, override: true, routable: true };
 				if (isD1(source)) {
-					const info = (await readCollections(source, [collection]).catch(() => new Map<string, CollectionInfo>())).get(collection);
+					const known = options.collections;
+					const info = known ? known.get(collection) : (await readCollections(source, [collection]).catch(() => new Map<string, CollectionInfo>())).get(collection);
 					return { pattern: info?.urlPattern ?? null, override: false, routable: true };
 				}
 				const info = await source.schema?.getCollection(collection).catch(() => null);
@@ -613,8 +697,13 @@ export function createEntryUrlResolver(source: UrlSource): EntryUrlResolver {
 			const taxonomies = patternTaxonomies(r.pattern);
 			const pathTaxonomies = patternTermPathTaxonomies(r.pattern);
 			const usesPagePath = patternUsesPagePath(r.pattern);
+			const prefilled = usable.every((e) => e.terms !== undefined);
 			const [terms, termParentsByTaxonomy] = await Promise.all([
-				taxonomies.length ? primaryTerms(source, collection, usable.map((e) => e.id), taxonomies) : new Map<string, Record<string, string>>(),
+				!taxonomies.length
+					? new Map<string, Record<string, string>>()
+					: prefilled
+						? new Map(usable.map((e) => [e.id, e.terms as Record<string, string>]))
+						: primaryTerms(source, collection, usable.map((e) => e.id), taxonomies),
 				pathTaxonomies.length ? termParents(pathTaxonomies) : new Map<string, Map<string, string>>(),
 			]);
 			for (const e of usable) {

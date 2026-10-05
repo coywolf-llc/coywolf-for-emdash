@@ -4,6 +4,7 @@ import { type SearchOptions, searchModule } from "./module.js";
 import { configureSearchRateLimit } from "./ratelimit.js";
 
 export { searchRateLimitMiddleware } from "./ratelimit.js";
+export { searchLiveMiddleware } from "./live-serve.js";
 
 export const FEATURES = [
 	{

@@ -68,7 +68,10 @@ async function post<T>(path: string, body: unknown, fallback: string): Promise<T
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(body),
 	});
-	return parseApiResponse<T>(response, fallback);
+	const result = await parseApiResponse<T>(response, fallback);
+	// Cached live results and title indexes were built with the old settings: start fresh (best effort).
+	await apiFetch(`${PACK_API}/touch`, { method: "POST" }).catch(() => undefined);
+	return result;
 }
 
 function CollectionCard(props: {

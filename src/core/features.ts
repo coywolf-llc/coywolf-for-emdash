@@ -103,10 +103,31 @@ export async function cachedCtxFeatures(ctx: SettingsCtx): Promise<FeatureMap> {
 	return features;
 }
 
+/** For public routes: like requireFeature, but from the per-isolate cache (no settings read on most requests). */
+export async function requireCachedFeature(ctx: SettingsCtx, id: string): Promise<void> {
+	if (!isOn(await cachedCtxFeatures(ctx), id)) {
+		const { PluginRouteError } = await import("emdash");
+		throw PluginRouteError.notFound("This feature is turned off (Plugins → Coywolf Pack).");
+	}
+}
+
 // ── Outside the plugin context (middleware, Astro components) ────
 
 const TTL_MS = 30_000;
-let cached: { features: FeatureMap; at: number } | null = null;
+/** `settings` is set when the read came from D1 (siteFeatures), which also reads the registered settings. */
+let cached: { features: FeatureMap; at: number; settings?: Map<string, unknown> } | null = null;
+
+/**
+ * Other plugin settings read in the same query as the switches, sharing
+ * their per-isolate cache, so middleware and page hooks that need them on
+ * every request add no query (e.g. the search content version).
+ */
+const siteSettingKeys = new Set<string>();
+export function registerSiteSetting(key: string): void {
+	siteSettingKeys.add(key);
+}
+
+const settingOption = (key: string) => `plugin:${PLUGIN_ID}:settings:${key}`;
 
 /** Forget cached switches (call after saving them). */
 export function invalidateFeatures(): void {
@@ -116,19 +137,53 @@ export function invalidateFeatures(): void {
 /** Read the switches straight from D1. Fails closed (all off) if the database can't be read. */
 export async function siteFeatures(database = "DB"): Promise<FeatureMap> {
 	if (cached && Date.now() - cached.at < TTL_MS) return cached.features;
+	return (await readSiteOptions(database)).features;
+}
+
+async function readSiteOptions(database: string): Promise<{ features: FeatureMap; settings: Map<string, unknown> }> {
 	let stored: FeatureMap | null = null;
+	const settings = new Map<string, unknown>();
 	try {
 		const env = await workerEnv();
 		const db = env[database] as D1Database | undefined;
-		const row = db ? await db.prepare("SELECT value FROM options WHERE name = ?").bind(OPTION_NAME).first<{ value: string }>() : null;
-		stored = row?.value ? (JSON.parse(row.value) as FeatureMap) : null;
+		const names = [OPTION_NAME, ...[...siteSettingKeys].map(settingOption)];
+		const rows = db
+			? (
+					await db
+						.prepare(`SELECT name, value FROM options WHERE name IN (${names.map(() => "?").join(",")})`)
+						.bind(...names)
+						.all<{ name: string; value: string }>()
+				).results
+			: [];
+		for (const row of rows) {
+			if (!row.value) continue;
+			if (row.name === OPTION_NAME) stored = JSON.parse(row.value) as FeatureMap;
+			else {
+				try {
+					settings.set(row.name.slice(settingOption("").length), JSON.parse(row.value));
+				} catch {
+					// An unreadable setting reads as unset.
+				}
+			}
+		}
 	} catch (error) {
 		console.error("coywolf-pack: could not read feature switches", error);
-		return resolveFeatures({});
+		return { features: resolveFeatures({}), settings };
 	}
 	const features = remember(resolveFeatures(stored));
-	cached = { features, at: Date.now() };
-	return features;
+	cached = { features, at: Date.now(), settings };
+	return { features, settings };
+}
+
+/** A setting registered with registerSiteSetting, from the switches' per-isolate cache (null when unset). */
+export async function siteSetting<T>(key: string, database = "DB"): Promise<T | null> {
+	const settings = cached?.settings && Date.now() - cached.at < TTL_MS ? cached.settings : (await readSiteOptions(database)).settings;
+	return (settings.get(key) as T | undefined) ?? null;
+}
+
+/** Update a registered setting in this isolate's cache after writing it (other isolates see it within 30 seconds). */
+export function rememberSiteSetting(key: string, value: unknown): void {
+	cached?.settings?.set(key, value);
 }
 
 export async function siteFeatureOn(id: string, database?: string): Promise<boolean> {
