@@ -9,6 +9,7 @@ import { codeBlocksPack } from "./codeBlocks/pack.js";
 import { customBlocksPack } from "./customBlocks/pack.js";
 import type { PackMiddleware, PackModule } from "./core/module.js";
 import { headingsPack } from "./headings/pack.js";
+import { imagesMiddleware, imagesPack } from "./images/pack.js";
 import { breadcrumbsPack } from "./breadcrumbs/pack.js";
 import { filesMiddleware, filesPack } from "./files/pack.js";
 import { discoveryMiddleware, discoveryPack } from "./discovery/pack.js";
@@ -42,6 +43,7 @@ export const MODULES: Factory[] = [
 	(o) => (o.robots === false ? null : robotsPack(o.robots ?? {})),
 	(o) => (o.reviews === false ? null : reviewsPack(o.reviews ?? {})),
 	(o) => (o.customBlocks === false || o.contentBlocks === false ? null : customBlocksPack()),
+	(o) => (o.images === false ? null : imagesPack(o.images ?? {})),
 ];
 
-export const MIDDLEWARE: PackMiddleware[] = [backupsDownloadMiddleware, redirectsMiddleware, robotsMiddleware, filesMiddleware, searchRateLimitMiddleware, ...discoveryMiddleware, videosSitemapMiddleware, videosCaptionsMiddleware];
+export const MIDDLEWARE: PackMiddleware[] = [imagesMiddleware, backupsDownloadMiddleware, redirectsMiddleware, robotsMiddleware, filesMiddleware, searchRateLimitMiddleware, ...discoveryMiddleware, videosSitemapMiddleware, videosCaptionsMiddleware];

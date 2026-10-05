@@ -34,7 +34,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.13.0
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.13.1
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -111,6 +111,27 @@ Collections without an override keep EmDash's resolution. The pack also maps pat
 Trailing slashes follow Astro's `trailingSlash` setting. With the default (`"ignore"`), an override keeps the pattern's own trailing slash. Set `trailingSlash: "always" | "never"` on `coywolfPlugin()` to force one for every entry URL the pack builds. Override URLs get no locale prefix.
 
 The options are read when the Worker starts (EmDash creates the plugin then), so the middleware and Astro components use them too. Sites can resolve URLs the same way with `entryUrl`, `entryUrls`, and `matchEntryPath` from `@coywolf/emdash/astro`.
+
+## Clean Image URLs
+
+Resized copies of media-library images at short, cacheable addresses instead of Astro's `/_image?href=…&w=…&h=…` endpoint. Off until you turn on **Clean image URLs** on the Coywolf Pack page.
+
+```
+/media/<file id>-<width>x<height>.<webp|avif|jpg|png>   cropped to fill (fit: cover)
+/media/<file id>-<width>w.<format>                      width only, keeps the ratio
+```
+
+The pack's middleware reads the original from the media bucket (`MEDIA`), resizes it with the Cloudflare Images binding (`IMAGES`, which the Astro Cloudflare adapter already binds), and caches the result at the edge for a year (file ids never change). Sizes are limited to 2560px; SVGs aren't resized. Other binding names: `coywolfPlugin({ images: { bucket: "MYMEDIA", images: "MYIMAGES" } })`.
+
+In theme code, build URLs with `cleanImageUrl` (returns `null` when the feature is off or the source isn't a media-library file, so fall back to your usual image code):
+
+```astro
+---
+import { cleanImageUrl } from "@coywolf/emdash/astro";
+const thumb = await cleanImageUrl(post.data.featured_image?.src, { width: 600, height: 315 });
+---
+{thumb && <img src={thumb} width="600" height="315" alt="" />}
+```
 
 ## Backups
 
