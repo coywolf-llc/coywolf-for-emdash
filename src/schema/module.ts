@@ -9,7 +9,8 @@
  * rows per byline id; a row may be marked profile-only).
  */
 import { getManyBatched } from "../core/storage.js";
-import { FORMATS, cleanImagePath, parseImagePath } from "../images/lib.js";
+import { FORMATS, parseCdnUrl, parseImagePath } from "../images/lib.js";
+import { refreshMediaHost } from "../images/settings.js";
 import { siteName } from "../core/site.js";
 import type { PageMetadataContribution, PluginContext, PublicPageContext } from "emdash";
 import { PluginRouteError, definePluginRoute } from "emdash";
@@ -18,6 +19,7 @@ import { z } from "zod";
 import { absoluteUrl, entryUrl } from "../core/content-url.js";
 import { type FeatureMap, cachedCtxFeatures, ctxFeatures, isOn, requireFeature } from "../core/features.js";
 import { parseInput, workerEnv } from "../shared.js";
+import { type MediaRow, cleanDefaultOgImage, mediaHostImageInfo, ogImageTags, ownImageOnMediaHost, packOwnsOgImage } from "./og-image.js";
 import { ARTICLE_TYPES, ORGANIZATION_PROPERTIES, ORGANIZATION_TYPES, PAGE_TYPES, PERSON_PROPERTIES, PROPERTY_INPUTS } from "./catalog.js";
 import {
 	type BylineFacts,
@@ -204,9 +206,35 @@ async function loadConfig(ctx: PluginContext): Promise<Config> {
 const MEDIA_TTL_MS = 10 * 60_000;
 const MEDIA_MAX = 500;
 const mediaCache = new Map<string, { at: number; info: ImageInfo | null }>();
+/** Media rows by storage key, for media-host URLs (any size of a file shares its row). */
+const mediaRowCache = new Map<string, { at: number; row: MediaRow | null }>();
 
-/** A clean image URL (/media/<file id>-<w>x<h>.<format>, Clean image URLs module): the media item, at the resized dimensions. */
+/**
+ * A clean image URL (Clean image URLs module): on the media host
+ * (https://media.example.com/<file> or /s/<w>[x<h>]/<file>) or the Worker
+ * route (/media/<file id>-<w>x<h>.<format>). The media item, at the requested
+ * dimensions. Undefined when it's neither.
+ */
 async function lookupCleanMedia(options: SchemaOptions, url: string, origin: string): Promise<ImageInfo | null | undefined> {
+	const onHost = parseCdnUrl(url);
+	if (onHost) {
+		const key = `${onHost.id}.${onHost.ext}`;
+		const hit = mediaRowCache.get(key);
+		if (hit && Date.now() - hit.at < MEDIA_TTL_MS) return hit.row ? mediaHostImageInfo(url, hit.row) : null;
+		let row: MediaRow | null = null;
+		try {
+			const env = await workerEnv();
+			const db = env[options.database ?? "DB"] as D1Database | undefined;
+			row = db
+				? await db.prepare("SELECT width, height, alt, mime_type FROM media WHERE storage_key = ? LIMIT 1").bind(key).first<MediaRow>()
+				: null;
+		} catch {
+			return null; // Don't cache failures.
+		}
+		if (mediaRowCache.size >= MEDIA_MAX) mediaRowCache.delete(mediaRowCache.keys().next().value as string);
+		mediaRowCache.set(key, { at: Date.now(), row });
+		return row ? mediaHostImageInfo(url, row) : null;
+	}
 	let pathname: string;
 	try {
 		const parsed = new URL(url, origin || "https://site.invalid");
@@ -294,23 +322,15 @@ async function siteFacts(ctx: PluginContext, page: PublicPageContext): Promise<S
 }
 
 /**
- * The site's default OG image as a clean 1200x630 URL (Clean image URLs on):
- * PNG stays PNG, anything else becomes JPEG, the formats every social network
- * reads. Null when it isn't a media-library image.
+ * The page's og:image (same precedence as core). With Clean image URLs on:
+ * the default image at a clean 1200x630 URL, and the page's own
+ * media-library image as its original on the media host (when one is set).
  */
-function cleanDefaultOgImage(site: SiteFacts): ImageInfo | null {
-	const d = site.defaultOgImage;
-	if (!d) return null;
-	const format = /\.png(?:$|[?#])/i.test(d.url) ? "png" : "jpg";
-	const path = cleanImagePath(d.url, { width: 1200, height: 630, format });
-	if (!path) return null;
-	return { url: absolute(path, site.origin) ?? path, width: 1200, height: 630, alt: d.alt, mimeType: FORMATS[format] };
-}
-
-/** The og:image EmDash will emit for this page (same precedence as core). */
 async function primaryImage(options: SchemaOptions, page: PublicPageContext, site: SiteFacts, cleanUrls = false): Promise<ImageInfo | null> {
 	const own = page.seo?.ogImage || page.image;
-	if (!own) return cleanUrls ? (cleanDefaultOgImage(site) ?? site.defaultOgImage) : site.defaultOgImage;
+	if (!own) return cleanUrls ? (cleanDefaultOgImage(site.defaultOgImage, site.origin) ?? site.defaultOgImage) : site.defaultOgImage;
+	const original = cleanUrls ? ownImageOnMediaHost(own) : null;
+	if (original) return (await lookupMedia(options, original, site.origin)) ?? { url: original };
 	const url = absolute(own, site.origin) ?? own;
 	return (await lookupMedia(options, own, site.origin)) ?? { url };
 }
@@ -432,6 +452,7 @@ export async function schemaContributions(
 	const graphOn = isOn(on, SCHEMA_FEATURES.graph);
 	const ogOn = isOn(on, SCHEMA_FEATURES.openGraph);
 	const cleanImages = isOn(on, "images");
+	if (cleanImages) await refreshMediaHost();
 	const image = graphOn || ogOn ? await primaryImage(options, page, site, cleanImages) : null;
 
 	if (graphOn) {
@@ -504,22 +525,9 @@ export async function schemaContributions(
 	if (ogOn) {
 		const locale = config.settings.schemaOgLocale?.trim() || ogLocale(page.locale || ctx.site.locale);
 		if (locale) out.push({ kind: "property", property: "og:locale", content: locale });
-		// The default OG image at its clean URL: these win over EmDash's own og:image/twitter:image (first contribution wins).
-		if (image && cleanImages && !(page.seo?.ogImage || page.image) && parseImagePath(new URL(image.url, site.origin || "https://site.invalid").pathname)) {
-			out.push({ kind: "property", property: "og:image", content: image.url });
-			out.push({ kind: "meta", name: "twitter:image", content: image.url });
-		}
-		if (image) {
-			if (image.width && image.height) {
-				out.push({ kind: "property", property: "og:image:width", content: String(image.width) });
-				out.push({ kind: "property", property: "og:image:height", content: String(image.height) });
-			}
-			if (image.mimeType?.startsWith("image/")) out.push({ kind: "property", property: "og:image:type", content: image.mimeType });
-			if (image.alt?.trim()) {
-				out.push({ kind: "property", property: "og:image:alt", content: image.alt.trim() });
-				out.push({ kind: "meta", name: "twitter:image:alt", content: image.alt.trim() });
-			}
-		}
+		// The default OG image at its clean URL, or the page's image on the media host: these win over EmDash's own og:image/twitter:image (first contribution wins).
+		const own = Boolean(page.seo?.ogImage || page.image);
+		out.push(...ogImageTags(image, Boolean(image && cleanImages && packOwnsOgImage(image.url, site.origin, own))));
 	}
 	return out;
 }

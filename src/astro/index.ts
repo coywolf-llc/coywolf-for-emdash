@@ -56,6 +56,11 @@ export type { EntryRef, MatchedEntry } from "../core/content-url.js";
 export { Review };
 export { reviewFromAttrs } from "../reviews/lib.js";
 
-/** Clean Image URLs module: build /media/<id>-<w>x<h>.<format> URLs for theme images (null when off). */
-export { cleanImageUrl } from "../images/pack.js";
+/**
+ * Clean Image URLs module: cleanImageUrl builds resized-image URLs for theme
+ * images (on the media host when one is set, else /media/<id>-<w>x<h>.<format>;
+ * null when off); originalImageUrl (alias mediaUrl) gives the original file
+ * on the media host (falls back to the source).
+ */
+export { cleanImageUrl, mediaUrl, originalImageUrl } from "../images/pack.js";
 export { cleanImagePath, mediaFile } from "../images/lib.js";

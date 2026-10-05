@@ -6,6 +6,17 @@
  *
  * instead of Astro's /_image?href=…&w=…&h=… endpoint. Pure helpers (no
  * imports) so tests can load them; the middleware is in pack.ts.
+ *
+ * With a media host configured (`images: { cdn: "https://media.example.com" }`:
+ * an R2 custom domain on the media bucket, with Cloudflare Image
+ * Transformations and the zone's /s/ rewrite rules), URLs point there instead
+ * and never touch the Worker:
+ *
+ *   https://media.example.com/<file>              the original file
+ *   https://media.example.com/s/<w>x<h>/<file>    cropped to fill
+ *   https://media.example.com/s/<w>/<file>        width only, keeps the ratio
+ *
+ * The media host picks WebP or AVIF for browsers that accept them.
  */
 
 export const IMAGE_PATH = "/media/";
@@ -14,6 +25,53 @@ const MEDIA_FILE = /^(?:https?:\/\/[^/]+)?\/_emdash\/api\/media\/file\/([A-Za-z0
 const CLEAN = /^\/media\/([A-Za-z0-9_-]+)-(?:(\d{1,4})x(\d{1,4})|(\d{1,4})w)\.(webp|avif|jpe?g|png)$/i;
 export const MAX_DIMENSION = 2560;
 export const FORMATS: Record<string, string> = { webp: "image/webp", avif: "image/avif", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png" };
+
+/** MIME types of original files by extension (for og:image:type on media-host URLs). */
+export const EXT_MIME: Record<string, string> = { ...FORMATS, gif: "image/gif", svg: "image/svg+xml" };
+
+/** The MIME type of a file extension, or undefined when unknown. */
+export function mimeForExt(ext: string | null | undefined): string | undefined {
+	return EXT_MIME[String(ext ?? "").toLowerCase()];
+}
+
+/**
+ * Normalize a media host to its https origin ("media.example.com",
+ * "https://media.example.com/" → "https://media.example.com"). Null for
+ * anything that isn't a plain https host name (no path, query, user or port
+ * other than the default).
+ */
+export function normalizeMediaHost(input: string | null | undefined): string | null {
+	let v = String(input ?? "").trim();
+	if (!v) return null;
+	if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) v = `https://${v}`;
+	v = v.replace(/\/+$/, "");
+	const m = /^https:\/\/([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)$/i.exec(v);
+	return m ? `https://${m[1].toLowerCase()}` : null;
+}
+
+/** The media host set in astro.config.mjs (`images.cdn`), and the one saved on the Clean Image URLs page (wins when set). */
+let optionBase: string | null = null;
+let savedBase: string | null = null;
+
+/** Set (or clear) the media host from the plugin option. Anything but an https origin is ignored. */
+export function setImageCdn(url: string | null | undefined): void {
+	optionBase = normalizeMediaHost(url);
+}
+
+/** Set (or clear) the media host saved in the admin. It overrides the plugin option while set. */
+export function setSavedImageCdn(url: string | null | undefined): void {
+	savedBase = normalizeMediaHost(url);
+}
+
+/** The media host in use (https origin, no trailing slash), or null for the Worker's /media/ route. */
+export function imageCdn(): string | null {
+	return savedBase ?? optionBase;
+}
+
+/** Where the media host comes from: the admin setting, the plugin option, or nowhere. */
+export function imageCdnSource(): { host: string | null; option: string | null; saved: string | null } {
+	return { host: imageCdn(), option: optionBase, saved: savedBase };
+}
 
 export interface ImageRequest {
 	id: string;
@@ -28,13 +86,30 @@ export function mediaFile(src: string | null | undefined): { id: string; ext: st
 	return m ? { id: m[1], ext: m[2].toLowerCase() } : null;
 }
 
-/** Build a clean URL; null when `src` isn't a media-library file or the size is out of range. */
+/** The original file on the media host, or null when there's no host or `src` isn't a media-library file. */
+export function cdnOriginalUrl(src: string | null | undefined): string | null {
+	const cdn = imageCdn();
+	if (!cdn) return null;
+	const file = mediaFile(src);
+	if (file) return `${cdn}/${file.id}.${file.ext}`;
+	// Already on the media host: its original.
+	const onHost = parseCdnUrl(String(src ?? "").trim());
+	return onHost ? `${cdn}/${onHost.id}.${onHost.ext}` : null;
+}
+
+/**
+ * Build a clean URL; null when `src` isn't a media-library file or the size is
+ * out of range. On the media host when one is set (format chosen by the host),
+ * otherwise the Worker's /media/ route.
+ */
 export function cleanImagePath(src: string | null | undefined, options: { width: number; height?: number; format?: string }): string | null {
 	const file = mediaFile(src);
 	if (!file) return null;
 	const width = Math.round(options.width);
 	const height = options.height === undefined ? undefined : Math.round(options.height);
 	if (!(width >= 1 && width <= MAX_DIMENSION) || (height !== undefined && !(height >= 1 && height <= MAX_DIMENSION))) return null;
+	const cdn = imageCdn();
+	if (cdn) return `${cdn}/s/${height === undefined ? width : `${width}x${height}`}/${file.id}.${file.ext}`;
 	const format = (options.format ?? "webp").toLowerCase();
 	if (!FORMATS[format]) return null;
 	return `${IMAGE_PATH}${file.id}-${height === undefined ? `${width}w` : `${width}x${height}`}.${format}`;
@@ -48,4 +123,35 @@ export function parseImagePath(pathname: string): ImageRequest | null {
 	const height = m[3] ? Number(m[3]) : undefined;
 	if (!(width >= 1 && width <= MAX_DIMENSION) || (height !== undefined && !(height >= 1 && height <= MAX_DIMENSION))) return null;
 	return { id: m[1], width, height, format: m[5].toLowerCase() };
+}
+
+/**
+ * Parse a media-host URL (absolute, on the configured host): the file and the
+ * requested size (none for the original). Null for anything else.
+ */
+export function parseCdnUrl(url: string | null | undefined): { id: string; ext: string; width?: number; height?: number } | null {
+	const cdn = imageCdn();
+	const value = String(url ?? "");
+	if (!cdn || !value.startsWith(`${cdn}/`)) return null;
+	const path = value.slice(cdn.length).split(/[?#]/)[0];
+	const m = /^\/(?:s\/(\d{1,4})(?:x(\d{1,4}))?\/)?([A-Za-z0-9_-]+)\.([a-z0-9]{2,5})$/i.exec(path);
+	if (!m) return null;
+	const width = m[1] ? Number(m[1]) : undefined;
+	const height = m[2] ? Number(m[2]) : undefined;
+	if ((width !== undefined && !(width >= 1 && width <= MAX_DIMENSION)) || (height !== undefined && !(height >= 1 && height <= MAX_DIMENSION))) return null;
+	return { id: m[3], ext: m[4].toLowerCase(), width, height };
+}
+
+/** A media-library file's bucket key as stored by EmDash (<id>.<ext>). */
+const KEY = /^[A-Za-z0-9_-]+\.[a-z0-9]{2,5}$/i;
+
+/**
+ * Where an old Worker-route URL (/media/<id>-<w>x<h>.<format>) lives on the
+ * media host, given the file's bucket key: the same size, format chosen by
+ * the host. Null without a media host or for a malformed key.
+ */
+export function cdnRedirectUrl(request: Pick<ImageRequest, "width" | "height">, key: string): string | null {
+	const cdn = imageCdn();
+	if (!cdn || !KEY.test(key)) return null;
+	return `${cdn}/s/${request.height === undefined ? request.width : `${request.width}x${request.height}`}/${key}`;
 }

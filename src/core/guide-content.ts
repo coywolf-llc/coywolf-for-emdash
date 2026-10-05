@@ -9,7 +9,7 @@
  * Kept free of imports so tests can load it directly.
  */
 
-export type GuideId = "anthropic" | "openai" | "gemini" | "workers-ai" | "r2" | "stream" | "radar";
+export type GuideId = "anthropic" | "openai" | "gemini" | "workers-ai" | "r2" | "stream" | "radar" | "media-host" | "images-token";
 
 export interface Guide {
 	summary: string;
@@ -24,12 +24,13 @@ const code = (text: string) => `<code class="rounded bg-kumo-tint px-1 text-xs">
 const b = (text: string) => `<strong class="font-medium">${text}</strong>`;
 
 /** Creating a Cloudflare API token: the steps every token guide shares. */
-const cloudflareTokenSteps = (permission: string) => [
+const cloudflareTokenSteps = (permission: string, zone = false) => [
 	`Sign in to the ${link("https://dash.cloudflare.com/profile/api-tokens", "Cloudflare dashboard → My Profile → API Tokens")}.`,
 	`Select ${b("Create Token")}, then ${b("Create Custom Token → Get started")}.`,
 	"Name it after this site so you'll recognize it later.",
-	`Under Permissions, choose ${b(permission)}.`,
+	`Under Permissions, choose ${permission}.`,
 	`Under Account Resources, choose ${b("Include → your account")}.`,
+	...(zone ? [`Under Zone Resources, choose ${b("Include → Specific zone → your site's domain")}.`] : []),
 	`Select ${b("Continue to summary")}, then ${b("Create Token")}.`,
 	"Copy the token right away. Cloudflare shows it only once.",
 ];
@@ -92,15 +93,40 @@ export const GUIDES: Record<GuideId, Guide> = {
 		summary: "How to get the Stream account ID and API token",
 		steps: [
 			`In the ${link("https://dash.cloudflare.com/?to=/:account/stream", "Cloudflare dashboard → Stream")}, copy your ${b("Account ID")} (in the right-hand column, or from the address bar after dash.cloudflare.com/) into Cloudflare account ID on the Videos page → Settings.`,
-			...cloudflareTokenSteps("Account → Stream → Edit"),
+			...cloudflareTokenSteps(b("Account → Stream → Edit")),
 			"Paste the token into Stream API token and save. It's stored encrypted.",
 		],
 		note: `Or set them as Worker variables instead: ${code("CF_ACCOUNT_ID")}, and the token with ${code("npx wrangler secret put CF_STREAM_TOKEN")}.`,
 	},
 	radar: {
 		summary: "How to get a Cloudflare Radar API token",
-		steps: [...cloudflareTokenSteps("Account → Radar → Read"), "Paste the token into Cloudflare Radar API token and save. It's stored encrypted."],
+		steps: [...cloudflareTokenSteps(b("Account → Radar → Read")), "Paste the token into Cloudflare Radar API token and save. It's stored encrypted."],
 		note: `Radar's API is free. Or set the token as a Worker secret instead: ${code("npx wrangler secret put RADAR_API_TOKEN")}.`,
+	},
+	"media-host": {
+		summary: "How to set up a media host by hand in the Cloudflare dashboard",
+		steps: [
+			`Find the R2 bucket bound as ${code("MEDIA")} in your site's ${code("wrangler.jsonc")} (its ${code("bucket_name")}). The media host serves that bucket, at a subdomain of the site's own domain, such as ${code("media.example.com")}.`,
+			`Turn on Image Transformations: ${link("https://dash.cloudflare.com/?to=/:account/images/transformations", "Cloudflare dashboard → Images → Transformations")}, find the site's domain and select ${b("Enable for zone")}. Leave ${b("Resize images from any origin")} off: the media host is on the same domain.`,
+			`Connect the domain to the bucket: ${link("https://dash.cloudflare.com/?to=/:account/r2/overview", "R2")} → the media bucket → ${b("Settings → Custom Domains → Add")}. Enter ${code("media.example.com")}, set the minimum TLS version to 1.2, and confirm. Cloudflare adds the DNS record; the certificate takes a few minutes.`,
+			`Add the first URL rewrite rule: the site's domain → ${b("Rules → Overview → Create rule → URL Rewrite Rule")}. Name it ${code("media.example.com: /s/&lt;W&gt;x&lt;H&gt;/&lt;file&gt; → cropped resize (Coywolf Pack clean image URLs)")}. Choose ${b("Custom filter expression → Edit expression")} and enter ${code('(http.host eq "media.example.com" and http.request.uri.path wildcard "/s/*x*/*")')}. Under Path, choose ${b("Rewrite to… → Dynamic")} and enter ${code('wildcard_replace(http.request.uri.path, "/s/*x*/*", "/cdn-cgi/image/width=${1},height=${2},fit=cover,format=auto,quality=85/${3}")')}. Leave Query as is and deploy.`,
+			`Add the second rule, named ${code("media.example.com: /s/&lt;W&gt;/&lt;file&gt; → resize to width (Coywolf Pack clean image URLs)")}, with the expression ${code('(http.host eq "media.example.com" and http.request.uri.path wildcard "/s/*/*" and not http.request.uri.path wildcard "/s/*x*/*")')} and the dynamic path ${code('wildcard_replace(http.request.uri.path, "/s/*/*", "/cdn-cgi/image/width=${1},format=auto,quality=85/${2}")')}. Deploy it.`,
+			`Use your own host name in place of ${code("media.example.com")} everywhere (keep the names exactly as shown otherwise: Set up media host recognizes its rules by name).`,
+			`Enter the host as the Media host on this page and select ${b("Check")}. When every check passes, save. Or set it in ${code("astro.config.mjs")}: ${code('coywolfPlugin({ images: { cdn: "https://media.example.com" } })')}.`,
+		],
+		note: "Cloudflare's Free plan includes 5,000 unique image transformations a month (each new size of each image counts once a month). Beyond that, transformations need a paid Cloudflare Images plan.",
+	},
+	"images-token": {
+		summary: "How to get a Cloudflare API token for Set up media host",
+		steps: [
+			`In the ${link("https://dash.cloudflare.com/", "Cloudflare dashboard")}, open the site's domain and copy the ${b("Account ID")} from the right-hand column (API section) into Cloudflare account ID.`,
+			...cloudflareTokenSteps(
+				`these six: ${b("Zone → Zone → Read")}, ${b("Zone → Zone Settings → Edit")}, ${b("Zone → Transform Rules → Edit")}, ${b("Zone → DNS → Edit")}, ${b("Account → Workers R2 Storage → Edit")} and ${b("Account → Account Rulesets → Read")}`,
+				true,
+			),
+			"Paste the token into Cloudflare API token. Save it to keep it (stored encrypted), or leave it unsaved to use it just this once.",
+		],
+		note: `The token is used only for the setup, and only with api.cloudflare.com. You can delete it in Cloudflare afterward. Or set it as a Worker secret instead: ${code("npx wrangler secret put IMAGES_API_TOKEN")}.`,
 	},
 };
 
@@ -120,6 +146,10 @@ export const SETTINGS_PAGE_GUIDES: Record<string, { intro: string; guides: Guide
 	videosApiToken: {
 		intro: "Or set the CF_STREAM_TOKEN Worker secret. The account ID goes on the Videos page → Settings.",
 		guides: ["stream"],
+	},
+	imagesApiToken: {
+		intro: "Optional. Only for Set up media host on the Clean Image URLs page. Or set the IMAGES_API_TOKEN Worker secret.",
+		guides: ["images-token"],
 	},
 	robotsRadarToken: {
 		intro: "Optional. Keeps the crawler list current from Cloudflare Radar each week. Or set the RADAR_API_TOKEN Worker secret.",
