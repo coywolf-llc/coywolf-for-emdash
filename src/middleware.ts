@@ -17,6 +17,8 @@ import { siteFeatures, isOn } from "./core/features.js";
 import { injectAdminEnhancements } from "./core/settings-enhance.js";
 import type { PackMiddleware } from "./core/module.js";
 import { MIDDLEWARE } from "./modules.js";
+import { PAGE_CACHE_FEATURE } from "./pageCache/pack.js";
+import { purgePageCache, purgesAfter } from "./pageCache/lib.js";
 
 export interface CoywolfPackMiddlewareOptions {
 	/** D1 binding of the site database. Default "DB". */
@@ -40,6 +42,12 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 		const env = workers.env;
 		const waitUntil = (p: Promise<unknown>) => (workers.waitUntil ? workers.waitUntil(p) : void p);
 		const features = await siteFeatures(options.database);
+		// Page cache: a successful pack admin write (settings, redirects, imports…) can change any page.
+		if (isOn(features, PAGE_CACHE_FEATURE) && purgesAfter(context.request.method, context.url.pathname)) {
+			const response = await next();
+			if (response.status < 400) waitUntil(purgePageCache());
+			return response;
+		}
 		for (const handler of handlers) {
 			if (!isOn(features, handler.feature)) continue;
 			try {

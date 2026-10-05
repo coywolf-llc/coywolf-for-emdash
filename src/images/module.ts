@@ -13,7 +13,7 @@ import { z } from "zod";
 
 import { requireFeature } from "../core/features.js";
 import { parseInput, secret, workerEnv } from "../shared.js";
-import { CloudflareApiError, type CloudflareConfig, applySetup, checkMediaHost, planSetup } from "./cloudflare.js";
+import { CloudflareApiError, type CloudflareConfig, applySetup, checkMediaHost, planSetup, purgeHost } from "./cloudflare.js";
 import { imageCdn, imageCdnSource, normalizeMediaHost } from "./lib.js";
 import { IMAGES_SETTINGS, invalidateMediaHost, refreshMediaHost } from "./settings.js";
 
@@ -117,6 +117,36 @@ async function credentials(ctx: PluginContext, input: z.infer<typeof setupInput>
 	if (missing.length) throw PluginRouteError.badRequest(`Enter the ${missing.join(", ")} first.`);
 	const doFetch = ctx.http ? (ctx.http.fetch.bind(ctx.http) as CloudflareConfig["fetch"]) : undefined;
 	return { token: token as string, accountId: accountId as string, bucket, host, fetch: doFetch };
+}
+
+/**
+ * Clear the media host's images from Cloudflare's zone cache, with the same
+ * token and account as the media host setup (the token also needs
+ * Zone → Cache Purge → Purge). Says why when it can't, instead of throwing.
+ */
+export async function purgeMediaHost(ctx: PluginContext): Promise<{ purged: boolean; host: string | null; message?: string }> {
+	await refreshMediaHost();
+	const host = imageCdn();
+	if (!host) return { purged: false, host: null, message: "No media host is set, so there are no images to clear." };
+	const hostname = new URL(host).hostname;
+	const e = await env();
+	const savedToken = await ctx.settings.get<string>(IMAGES_SETTINGS.token).catch(() => null);
+	const token = savedToken?.trim() || secret(e, "IMAGES_API_TOKEN") || secret(e, "CLOUDFLARE_API_TOKEN");
+	const accountId = (await ctx.settings.get<string>(IMAGES_SETTINGS.accountId))?.trim() || secret(e, "CF_ACCOUNT_ID") || secret(e, "CLOUDFLARE_ACCOUNT_ID");
+	if (!token || !accountId) {
+		return {
+			purged: false,
+			host: hostname,
+			message: `Images on ${hostname} weren't cleared: add a Cloudflare API token and account ID on the Clean Image URLs page (the token needs Zone → Cache Purge → Purge).`,
+		};
+	}
+	const doFetch = ctx.http ? (ctx.http.fetch.bind(ctx.http) as CloudflareConfig["fetch"]) : undefined;
+	try {
+		await purgeHost({ token, accountId, fetch: doFetch }, hostname);
+		return { purged: true, host: hostname };
+	} catch (error) {
+		return { purged: false, host: hostname, message: `Images on ${hostname} weren't cleared. ${error instanceof Error ? error.message : String(error)}` };
+	}
 }
 
 function apiError(error: unknown): never {

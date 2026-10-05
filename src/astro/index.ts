@@ -62,5 +62,6 @@ export { reviewFromAttrs } from "../reviews/lib.js";
  * null when off); originalImageUrl (alias mediaUrl) gives the original file
  * on the media host (falls back to the source).
  */
-export { cleanImageUrl, mediaUrl, originalImageUrl } from "../images/pack.js";
+export { cleanImageUrl, imageDimensions, mediaUrl, originalImageUrl } from "../images/pack.js";
+export type { ImageDimensions } from "../images/pack.js";
 export { cleanImagePath, mediaFile } from "../images/lib.js";
