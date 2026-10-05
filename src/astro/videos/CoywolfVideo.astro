@@ -203,6 +203,10 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 		font: inherit;
 		cursor: pointer;
 	}
+	/* No likes yet: drop the empty count so the gap doesn't push the heart off center. */
+	.cw-video__likes:empty {
+		display: none;
+	}
 	.cw-video__like[aria-pressed="true"] {
 		color: var(--cw-video-accent);
 	}
