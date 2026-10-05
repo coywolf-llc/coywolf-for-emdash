@@ -580,6 +580,14 @@ import { readFileSync } from "node:fs";
 const BUNDLED = JSON.parse(readFileSync(new URL("../src/robots/data/bots.json", import.meta.url), "utf8")).bots;
 const VERIFIED = JSON.parse(readFileSync(new URL("../src/robots/data/verified.json", import.meta.url), "utf8"));
 
+test("the bundled directory loads on first use, once", async () => {
+	const directory = await import("../src/robots/directory.ts");
+	const bots = await directory.baselineBots();
+	assert.deepEqual(bots, BUNDLED);
+	assert.equal(await directory.baselineBots(), bots, "loaded once per isolate");
+	assert.match(await directory.baselineDate(), /^\d{4}-\d{2}-\d{2}/);
+});
+
 test("preset membership snapshot", () => {
 	const members = Object.fromEntries(rules.CRAWLER_GROUPS.map((g) => [g.id, rules.groupTokens(g, BUNDLED)]));
 	assert.deepEqual(members, {

@@ -109,7 +109,7 @@ export async function syncRadar(ctx: PluginContext): Promise<SyncState> {
 	try {
 		const radar = await fetchRadar(ctx, token);
 		if (radar.length < 100) throw new Error(`Radar returned only ${radar.length} bots; keeping the current directory.`);
-		const result = mergeRadar(baselineBots(), await readOverlays(ctx), radar, at.slice(0, 10));
+		const result = mergeRadar(await baselineBots(), await readOverlays(ctx), radar, at.slice(0, 10));
 		const collection = ctx.storage[OVERLAY_COLLECTION];
 		if (result.writes.length && collection) {
 			for (let i = 0; i < result.writes.length; i += 100) {
