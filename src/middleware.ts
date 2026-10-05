@@ -64,7 +64,14 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 			if (handler.feature !== ALWAYS && !isOn(features, handler.feature)) continue;
 			try {
 				const response = await handler.handle(context, env, waitUntil);
-				if (response) return response;
+				if (response) {
+					// The pack's own responses (redirects, robots.txt, files…) set their own
+					// Cache-Control. Without this, a site route rule (e.g. on a catch-all page
+					// route) would add its edge lifetime to them too, so redirects would be
+					// cached and stop counting hits.
+					(context as unknown as { cache?: { set?(options: false): void } }).cache?.set?.(false);
+					return response;
+				}
 			} catch (error) {
 				console.error(`coywolf-pack: ${handler.module} middleware failed`, error);
 			}

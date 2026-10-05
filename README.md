@@ -222,7 +222,7 @@ EmDash clears the pages it tagged when content, menus or site settings change. *
 - **Media cache**: shows whether the media host (Clean Image URLs) has a Cloudflare Cache Rule, and **Cache media for a year** adds one (edge and browser TTL one year; media file names never change). Needs the Clean Image URLs token with **Zone → Cache Rules → Edit**. Other cache rules on the zone are kept.
 - **Clear pages and images**: clears every cached page now, plus the media host's images (originals and resized copies) from the zone cache. Cloudflare's zone **Purge Everything** doesn't reach Workers Cache, which belongs to the Worker. Clearing images uses the Clean Image URLs token, which needs **Zone → Cache Purge → Purge**.
 
-Pack redirects send `Cache-Control: private, max-age=3600`, so the edge never caches them and hit counts stay accurate; browsers still keep them for an hour.
+Responses the pack serves itself (redirects, robots.txt, llms.txt, files, clean image URLs) keep their own `Cache-Control`: the middleware turns Astro's route caching off for them, so a site route rule (for example on a catch-all page route) doesn't add its edge lifetime. Redirects send `Cache-Control: private, max-age=3600`, so the edge never caches them and hit counts stay accurate; browsers still keep them for an hour.
 
 ## Backups
 
