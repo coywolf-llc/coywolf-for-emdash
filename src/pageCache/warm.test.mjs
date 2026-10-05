@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { sitemapLocs, warmOrder, collectUrls, newWarmState, claimWork, warmStep, writeWarmState, readWarmState, startWarm } = await import("./warm.ts");
+const { sitemapLocs, warmOrder, collectUrls, homeLinks, newWarmState, claimWork, warmStep, writeWarmState, readWarmState, startWarm } = await import("./warm.ts");
 const { purgeScope } = await import("./lib.ts");
 
 const API = "/_emdash/api/plugins/coywolf-pack/";
@@ -52,6 +52,20 @@ test("collects URLs through a sitemap index", async () => {
 	});
 	assert.deepEqual(await collectUrls(site, "https://x.com"), ["https://x.com/", "https://x.com/p2/", "https://x.com/p1/"]);
 	assert.ok(!site.hits.some((u) => u.includes("evil.com")), "other hosts are never fetched");
+});
+
+test("section pages linked from the home page come right after it", async () => {
+	const site = fakeSite({
+		"https://x.com/": `<nav><a href="/notes/">Notes</a> <a class="x" href='https://x.com/news/#top'>News</a> <a href="https://other.com/a/">x</a>
+			<a href="/p1/">p1</a> <a href="/_emdash/admin">admin</a> <a href="/feed/">rss</a> <a href="/file.pdf">pdf</a> <a href="/search/?q=a">s</a> <a href="#main">skip</a></nav>`,
+		"https://x.com/sitemap.xml": "<urlset><url><loc>https://x.com/p2/</loc></url><url><loc>https://x.com/p1/</loc></url></urlset>",
+	});
+	assert.deepEqual(await collectUrls(site, "https://x.com"), ["https://x.com/", "https://x.com/notes/", "https://x.com/news/", "https://x.com/p1/", "https://x.com/p2/"]);
+});
+
+test("home links are capped", () => {
+	const html = Array.from({ length: 300 }, (_, i) => `<a href="/c${i}/">c</a>`).join("");
+	assert.equal(homeLinks(html, "https://x.com").length, 200);
 });
 
 /** The slice of D1 the warm queue uses: one options table. */

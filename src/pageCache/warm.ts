@@ -58,6 +58,35 @@ export function sitemapLocs(xml: string): { isIndex: boolean; locs: string[] } {
 	return { isIndex, locs };
 }
 
+/** Most links taken from the home page (its menus and section pages). */
+export const MAX_HOME_LINKS = 200;
+
+/**
+ * Same-origin page links in the home page: menus, footers and section pages
+ * (category archives such as /notes/) that sitemaps often leave out. Skips
+ * EmDash/plugin routes, feeds, files and URLs with a query string.
+ */
+export function homeLinks(html: string, origin: string, max = MAX_HOME_LINKS): string[] {
+	const out: string[] = [];
+	for (const m of html.matchAll(/<a\b[^>]*?\shref\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+		if (out.length >= max) break;
+		const raw = (m[1] ?? m[2] ?? "").replace(/&amp;/g, "&").trim();
+		if (!raw || raw.startsWith("#")) continue;
+		let url: URL;
+		try {
+			url = new URL(raw, origin);
+		} catch {
+			continue;
+		}
+		if (url.origin !== origin || url.search) continue;
+		const path = url.pathname;
+		if (/^\/_/.test(path) || /\/feed\/?$/.test(path) || /\.[a-z0-9]{2,5}$/i.test(path)) continue;
+		url.hash = "";
+		out.push(url.href);
+	}
+	return out;
+}
+
 /**
  * The URLs to warm, same-origin only, without duplicates, home page first,
  * then in sitemap order (newest posts first on most sites), capped.
@@ -97,6 +126,8 @@ export async function collectUrls(self: Fetcher, origin: string): Promise<string
 		const res = await self.fetch(new Request(url, { headers: { "User-Agent": WARMER_AGENT } }));
 		return res.ok ? res.text() : "";
 	};
+	// Pages the home page links to (menus, section pages) come right after it.
+	const linked = homeLinks(await read(`${origin}/`), origin);
 	const root = sitemapLocs(await read(`${origin}/sitemap.xml`));
 	let urls = root.locs;
 	if (root.isIndex) {
@@ -107,7 +138,7 @@ export async function collectUrls(self: Fetcher, origin: string): Promise<string
 			if (urls.length >= MAX_URLS) break;
 		}
 	}
-	return warmOrder(origin, urls);
+	return warmOrder(origin, [...linked, ...urls]);
 }
 
 // ── Storage (one option row; works from middleware, routes and the minute task) ──
