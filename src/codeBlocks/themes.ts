@@ -5,7 +5,7 @@
  * 4.5:1 against its background darkened or lightened to pass (contrast.ts).
  * Only the active theme's CSS is sent, and only on pages that render a code block.
  */
-import { mutedColor, readableThemeCss } from "./contrast.js";
+import { LABEL_OPACITY, LINE_OPACITY, fadedColor, mutedColor, parseColor, readableThemeCss } from "./contrast.js";
 import { HLJS_THEMES } from "./themes.generated.js";
 
 export const THEME_SETTING = "codeBlocksTheme";
@@ -30,13 +30,26 @@ const AUTO_PAIRS: Record<string, { label: string; light: string; dark: string }>
 
 // ── Coywolf palette (ported from Code Block Enhancer's default theme) ──
 
-const COYWOLF_LIGHT =
-	"--cw-bg:#fff;--cw-fg:#1f2328;--cw-comment:#4b5563;--cw-punct:#374151;--cw-keyword:#7e22ce;--cw-function:#1d4ed8;--cw-string:#166534;--cw-variable:#9a3412;--cw-number:#155e75;--cw-operator:#111827;--cw-del:#b91c1c";
-const COYWOLF_DARK =
-	"--cw-bg:#050520;--cw-fg:#e6edf3;--cw-comment:#8b949e;--cw-punct:#c9d1d9;--cw-keyword:#c084fc;--cw-function:#60a5fa;--cw-string:#4ade80;--cw-variable:#fb923c;--cw-number:#22d3ee;--cw-operator:#e6edf3;--cw-del:#f87171";
+/**
+ * A palette plus its line-number and label colors (--cw-line, --cw-label):
+ * the text color at the opacity each used to have, raised to 4.5:1 only where
+ * that's too faint.
+ */
+function withMuted(palette: string): string {
+	const v = (name: string) => parseColor(new RegExp(`--cw-${name}:(#[0-9a-f]{3,6})`).exec(palette)?.[1] ?? "") ?? [0, 0, 0, 1];
+	const [fg, bg] = [v("fg"), v("bg")];
+	return `${palette};--cw-line:${fadedColor(fg, bg, LINE_OPACITY)};--cw-label:${fadedColor(fg, bg, LABEL_OPACITY)}`;
+}
+
+const COYWOLF_LIGHT = withMuted(
+	"--cw-bg:#fff;--cw-fg:#1f2328;--cw-comment:#4b5563;--cw-punct:#374151;--cw-keyword:#7e22ce;--cw-function:#1d4ed8;--cw-string:#166534;--cw-variable:#9a3412;--cw-number:#155e75;--cw-operator:#111827;--cw-del:#b91c1c",
+);
+const COYWOLF_DARK = withMuted(
+	"--cw-bg:#050520;--cw-fg:#e6edf3;--cw-comment:#8b949e;--cw-punct:#c9d1d9;--cw-keyword:#c084fc;--cw-function:#60a5fa;--cw-string:#4ade80;--cw-variable:#fb923c;--cw-number:#22d3ee;--cw-operator:#e6edf3;--cw-del:#f87171",
+);
 
 const COYWOLF_TOKENS = [
-	".cw-code{background:var(--cw-bg);color:var(--cw-fg);--cw-line:var(--cw-comment)}",
+	".cw-code{background:var(--cw-bg);color:var(--cw-fg)}",
 	".cw-code .hljs-comment,.cw-code .hljs-quote,.cw-code .hljs-meta{color:var(--cw-comment)}",
 	".cw-code .hljs-comment,.cw-code .hljs-quote{font-style:italic}",
 	".cw-code .hljs-punctuation,.cw-code .hljs-tag{color:var(--cw-punct)}",
@@ -71,8 +84,8 @@ function hljsCss(id: string): string {
 	let css = readable.get(id);
 	if (css === undefined) {
 		const fixed = readableThemeCss(theme.css);
-		// --cw-line: the line-number color (render.ts), muted but still 4.5:1.
-		css = `${fixed}.cw-code{--cw-line:${mutedColor(fixed)}}`;
+		// --cw-line and --cw-label: line numbers and the language label (render.ts), muted but still 4.5:1.
+		css = `${fixed}.cw-code{--cw-line:${mutedColor(fixed, LINE_OPACITY)};--cw-label:${mutedColor(fixed, LABEL_OPACITY)}}`;
 		readable.set(id, css);
 	}
 	return `.cw-code{color-scheme:${theme.scheme}}${css}`;

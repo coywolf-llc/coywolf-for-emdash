@@ -140,15 +140,28 @@ export function themeTextColors(css: string): Array<{ selector: string; color: R
 	return out;
 }
 
+/** Opacity line numbers had (now a color per theme, --cw-line). */
+export const LINE_OPACITY = 0.5;
+/** Opacity the language label had (now a color per theme, --cw-label). */
+export const LABEL_OPACITY = 0.75;
+
 /**
- * A muted text color for line numbers: the theme's text color 60% of the way
- * from its background (what opacity:.5 used to do), raised to 4.5:1 where
- * that's too faint.
+ * `color` at `opacity` over `background`, as an opaque hex: exactly what the
+ * opacity looked like when that already reaches 4.5:1, else the nearest
+ * lightness that does (readableOn).
  */
-export function mutedColor(css: string): string {
+export function fadedColor(color: Rgba, background: Rgba, opacity: number): string {
+	return toHex(readableOn([color[0], color[1], color[2], color[3] * opacity], background));
+}
+
+/**
+ * A muted text color for a theme (line numbers by default): its text color at
+ * `opacity` over its background, as before, raised to 4.5:1 only where that's
+ * too faint.
+ */
+export function mutedColor(css: string, opacity = LINE_OPACITY): string {
 	const { color, background } = themeBase(css);
-	const muted: Rgba = [0, 1, 2].map((i) => color[i] * 0.6 + background[i] * 0.4).concat(1) as Rgba;
-	return toHex(readableOn(muted, background));
+	return fadedColor(color, background, opacity);
 }
 
 /** The theme CSS with every text color under 4.5:1 replaced by a readable one of the same hue. */

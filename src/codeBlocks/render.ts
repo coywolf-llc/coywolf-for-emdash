@@ -283,7 +283,7 @@ export const CHROME_CSS = [
 	".cw-code{position:relative;margin:1.5rem 0;border-radius:.5rem;overflow:hidden;font-size:.875rem;line-height:1.6;box-shadow:inset 0 0 0 1px color-mix(in srgb,currentColor 12%,transparent)}",
 	".cw-code-head{display:flex;align-items:center;gap:.75rem;min-height:2.75rem;padding:.25rem 1rem;font:.75rem/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.02em;border-bottom:1px solid color-mix(in srgb,currentColor 15%,transparent)}",
 	".cw-code--copy .cw-code-head{padding-right:3.25rem}",
-	".cw-code-label{font-weight:600;opacity:.75}",
+	".cw-code-label{font-weight:600;color:var(--cw-label,currentColor)}",
 	".cw-code pre{margin:0;padding:1rem;overflow-x:auto;background:transparent;color:inherit;border:0;border-radius:0;tab-size:4}",
 	".cw-code--bare.cw-code--copy pre{padding-right:3.25rem}",
 	".cw-code pre:focus-visible{outline:2px solid currentColor;outline-offset:-2px}",
