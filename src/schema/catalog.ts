@@ -122,7 +122,7 @@ export const PROPERTY_INPUTS: Record<string, PropertyInput> = {
 			addressLocality: { label: "City", input: "text" },
 			addressRegion: { label: "Region / State", input: "text" },
 			postalCode: { label: "Postal code", input: "text" },
-			addressCountry: { label: "Country", input: "text" },
+			addressCountry: { label: "Country (two-letter code, like US)", input: "text" },
 		},
 	},
 	contactPoint: {

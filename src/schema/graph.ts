@@ -184,7 +184,7 @@ export function shapeRows(rows: PropertyRow[] | null | undefined, parentType: "O
 			for (const [key, raw] of Object.entries(row.value)) {
 				const value = typeof raw === "string" ? raw.trim() : "";
 				if (!value) continue;
-				fields[key] = key === "url" || key === "@id" ? (absolute(value, origin) ?? "") : value;
+				fields[key] = key === "url" || key === "@id" ? (absolute(value, origin) ?? "") : key === "addressCountry" ? countryCode(value) : value;
 				if (!fields[key]) delete fields[key];
 			}
 			if (!Object.keys(fields).length) continue;
@@ -214,6 +214,22 @@ export function shapeRows(rows: PropertyRow[] | null | undefined, parentType: "O
 		}
 	}
 	return out;
+}
+
+/** Common country names and three-letter codes people type, as the two-letter ISO 3166-1 codes Google expects. */
+const COUNTRY_ALIASES: Record<string, string> = {
+	usa: "US", "united states": "US", "united states of america": "US", us: "US", "u.s.": "US", "u.s.a.": "US", america: "US",
+	uk: "GB", "united kingdom": "GB", "great britain": "GB", gbr: "GB", england: "GB", scotland: "GB", wales: "GB",
+	can: "CA", canada: "CA", aus: "AU", australia: "AU", nzl: "NZ", "new zealand": "NZ", irl: "IE", ireland: "IE",
+	deu: "DE", germany: "DE", fra: "FR", france: "FR", esp: "ES", spain: "ES", ita: "IT", italy: "IT", nld: "NL", netherlands: "NL",
+	mex: "MX", mexico: "MX", bra: "BR", brazil: "BR", ind: "IN", india: "IN", jpn: "JP", japan: "JP",
+};
+
+/** A PostalAddress country as a two-letter code: aliases are mapped, two-letter codes uppercased, anything else kept as typed. */
+export function countryCode(value: string): string {
+	const alias = COUNTRY_ALIASES[value.toLowerCase()];
+	if (alias) return alias;
+	return /^[a-z]{2}$/i.test(value) ? value.toUpperCase() : value;
 }
 
 /** The @id row's value, if any. */
