@@ -1,7 +1,7 @@
 /**
  * Read a WordPress Cloudflare Stream embed (a Custom HTML block) into the
- * player settings the Coywolf Video block uses. Handles the shapes found on
- * Coywolf's sites:
+ * player settings the Coywolf Video block uses. Handles the embed shapes
+ * Cloudflare's dashboard and WordPress plugins produce (found on Coywolf's sites):
  *
  * - the responsive wrapper `<div style="position: relative; padding-top: 56.25%">`
  *   around a Stream `<iframe>` (customer subdomain or iframe.videodelivery.net),

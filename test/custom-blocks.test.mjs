@@ -124,13 +124,20 @@ test("the shared CSS is theme-agnostic (currentColor mixes) and has dark-mode ac
 
 // ── WordPress import ─────────────────────────────────────────────
 
-function importFixture(name, opts = {}) {
-	const prepared = prepareContent(fixture(name));
+function importFixture(name, opts = {}, prepareOpts = {}) {
+	const prepared = prepareContent(fixture(name), prepareOpts);
 	return { prepared, result: convertPortableText(gutenbergToPortableText(prepared.content), { key: keys(), ...opts }) };
 }
 
+test("without disclosureBlocks, a site-specific disclosure block is only counted as one EmDash drops", () => {
+	const { prepared } = importFixture("custom-blocks.html");
+	assert.equal(prepared.counts["genesis-custom-blocks/disclosure → dropped"], 1);
+	assert.equal(prepared.counts["genesis-custom-blocks/disclosure → disclosure"], undefined);
+	assert.equal(prepared.counts["coywolf-custom-blocks/ftc → disclosure"], 1);
+});
+
 test("coywolf.com disclosures, notes and quotes convert to Custom Blocks, content exact", () => {
-	const { prepared, result } = importFixture("custom-blocks.html");
+	const { prepared, result } = importFixture("custom-blocks.html", {}, { disclosureBlocks: ["genesis-custom-blocks/disclosure"] });
 	assert.deepEqual(prepared.counts, {
 		"coywolf-custom-blocks/ftc → disclosure": 1,
 		"coywolf-custom-blocks/amazon → disclosure": 1,

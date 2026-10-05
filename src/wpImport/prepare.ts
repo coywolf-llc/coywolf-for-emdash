@@ -4,33 +4,46 @@
  * EmDash converts Gutenberg with @emdash-cms/gutenberg-to-portable-text,
  * which plugins can't extend: blocks it doesn't know become an `htmlBlock`
  * of the block's saved HTML, and self-closing blocks (which keep everything in
- * their attributes, like most Coywolf blocks) are dropped. Heading ids are
- * dropped too. This rewrites, inside each post's content:
+ * their attributes) are dropped. Heading ids are dropped too. This rewrites,
+ * inside each post's content:
+ *
+ * For any WordPress site:
+ *
+ * - heading ids into "anchor" markers, so imported headings keep their ids and
+ *   old #links keep working;
+ * - reusable blocks (synced patterns, `core/block` with a `ref`) into the
+ *   blocks they hold, from the export's `wp_block` items (EmDash would drop
+ *   the reference);
+ * - core Details blocks (EmDash would drop the summary) into markers that
+ *   become Details blocks;
+ * - WordPress's &#91; (and bold markup) inside code blocks, which would
+ *   otherwise show up as literal text;
+ * - Yoast's related links into Custom HTML with the markup WordPress
+ *   rendered, so their content isn't lost;
+ * - blocks with nothing to import (Gravity Forms) into empty markers a theme
+ *   can find;
+ * - and it counts other self-closing third-party blocks, which EmDash drops,
+ *   so the report lists what to rebuild.
+ *
+ * For sites that used Coywolf's WordPress plugins (each only runs when the
+ * block is in the content):
  *
  * - Coywolf blocks the pack has native blocks for (Cloudflare Stream videos and
  *   their embed HTML, Video Manager videos, reviews, tables of contents, file
  *   downloads) into marker HTML blocks (see ./markers.ts) that the pack's
  *   import hook turns into Coywolf Video, Coywolf Review, Table of Contents and
  *   File download blocks;
- * - heading ids into "anchor" markers, so imported headings keep their ids and
- *   old #links keep working;
  * - Coywolf Custom Blocks that were templates: sidenotes and editor's notes,
- *   transcripts and accordions, blockquotes, and core Details blocks (EmDash
- *   would drop the summary) into markers with their exact content, which
- *   become Note, Details and Quote blocks (Custom Blocks module); affiliate
- *   disclosures (ftc, amazon, Genesis disclosure) into markers that become
- *   Affiliate disclosure blocks; testimonials into markers that become
+ *   transcripts and accordions, and blockquotes into markers with their exact
+ *   content, which become Note, Details and Quote blocks (Custom Blocks
+ *   module); affiliate disclosures (ftc, amazon, plus any block named in
+ *   `disclosureBlocks`) into markers that become Affiliate disclosure blocks;
+ *   testimonials into markers that become
  *   Testimonial blocks; the podcast links block (it had no fields: the
  *   template printed the show's links) into a marker that becomes a Podcast
  *   links block using the site's links. Each marker also holds the HTML
  *   WordPress rendered (where it had content of its own), so the content shows
- *   even if it isn't converted;
- * - Yoast's related links into Custom HTML with the markup WordPress
- *   rendered, so their content isn't lost;
- * - Code Block Enhancer's bold markup and WordPress's &#91; inside code
- *   blocks, which would otherwise show up as literal text;
- * - blocks with nothing to import (Gravity Forms) into empty markers a theme
- *   can find.
+ *   even if it isn't converted.
  *
  * Everything else is left byte for byte. Pure (no imports beyond siblings), so
  * it runs in the admin (browser), a Node script, and tests.
@@ -44,7 +57,21 @@ import { hasStreamPlayer, parseStreamEmbed } from "./stream.js";
 export interface PrepareOptions {
 	/** WordPress attachment id → URL (from the WXR), for testimonial headshots. */
 	attachments?: Map<number, string>;
+	/** Reusable block (`wp_block`) id → its content (from the WXR), to inline `core/block` references. */
+	reusableBlocks?: Map<number, string>;
+	/**
+	 * More self-closing blocks that printed an affiliate disclosure (the site's
+	 * wording) and become Affiliate disclosure blocks, e.g.
+	 * `genesis-custom-blocks/disclosure` on coywolf.com. Coywolf Custom Blocks'
+	 * ftc and amazon blocks always do.
+	 */
+	disclosureBlocks?: string[];
+	/** Internal: how many reusable blocks deep this content is. */
+	reusableDepth?: number;
 }
+
+/** How deep reusable blocks may nest inside each other. */
+const MAX_REUSABLE_DEPTH = 5;
 
 /** What happened to one kind of block. */
 export type PrepareAction =
@@ -63,7 +90,13 @@ export type PrepareAction =
 	| "html"
 	| "flag"
 	| "code"
-	| "removed";
+	| "removed"
+	/** A reusable block's content took the reference's place. */
+	| "inlined"
+	/** A reusable block reference whose block isn't in the export (left as is; EmDash drops it). */
+	| "missing"
+	/** A self-closing block EmDash will drop (counted only; nothing changes). */
+	| "dropped";
 
 export interface PrepareCounts {
 	/** `${wordpress block name} → ${action}` → count. */
@@ -78,13 +111,13 @@ export interface PrepareResult {
 
 const WRAP = (html: string) => htmlBlock(html);
 
-/** The transcript block's default Summary on coywolf.com. */
+/** Coywolf Custom Blocks' transcript block's default Summary (not saved when left as is). */
 export const TRANSCRIPT_SUMMARY = "Read the audio transcript";
 
 /** Blocks that render nothing on WordPress and are removed. */
 const REMOVE = new Set(["coywolf-custom-blocks/newsletter"]);
 /** Affiliate disclosures: no content of their own (the theme printed the wording); they become Affiliate disclosure blocks. */
-const DISCLOSURES = new Set(["coywolf-custom-blocks/ftc", "coywolf-custom-blocks/amazon", "genesis-custom-blocks/disclosure"]);
+const DISCLOSURES = new Set(["coywolf-custom-blocks/ftc", "coywolf-custom-blocks/amazon"]);
 /** Blocks kept as empty markers for the theme (their output came from the theme or another plugin). */
 const FLAG: Record<string, string> = {
 	"gravityforms/form": "gravity-form",
@@ -223,7 +256,7 @@ function replacement(block: GBlock, opts: PrepareOptions): { blocks: GBlock[]; a
 			return { blocks: [WRAP(markerHtml("related-links", {}, blockHtml(block).trim()))], action: "html" };
 		default:
 			if (block.name && REMOVE.has(block.name)) return { blocks: [], action: "removed" };
-			if (block.name && DISCLOSURES.has(block.name)) return { blocks: [WRAP(markerHtml("disclosure", { block: block.name, ...a }))], action: "disclosure" };
+			if (block.name && (DISCLOSURES.has(block.name) || opts.disclosureBlocks?.includes(block.name))) return { blocks: [WRAP(markerHtml("disclosure", { block: block.name, ...a }))], action: "disclosure" };
 			if (block.name && FLAG[block.name]) return { blocks: [WRAP(markerHtml(FLAG[block.name] as string, { block: block.name, ...a }))], action: "flag" };
 			return null;
 	}
@@ -288,15 +321,44 @@ function transformList(list: GBlock[], opts: PrepareOptions, counts: PrepareCoun
 			}
 			continue;
 		}
+		if (block.name === "core/block") {
+			// A reusable block (synced pattern): put its blocks in place of the reference.
+			const ref = Number(block.attrs.ref);
+			const depth = opts.reusableDepth ?? 0;
+			const body = Number.isInteger(ref) && depth < MAX_REUSABLE_DEPTH ? opts.reusableBlocks?.get(ref) : undefined;
+			if (body !== undefined) {
+				out[i] = flatten(transformList(parseBlocks(body), { ...opts, reusableDepth: depth + 1 }, counts));
+				count(block.name, "inlined");
+			} else if (block.attrs.ref !== undefined) {
+				count(block.name, "missing");
+			}
+			continue;
+		}
 		const rep = replacement(block, opts);
 		if (rep) {
 			out[i] = rep.blocks;
 			count(block.name, rep.action);
 			continue;
 		}
+		// Self-closing blocks keep everything in attributes, and EmDash drops the ones it doesn't know.
+		if (block.void && block.name && !block.name.startsWith("core/")) count(block.name, "dropped");
 		if (block.innerBlocks.length) rebuildInner(block, opts, counts);
 	}
 	return out;
+}
+
+const SPACER = (): GBlock => ({ name: null, attrs: {}, innerHTML: "\n\n", innerBlocks: [], innerContent: ["\n\n"], opener: "", closer: "", void: false });
+
+/** One list from the replacement groups, with a blank line between blocks that replaced one. */
+function flatten(replaced: GBlock[][]): GBlock[] {
+	const flat: GBlock[] = [];
+	for (const group of replaced) {
+		group.forEach((b, n) => {
+			if (n > 0) flat.push(SPACER());
+			flat.push(b);
+		});
+	}
+	return flat;
 }
 
 /** Transform a block's inner blocks in place, keeping its own markup. */
@@ -326,15 +388,7 @@ export function prepareContent(content: string, opts: PrepareOptions = {}): Prep
 	const counts: PrepareCounts = {};
 	if (!content || !content.includes("<!-- wp:")) return { content, counts, changed: false };
 	const blocks = parseBlocks(content);
-	const replaced = transformList(blocks, opts, counts);
-	const flat: GBlock[] = [];
-	for (const group of replaced) {
-		group.forEach((b, n) => {
-			if (n > 0) flat.push({ name: null, attrs: {}, innerHTML: "\n\n", innerBlocks: [], innerContent: ["\n\n"], opener: "", closer: "", void: false });
-			flat.push(b);
-		});
-	}
-	const next = serializeBlocks(flat);
+	const next = serializeBlocks(flatten(transformList(blocks, opts, counts)));
 	return { content: next, counts, changed: next !== content };
 }
 
@@ -370,6 +424,19 @@ export function wxrAttachments(xml: string): Map<number, string> {
 	return map;
 }
 
+/** Reusable block (`wp_block`, "synced pattern") id → its content, from a WXR file. */
+export function wxrReusableBlocks(xml: string): Map<number, string> {
+	const map = new Map<number, string>();
+	for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
+		const item = m[1] as string;
+		if (tag(item, "wp:post_type") !== "wp_block") continue;
+		const id = Number(tag(item, "wp:post_id"));
+		const content = tag(item, "content:encoded");
+		if (Number.isInteger(id) && content !== null) map.set(id, content);
+	}
+	return map;
+}
+
 export interface PreparedPost {
 	id: number | null;
 	title: string;
@@ -380,9 +447,9 @@ export interface PreparedPost {
 export interface PrepareWxrResult {
 	xml: string;
 	posts: PreparedPost[];
-	/** Totals over every post. */
+	/** Totals over every post (including what's only counted, like blocks EmDash will drop). */
 	counts: PrepareCounts;
-	/** Posts with a guest author (Coywolf Guest Author plugin), for the guest bylines step. */
+	/** Posts credited to authors other than their WordPress user (co-authors, guest authors), for the bylines step. */
 	guestAuthors: GuestAuthor[];
 	/** Categories with their parents, and pages with their parent pages, for the parents step (EmDash's importer drops both). */
 	categories: WxrCategory[];
@@ -392,12 +459,14 @@ export interface PrepareWxrResult {
 /** Prepare a whole WXR export. Only `content:encoded` bodies change. */
 export function prepareWxr(xml: string, opts: PrepareOptions = {}): PrepareWxrResult {
 	const attachments = opts.attachments ?? wxrAttachments(xml);
+	const reusableBlocks = opts.reusableBlocks ?? wxrReusableBlocks(xml);
 	const posts: PreparedPost[] = [];
 	const totals: PrepareCounts = {};
 	const out = xml.replace(/<item>([\s\S]*?)<\/item>/g, (whole, item: string) => {
 		const m = item.match(/<content:encoded>([\s\S]*?)<\/content:encoded>/);
 		if (!m) return whole;
-		const result = prepareContent(cdataText(m[1] as string), { ...opts, attachments });
+		const result = prepareContent(cdataText(m[1] as string), { ...opts, attachments, reusableBlocks });
+		for (const [k, v] of Object.entries(result.counts)) totals[k] = (totals[k] ?? 0) + v;
 		if (!result.changed) return whole;
 		posts.push({
 			id: Number(tag(item, "wp:post_id")) || null,
@@ -405,7 +474,6 @@ export function prepareWxr(xml: string, opts: PrepareOptions = {}): PrepareWxrRe
 			type: tag(item, "wp:post_type") ?? "",
 			counts: result.counts,
 		});
-		for (const [k, v] of Object.entries(result.counts)) totals[k] = (totals[k] ?? 0) + v;
 		return `<item>${item.replace(m[0], () => `<content:encoded>${toCdata(result.content)}</content:encoded>`)}</item>`;
 	});
 	return { xml: out, posts, counts: totals, guestAuthors: wxrGuestAuthors(xml, attachments), categories: wxrCategories(xml), pages: wxrPages(xml) };

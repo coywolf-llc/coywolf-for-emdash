@@ -3,19 +3,22 @@
  * Portable Text. Reads:
  *
  * - markers written by the prepare step (./prepare.ts, ./markers.ts);
- * - wellbeing.io's `data-wb-block` markers (cloudflare-stream, review);
+ * - the `data-wb-block` markers an earlier, site-specific import script wrote
+ *   (wellbeing.io: cloudflare-stream, review);
  * - what EmDash's importer makes of Coywolf blocks with saved HTML when the
  *   export wasn't prepared (`htmlBlock` with `originalBlockName` and
  *   `originalAttrs`: coywolf/video, coywolf/file).
  *
- * Produces `coywolf-video`, `coywolf-review`, `coywolf-toc` and
+ * For any WordPress site it moves "anchor" markers (heading ids) onto the
+ * next heading's `anchor` field, turns core Details markers into
+ * `coywolf-details`, and maps Prism language names on code blocks to the
+ * editor's (markup → html). For content from Coywolf's WordPress plugins it
+ * produces `coywolf-video`, `coywolf-review`, `coywolf-toc` and
  * `coywolf-file` blocks, plus `coywolf-note`, `coywolf-details`,
  * `coywolf-quote`, `coywolf-disclosure`, `coywolf-testimonial` and
- * `coywolf-podcast` (Custom Blocks, each only while its switch is on), moves
- * "anchor" markers onto the next heading's `anchor` field, and maps Prism
- * language names on code blocks to the editor's (markup → html). Other
- * template markers (related links, Gravity Forms) stay HTML blocks. Anything else is left exactly as it is, and running it again
- * changes nothing.
+ * `coywolf-podcast` (Custom Blocks, each only while its switch is on). Other
+ * template markers (related links, Gravity Forms) stay HTML blocks. Anything
+ * else is left exactly as it is, and running it again changes nothing.
  *
  * Pure, no I/O.
  */
@@ -37,7 +40,7 @@ export interface VideoDefaults {
 	showLikes: boolean;
 }
 
-/** The Video Manager plugin's own defaults (also what coywolf.com uses). */
+/** The Video Manager plugin's own defaults, used when the site's settings weren't pasted on the import page. */
 export const VIDEO_MANAGER_DEFAULTS: VideoDefaults = {
 	controls: true,
 	autoplay: false,
