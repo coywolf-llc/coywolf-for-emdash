@@ -37,6 +37,7 @@ export const blockComponents = {
 
 /** Videos module: the Stream player, for theme code. */
 export { CoywolfVideo };
+export { hostedPosterImage } from "../videos/poster.js";
 
 /** Breadcrumb trail for theme layouts (Breadcrumb Nav module). */
 export { BreadcrumbsComponent as Breadcrumbs };
