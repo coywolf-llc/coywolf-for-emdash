@@ -122,6 +122,7 @@ export async function shortenStopgapPage(cache: RouteCache | undefined, response
 	if (!cache?.enabled || maxAge === undefined || maxAge <= 0) return response;
 	if (response.status !== 200 || !response.body || !(response.headers.get("content-type") ?? "").startsWith("text/html")) return response;
 	const body = await response.arrayBuffer();
-	if (stopgap()) cache.set({ maxAge: Math.min(maxAge, STOPGAP_LIFETIME.maxAge), swr: STOPGAP_LIFETIME.swr });
+	// A component may have turned caching off while rendering: leave that alone.
+	if (stopgap() && cache.enabled && cache.options?.maxAge !== undefined) cache.set({ maxAge: Math.min(maxAge, STOPGAP_LIFETIME.maxAge), swr: STOPGAP_LIFETIME.swr });
 	return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
