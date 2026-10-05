@@ -245,3 +245,14 @@ test("caption size cap", () => {
 	assert.equal(MAX_CAPTION_BYTES, 1_500_000);
 	assert.equal(utf8Bytes("é"), 2);
 });
+
+test("light embed poster: Stream thumbnails in three widths; an explicit image as it is", async () => {
+	const { posterImage } = await import("../src/videos/lib.ts");
+	const uid = "0123456789abcdef0123456789abcdef";
+	const p = posterImage("customer-abc.cloudflarestream.com", uid, { posterTime: 3 });
+	assert.match(p.src, /width=800/);
+	assert.deepEqual(p.srcset.split(", ").map((c) => c.split(" ")[1]), ["480w", "800w", "1200w"]);
+	assert.ok(p.srcset.split(", ").every((c) => c.includes("time=3s")));
+	const own = posterImage("customer-abc.cloudflarestream.com", uid, { posterImage: "https://example.com/poster.jpg" });
+	assert.deepEqual(own, { src: "https://example.com/poster.jpg" });
+});
