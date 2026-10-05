@@ -80,6 +80,46 @@ function StatusIcon({ ok }: { ok: boolean }) {
 	);
 }
 
+/** Load an image in this browser; its natural size, or null when it fails. */
+function loadImage(url: string): Promise<{ width: number; height: number } | null> {
+	return new Promise((resolve) => {
+		const img = new Image();
+		const timer = window.setTimeout(() => resolve(null), 20_000);
+		img.onload = () => {
+			window.clearTimeout(timer);
+			resolve({ width: img.naturalWidth, height: img.naturalHeight });
+		};
+		img.onerror = () => {
+			window.clearTimeout(timer);
+			resolve(null);
+		};
+		img.src = url;
+	});
+}
+
+/** Replace the server's fetch results with what this browser actually gets from the media host. */
+async function browserCheck(result: CheckResult): Promise<CheckResult> {
+	if (!result.file) return result;
+	const stamp = Date.now().toString(36);
+	const host = result.host.replace(/\/+$/, "");
+	const [original, resized] = await Promise.all([loadImage(`${host}/${result.file}?check=${stamp}`), loadImage(`${host}/s/64x64/${result.file}`)]);
+	const items: CheckItem[] = [
+		{ id: "reachable", ok: Boolean(original || resized), label: "Host reachable", detail: original || resized ? "Your browser loaded images from the media host." : "Your browser couldn't load anything from the media host. Check the R2 custom domain and its DNS record." },
+		{ id: "original", ok: Boolean(original), label: "Original served", detail: original ? `${result.file} (${original.width}×${original.height}).` : `${result.file} didn't load. Is the custom domain connected to the media bucket?` },
+		{
+			id: "resize",
+			ok: Boolean(resized && resized.width === 64 && resized.height === 64),
+			label: "Resize works",
+			detail: !resized
+				? "/s/64x64/ didn't load: the URL rewrite rules are missing, or Image Transformations are off for the zone."
+				: resized.width === 64 && resized.height === 64
+					? "/s/64x64/ came back at 64×64."
+					: `/s/64x64/ came back at ${resized.width}×${resized.height}: the rewrite rules don't match this host.`,
+		},
+	];
+	return { ...result, items, ok: items.every((i) => i.ok) };
+}
+
 function CheckList({ result }: { result: CheckResult }) {
 	return (
 		<div className="space-y-2" aria-live="polite">
@@ -160,7 +200,11 @@ export function ImagesPage() {
 		setError(null);
 		setCheck(null);
 		try {
-			setCheck(await post<CheckResult>("check", { host: hostToUse }, "Couldn't check the media host"));
+			// The server picks a recent image from the media library. The loading itself is checked here, in the
+			// browser: requests from the site's own Worker to the media host skip the zone's rewrite rules and can
+			// be challenged by Bot Fight Mode, so only a visitor's view is meaningful.
+			const result = await post<CheckResult>("check", { host: hostToUse }, "Couldn't check the media host");
+			setCheck(await browserCheck(result));
 		} catch (cause) {
 			setError(errorText(cause, "Couldn't check the media host"));
 		} finally {
