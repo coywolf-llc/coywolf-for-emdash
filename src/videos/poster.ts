@@ -147,8 +147,8 @@ export const PENDING_POSTER_LOCAL = "__cwPendingPoster";
 let pendingRenders = 0;
 
 /** Note that this render shows a Stream poster only until its copy is listed. */
-export function markPendingPoster(locals?: Record<string, unknown> | null): void {
-	if (locals && typeof locals === "object") locals[PENDING_POSTER_LOCAL] = true;
+export function markPendingPoster(locals?: object | null): void {
+	if (locals && typeof locals === "object") (locals as Record<string, unknown>)[PENDING_POSTER_LOCAL] = true;
 	else pendingRenders++;
 }
 
@@ -214,7 +214,8 @@ export async function hostedPosterImage(
 	ref: PosterRef,
 	fallback: PosterRef = {},
 	origin?: string | null,
-	locals?: Record<string, unknown> | null,
+	/** Astro.locals, so only this page gets the stopgap lifetime. */
+	locals?: object | null,
 ): Promise<{ src: string; srcset?: string; full: string }> {
 	const stream = posterImage(host, uid, ref, fallback, origin);
 	const source = posterUrl(host, uid, ref, fallback, SOURCE_WIDTH, origin);
