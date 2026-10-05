@@ -61,3 +61,18 @@ test("a failed copy falls back and is retried later", async () => {
 	assert.ok(await mirrorPoster(b, "k.jpg", SRC, async () => image()));
 	assert.ok(b.objects.has("k.jpg"));
 });
+
+test("warming requests every size as AVIF and WebP", async () => {
+	const { warmSizes } = await import("../src/videos/poster.ts");
+	const seen = [];
+	await warmSizes(["https://m/s/480/k.jpg", "https://m/s/800/k.jpg"], async (url, init) => {
+		seen.push(`${url} ${init.headers.accept}`);
+		return new Response("x");
+	});
+	assert.deepEqual(seen.sort(), [
+		"https://m/s/480/k.jpg image/avif",
+		"https://m/s/480/k.jpg image/webp",
+		"https://m/s/800/k.jpg image/avif",
+		"https://m/s/800/k.jpg image/webp",
+	]);
+});

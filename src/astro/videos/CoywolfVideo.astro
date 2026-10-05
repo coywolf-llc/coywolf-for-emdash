@@ -97,6 +97,9 @@ const src = uid ? playerSrc(host, uid, cfg, playerExtra) : "";
 const light = Boolean(uid) && data?.lightEmbed !== false;
 const playSrc = uid && light && !cfg.autoplay ? playerSrc(host, uid, { ...cfg, autoplay: true }, playerExtra) : src;
 const posterImg = light ? hostedPoster : null;
+// The theme names the block that's the page's largest early paint (Astro.locals.coywolfPriorityKey):
+// its poster loads at once and first, not lazily.
+const priority = Boolean(node?._key) && (Astro.locals as { coywolfPriorityKey?: string }).coywolfPriorityKey === node?._key;
 const ratio = aspectRatio(video?.width, video?.height, num(node?.aspect));
 const maxWidth = node?.sizeMode === "maxwidth" && num(node?.maxWidth) ? Math.max(100, Math.round(node.maxWidth as number)) : null;
 const counts = data?.engagement ? data.counts : null;
@@ -117,7 +120,7 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 	<figure class:list={["cw-video", cfg.gif && "cw-video--gif"]} style={style} data-cw-video={uid} data-cw-track={track ? "" : undefined}>
 		{light && posterImg ? (
 			<div class="cw-video__frame" data-cw-player={playSrc} data-cw-title={name} data-cw-auto={cfg.autoplay ? "" : undefined}>
-				<img class="cw-video__poster" src={posterImg.src} srcset={posterImg.srcset} sizes="(min-width: 50rem) 768px, 100vw" alt="" loading="lazy" decoding="async" />
+				<img class="cw-video__poster" src={posterImg.src} srcset={posterImg.srcset} sizes="(min-width: 50rem) 768px, 100vw" alt="" loading={priority ? "eager" : "lazy"} fetchpriority={priority ? "high" : undefined} decoding="async" />
 				{!cfg.autoplay && (
 					<button type="button" class="cw-video__play" data-cw-play aria-label={`Play video: ${name}`}>
 						<svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>
