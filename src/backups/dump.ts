@@ -172,7 +172,25 @@ export interface DumpResult {
 	rows: number;
 }
 
+/** The whole dump as one string (tests, small databases). Backups stream dumpLines instead. */
 export async function dumpDatabase(db: D1Database): Promise<DumpResult> {
+	const counts = { tables: 0, rows: 0 };
+	const out: string[] = [];
+	for await (const line of dumpLines(db, counts)) out.push(line);
+	return { sql: `${out.join("\n")}\n`, ...counts };
+}
+
+/** Columns that, when a table declares them, hide the real rowid from `rowid` in queries. */
+const ROWID_NAMES = new Set(["rowid", "_rowid_", "oid"]);
+
+/**
+ * The dump, one statement per item (no trailing newline), read a page of rows
+ * at a time so memory stays bounded however big the database is. `counts` is
+ * filled in as it goes (complete once the iteration ends). Tables with a
+ * rowid are paged by rowid (`WHERE rowid > ?`), which stays fast on big
+ * tables where OFFSET rescans every earlier row; WITHOUT ROWID tables use OFFSET.
+ */
+export async function* dumpLines(db: D1Database, counts: { tables: number; rows: number } = { tables: 0, rows: 0 }): AsyncGenerator<string> {
 	const { results: master } = await db
 		.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name")
 		.all<MasterRow>();
@@ -191,39 +209,47 @@ export async function dumpDatabase(db: D1Database): Promise<DumpResult> {
 	const ordered = await orderByForeignKeys(db, tables);
 
 	const statement = (sql: string) => `${sql.trim().replace(/;$/, "")};`;
-	const out: string[] = ["PRAGMA defer_foreign_keys=TRUE;"];
+	counts.tables = tables.length;
+	yield "PRAGMA defer_foreign_keys=TRUE;";
 
-	for (const t of tables) out.push(statement((t.sql ?? "").replace(/^CREATE TABLE /i, "CREATE TABLE IF NOT EXISTS ")));
-	for (const t of searchTables) out.push(statement(t.sql ?? ""));
-	for (const t of searchTriggers) out.push(statement(t.sql ?? ""));
+	for (const t of tables) yield statement((t.sql ?? "").replace(/^CREATE TABLE /i, "CREATE TABLE IF NOT EXISTS "));
+	for (const t of searchTables) yield statement(t.sql ?? "");
+	for (const t of searchTriggers) yield statement(t.sql ?? "");
 
-	let rows = 0;
 	for (const t of ordered) {
 		const table = quoteIdent(t.name);
-		const withRowid = !/WITHOUT\s+ROWID/i.test(t.sql ?? "");
 		const { results: info } = await db.prepare(`PRAGMA table_info(${table})`).all<{ name: string; pk: number }>();
+		const withRowid = !/WITHOUT\s+ROWID/i.test(t.sql ?? "");
+		// A column named rowid (or oid) shadows the real one: page that table by OFFSET.
+		const byRowid = withRowid && !info.some((c) => ROWID_NAMES.has(c.name.toLowerCase()));
 		const pk = info.filter((c) => c.pk > 0).map((c) => c.name);
 		// Rows are identified by primary key for split values; tables without one by rowid.
-		const select = pk.length || !withRowid ? "*" : `rowid AS ${ROWID}, *`;
 		const keyColumns = pk.length || !withRowid ? pk : [ROWID];
+		// The rowid alias is never written out (rowStatements skips it); it's the paging cursor.
+		const select = byRowid || (withRowid && !pk.length) ? `rowid AS ${ROWID}, *` : "*";
 		const order = withRowid ? " ORDER BY rowid" : "";
+		let after: unknown = null;
 		for (let offset = 0; ; offset += PAGE_SIZE) {
-			const { results } = await db
-				.prepare(`SELECT ${select} FROM ${table}${order} LIMIT ? OFFSET ?`)
-				.bind(PAGE_SIZE, offset)
-				.all<Record<string, unknown>>();
+			const { results } = byRowid
+				? await db
+						.prepare(`SELECT ${select} FROM ${table}${after === null ? "" : ` WHERE rowid > ?`}${order} LIMIT ?`)
+						.bind(...(after === null ? [PAGE_SIZE] : [after, PAGE_SIZE]))
+						.all<Record<string, unknown>>()
+				: await db
+						.prepare(`SELECT ${select} FROM ${table}${order} LIMIT ? OFFSET ?`)
+						.bind(PAGE_SIZE, offset)
+						.all<Record<string, unknown>>();
 			for (const row of results) {
 				if (t.name === "options" && typeof row.name === "string" && SKIP_OPTION.test(row.name)) continue;
 				const key = Object.fromEntries(keyColumns.map((c) => [c, row[c]]));
-				out.push(...rowStatements(table, row, key));
-				rows++;
+				yield* rowStatements(table, row, key);
+				counts.rows++;
 			}
 			if (results.length < PAGE_SIZE) break;
+			if (byRowid) after = results[results.length - 1][ROWID];
 		}
 	}
 
-	for (const i of indexes) out.push(statement(i.sql ?? ""));
-	for (const t of triggers) out.push(statement(t.sql ?? ""));
-
-	return { sql: `${out.join("\n")}\n`, tables: tables.length, rows };
+	for (const i of indexes) yield statement(i.sql ?? "");
+	for (const t of triggers) yield statement(t.sql ?? "");
 }

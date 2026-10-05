@@ -329,7 +329,7 @@ Keep `EMDASH_ENCRYPTION_KEY` in a password manager. It isn't in backups, and enc
 ### Notes
 
 - `wrangler d1 export` refuses databases with FTS5 tables (EmDash search). The dump writes tables, then search tables and their triggers, then rows with parent tables before child tables (D1 imports large files in batches, so deferred foreign keys aren't enough), then indexes and the remaining triggers.
-- Backups run in one Worker request, so they suit small and medium sites. The database is saved before the media mirror runs. The mirror copies at most 300 changed files per run; the rest follow on the next run.
+- Backups run in one Worker request, so they suit small and medium sites. The dump is streamed: rows are read 500 at a time (paged by rowid) and gzipped straight into the backup bucket (as a multipart upload in 5 MB parts once it's bigger than one part), so the Worker never holds the whole dump in memory. The database is saved before the media mirror runs. The mirror copies at most 300 changed files per run, 8 at a time; the rest follow on the next run.
 - Integers larger than 2^53 lose precision (D1 returns JavaScript numbers). EmDash stores IDs as text.
 
 ## Redirects

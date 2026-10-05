@@ -61,31 +61,139 @@ async function sha256(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export async function gzip(text: string): Promise<Uint8Array<ArrayBuffer>> {
-	const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"));
-	return new Uint8Array(await new Response(stream).arrayBuffer());
+/** R2's smallest multipart part. Every part but the last must be the same size. */
+export const PART_BYTES = 5 * 1024 * 1024;
+/** Text handed to the gzip stream at a time. */
+const FEED_BYTES = 64 * 1024;
+const utf8 = new TextEncoder();
+
+/** SHA-256 over a stream of chunks: Workers' DigestStream, else (Node tests) the chunks kept and hashed at the end. */
+function digester(): { update(chunk: Uint8Array<ArrayBuffer>): Promise<void>; digest(): Promise<string> } {
+	const hex = (digest: ArrayBuffer) => [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+	const Stream = (crypto as unknown as { DigestStream?: new (algorithm: string) => WritableStream<Uint8Array> & { digest: Promise<ArrayBuffer> } }).DigestStream;
+	if (Stream) {
+		const stream = new Stream("SHA-256");
+		const writer = stream.getWriter();
+		return {
+			update: (chunk) => writer.write(chunk),
+			digest: async () => {
+				await writer.close();
+				return hex(await stream.digest);
+			},
+		};
+	}
+	const chunks: Uint8Array<ArrayBuffer>[] = [];
+	return {
+		update: async (chunk) => {
+			chunks.push(chunk);
+		},
+		digest: () => sha256(concat(chunks, chunks.reduce((n, c) => n + c.byteLength, 0))),
+	};
 }
 
-export async function writeDump(
+function concat(chunks: Uint8Array<ArrayBuffer>[], size: number): Uint8Array<ArrayBuffer> {
+	const out = new Uint8Array(size);
+	let at = 0;
+	for (const chunk of chunks) {
+		out.set(chunk, at);
+		at += chunk.byteLength;
+	}
+	return out;
+}
+
+/**
+ * Gzip the dump's statements (one per line) straight into the backup bucket:
+ * one put when it's under a part, else an R2 multipart upload in PART_BYTES
+ * parts. Memory stays around one part plus a page of rows, however big the
+ * database. Returns the stored size and SHA-256 of the gzip file.
+ */
+export async function writeDumpStream(
 	bucket: R2Bucket,
 	stamp: string,
 	file: string,
-	body: Uint8Array<ArrayBuffer>,
+	lines: AsyncIterable<string>,
+	partBytes = PART_BYTES,
+): Promise<{ bytes: number; sha256: string }> {
+	const key = `d1/${stamp}/${file}`;
+	const httpMetadata = { contentType: "application/gzip" };
+	const gzip = new CompressionStream("gzip");
+	const writer = gzip.writable.getWriter();
+	// Feed the compressor while the loop below drains it (each waits on the other).
+	const feed = (async () => {
+		let batch = "";
+		for await (const line of lines) {
+			batch += `${line}\n`;
+			if (batch.length >= FEED_BYTES) {
+				await writer.write(utf8.encode(batch));
+				batch = "";
+			}
+		}
+		if (batch) await writer.write(utf8.encode(batch));
+		await writer.close();
+	})();
+	feed.catch((error) => writer.abort(error).catch(() => undefined));
+
+	const hash = digester();
+	let pending: Uint8Array<ArrayBuffer>[] = [];
+	let pendingBytes = 0;
+	let bytes = 0;
+	/** The first `size` pending bytes as one buffer; the rest stay pending. */
+	const take = (size: number): Uint8Array<ArrayBuffer> => {
+		const all = concat(pending, pendingBytes);
+		pending = size < pendingBytes ? [all.slice(size)] : [];
+		pendingBytes -= size;
+		return size < all.byteLength ? all.slice(0, size) : all;
+	};
+
+	let upload: R2MultipartUpload | null = null;
+	const parts: R2UploadedPart[] = [];
+	const reader = gzip.readable.getReader();
+	try {
+		for (;;) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			const chunk = value as Uint8Array<ArrayBuffer>;
+			bytes += chunk.byteLength;
+			await hash.update(chunk);
+			pending.push(chunk);
+			pendingBytes += chunk.byteLength;
+			while (pendingBytes >= partBytes) {
+				upload ??= await bucket.createMultipartUpload(key, { httpMetadata });
+				parts.push(await upload.uploadPart(parts.length + 1, take(partBytes)));
+			}
+		}
+		await feed;
+		const rest = take(pendingBytes);
+		if (upload) {
+			if (rest.byteLength) parts.push(await upload.uploadPart(parts.length + 1, rest));
+			await upload.complete(parts);
+		} else {
+			await bucket.put(key, rest, { httpMetadata });
+		}
+	} catch (error) {
+		await upload?.abort().catch(() => undefined);
+		// The dump's own error (a failed query) explains more than the aborted stream.
+		await feed;
+		throw error;
+	}
+	return { bytes, sha256: await hash.digest() };
+}
+
+/** Write (or rewrite) a backup's manifest for a dump already stored. */
+export async function writeManifest(
+	bucket: R2Bucket,
+	stamp: string,
+	file: string,
+	written: { bytes: number; sha256: string },
 	extra: Partial<Manifest>,
 ): Promise<Manifest> {
-	const manifest: Manifest = {
-		...extra,
-		stamp,
-		file,
-		bytes: body.byteLength,
-		sha256: await sha256(body),
-	};
-	await bucket.put(`d1/${stamp}/${file}`, body, { httpMetadata: { contentType: "application/gzip" } });
+	const manifest: Manifest = { ...extra, stamp, file, bytes: written.bytes, sha256: written.sha256 };
 	await bucket.put(`d1/${stamp}/manifest.json`, JSON.stringify(manifest, null, 1), {
 		httpMetadata: { contentType: "application/json" },
 	});
 	return manifest;
 }
+
 
 /** Every backup with a manifest, newest first. */
 export async function listBackups(bucket: R2Bucket): Promise<BackupEntry[]> {
@@ -161,32 +269,57 @@ export async function mirrorBucket(
 		preserved++;
 	};
 
-	let changes = 0;
+	// Decide the changes first, then make them a few files at a time.
+	const tasks: Array<() => Promise<void>> = [];
 	let pending = 0;
 	for (const [key, etag] of source) {
 		if (mirror.get(key) === etag) continue;
-		if (changes >= maxChanges) {
+		if (tasks.length >= maxChanges) {
 			pending++;
 			continue;
 		}
-		changes++;
-		if (mirror.has(key)) await keep(key);
-		const object = await media.get(key);
-		if (!object) continue;
-		await backups.put(`${current}${key}`, object.body, { httpMetadata: object.httpMetadata });
-		copied++;
+		tasks.push(async () => {
+			if (mirror.has(key)) await keep(key);
+			const object = await media.get(key);
+			if (!object) return;
+			await backups.put(`${current}${key}`, object.body, { httpMetadata: object.httpMetadata });
+			copied++;
+		});
 	}
 	for (const key of mirror.keys()) {
 		if (source.has(key)) continue;
-		if (changes >= maxChanges) {
+		if (tasks.length >= maxChanges) {
 			pending++;
 			continue;
 		}
-		changes++;
-		await keep(key);
-		await backups.delete(`${current}${key}`);
+		tasks.push(async () => {
+			await keep(key);
+			await backups.delete(`${current}${key}`);
+		});
 	}
+	await inPool(tasks, MIRROR_CONCURRENCY);
 	return { copied, preserved, total: source.size, pending };
+}
+
+/** Files copied at once when mirroring (each copy is a get and a put, streamed). */
+export const MIRROR_CONCURRENCY = 8;
+
+/** Run tasks with at most `limit` in flight; the first failure is thrown once the others settle. */
+async function inPool(tasks: Array<() => Promise<void>>, limit: number): Promise<void> {
+	let next = 0;
+	let failure: { error: unknown } | null = null;
+	const worker = async () => {
+		while (next < tasks.length && !failure) {
+			const task = tasks[next++];
+			try {
+				await task();
+			} catch (error) {
+				failure ??= { error };
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+	if (failure) throw (failure as { error: unknown }).error;
 }
 
 /**
