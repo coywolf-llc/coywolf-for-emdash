@@ -335,9 +335,16 @@ async function primaryImage(options: SchemaOptions, page: PublicPageContext, sit
 	return (await lookupMedia(options, own, site.origin)) ?? { url };
 }
 
-async function authorNodes(ctx: PluginContext, page: PublicPageContext, config: Config, site: SiteFacts, features: FeatureMap): Promise<Node[]> {
-	if (!page.content || !ctx.bylines) return [];
-	const [credits] = await ctx.bylines.getEntriesBylines(page.content.collection, [page.content.id]).catch(() => []);
+type EntryBylines = Awaited<ReturnType<NonNullable<PluginContext["bylines"]>["getEntriesBylines"]>>;
+
+/** The entry's credited bylines (none without an entry, or on error). Started early, alongside the page's other reads. */
+function entryBylines(ctx: PluginContext, page: PublicPageContext): Promise<EntryBylines> {
+	if (!page.content || !ctx.bylines) return Promise.resolve([]);
+	return ctx.bylines.getEntriesBylines(page.content.collection, [page.content.id]).catch(() => []);
+}
+
+async function authorNodes(ctx: PluginContext, credited: Promise<EntryBylines>, config: Config, site: SiteFacts, features: FeatureMap): Promise<Node[]> {
+	const [credits] = await credited;
 	const bylines = credits?.bylines.map((c) => c.byline) ?? [];
 	if (!bylines.length) return [];
 	const rowsById: Map<string, { rows: PropertyRow[] }> = isOn(features, SCHEMA_FEATURES.authors)
@@ -390,9 +397,16 @@ async function mainSubjectPerson(ctx: PluginContext, bylineId: string, config: C
 	});
 }
 
-/** Every contribution this module makes for a page (also used by the admin preview). */
-/** Fold the page's videos into the graph (see attachVideos). Errors are logged, never fatal. */
-async function attachPageVideos(ctx: PluginContext, page: PublicPageContext, graph: { "@graph": Node[] }, origin: string, on: FeatureMap) {
+/**
+ * A change to the page's graph whose data was loaded ahead of time, so the
+ * loads run alongside each other and the changes still apply in a fixed order.
+ */
+type GraphStep = (graph: { "@graph": Node[] }) => void;
+const noStep: GraphStep = () => {};
+
+/** Load the page's videos; the step folds them into the graph (see attachVideos). Errors are logged, never fatal. */
+async function pageVideosStep(ctx: PluginContext, page: PublicPageContext, origin: string, on: FeatureMap): Promise<GraphStep> {
+	const warn = (error: unknown) => ctx.log.warn("schema: could not attach videos", { error: String(error) });
 	try {
 		const videos: Node[] = [];
 		if (isOn(on, "videos.schema")) {
@@ -404,40 +418,68 @@ async function attachPageVideos(ctx: PluginContext, page: PublicPageContext, gra
 			const node = themeVideoNode(v, origin);
 			if (node) videos.push(node);
 		}
-		attachVideos(graph, videos);
+		return (graph) => {
+			try {
+				attachVideos(graph, videos);
+			} catch (error) {
+				warn(error);
+			}
+		};
 	} catch (error) {
-		ctx.log.warn("schema: could not attach videos", { error: String(error) });
+		warn(error);
+		return noStep;
 	}
 }
 
 /**
- * Add `about` / `mentions` from AI Enrichment to the page's Article node (or
- * its WebPage when there's no Article). Loaded lazily so sites without the AI
- * module don't pay for it.
+ * Load `about` / `mentions` from AI Enrichment; the step adds them to the
+ * page's Article node (or its WebPage when there's no Article). Loaded lazily
+ * so sites without the AI module don't pay for it.
  */
-async function attachEntities(ctx: PluginContext, content: { collection: string; id: string }, graph: Record<string, unknown>) {
+async function entitiesStep(ctx: PluginContext, content: { collection: string; id: string }): Promise<GraphStep> {
+	const warn = (error: unknown) => ctx.log.warn("schema: could not attach AI entities", { error: String(error) });
 	try {
 		const { getEntryEntities } = await import("../ai/entities.js");
 		const { about, mentions } = await getEntryEntities(ctx, content.collection, content.id);
-		if (!about.length && !mentions.length) return;
-		const nodes = (graph["@graph"] ?? []) as Record<string, unknown>[];
-		const byId = (suffix: string) => nodes.find((n) => typeof n["@id"] === "string" && (n["@id"] as string).endsWith(suffix));
-		const target = byId("#article") ?? byId("#webpage");
-		if (!target) return;
-		const merge = (key: "about" | "mentions", extra: Record<string, unknown>[]) => {
-			if (!extra.length) return;
-			const existing = target[key];
-			const list = existing === undefined ? [] : Array.isArray(existing) ? existing : [existing];
-			const all = [...list, ...extra];
-			target[key] = all.length === 1 ? all[0] : all;
+		if (!about.length && !mentions.length) return noStep;
+		return (graph) => {
+			try {
+				mergeEntities(graph, about, mentions);
+			} catch (error) {
+				warn(error);
+			}
 		};
-		merge("about", about);
-		merge("mentions", mentions);
 	} catch (error) {
-		ctx.log.warn("schema: could not attach AI entities", { error: String(error) });
+		warn(error);
+		return noStep;
 	}
 }
 
+function mergeEntities(graph: { "@graph": Node[] }, about: Record<string, unknown>[], mentions: Record<string, unknown>[]) {
+	const nodes = (graph["@graph"] ?? []) as Record<string, unknown>[];
+	const byId = (suffix: string) => nodes.find((n) => typeof n["@id"] === "string" && (n["@id"] as string).endsWith(suffix));
+	const target = byId("#article") ?? byId("#webpage");
+	if (!target) return;
+	const merge = (key: "about" | "mentions", extra: Record<string, unknown>[]) => {
+		if (!extra.length) return;
+		const existing = target[key];
+		const list = existing === undefined ? [] : Array.isArray(existing) ? existing : [existing];
+		const all = [...list, ...extra];
+		target[key] = all.length === 1 ? all[0] : all;
+	};
+	merge("about", about);
+	merge("mentions", mentions);
+}
+
+/**
+ * Every contribution this module makes for a page (also used by the admin
+ * preview). Reads that don't depend on each other run at once: config and
+ * site facts, then the page image, entry override, credited bylines, logo
+ * dimensions, videos, reviews and entities; then the bylines' Person nodes
+ * (which need the override's article type). The graph is assembled in a
+ * fixed order afterwards, so the output doesn't depend on which read
+ * finishes first.
+ */
 export async function schemaContributions(
 	ctx: PluginContext,
 	page: PublicPageContext,
@@ -446,21 +488,14 @@ export async function schemaContributions(
 ): Promise<PageMetadataContribution[]> {
 	const on = features ?? (await cachedCtxFeatures(ctx));
 	if (!isOn(on, SCHEMA_FEATURES.main)) return [];
-	const config = await loadConfig(ctx);
-	const site = await siteFacts(ctx, page);
 	const out: PageMetadataContribution[] = [];
 	const graphOn = isOn(on, SCHEMA_FEATURES.graph);
 	const ogOn = isOn(on, SCHEMA_FEATURES.openGraph);
 	const cleanImages = isOn(on, "images");
-	if (cleanImages) await refreshMediaHost();
-	const image = graphOn || ogOn ? await primaryImage(options, page, site, cleanImages) : null;
+	const [config, site] = await Promise.all([loadConfig(ctx), siteFacts(ctx, page), cleanImages ? refreshMediaHost() : undefined]);
+	const imageRead = graphOn || ogOn ? primaryImage(options, page, site, cleanImages) : Promise.resolve(null);
 
 	if (graphOn) {
-		const override = page.content
-			? ((await entries(ctx).get(`${page.content.collection}:${page.content.id}`)) as EntryOverride | null)
-			: null;
-		const { articleType } = resolveTypes(page, config.types, override);
-		const authors = articleType !== "none" ? await authorNodes(ctx, page, config, site, on) : [];
 		const personPath = config.person?.byline ? authorPath(config.settings.schemaAuthorUrlPattern, config.person.byline.slug) : null;
 		const publisher = publisherNode({
 			details: config.site,
@@ -471,11 +506,26 @@ export async function schemaContributions(
 			authorUrl: personPath ? absolute(personPath, site.origin) : null,
 		});
 		const logoUrl = (publisher.logo as Node | undefined)?.url;
-		const logoInfo = typeof logoUrl === "string" ? await lookupMedia(options, logoUrl, site.origin) : null;
+		// Credited bylines are read before knowing whether the page has an article (one read, usually needed).
+		const credited = entryBylines(ctx, page);
+		const [image, override, logoInfo, videosStep, reviewsStep, entityStep] = await Promise.all([
+			imageRead,
+			page.content ? (entries(ctx).get(`${page.content.collection}:${page.content.id}`) as Promise<EntryOverride | null>) : null,
+			typeof logoUrl === "string" ? lookupMedia(options, logoUrl, site.origin) : null,
+			// Videos: from the Videos module, and any the theme passes as page.coywolf.videos.
+			pageVideosStep(ctx, page, site.origin, on),
+			// Reviews: coywolf-review blocks in the entry, and any the theme passes as page.coywolf.reviews.
+			isOn(on, "reviews.schema") ? import("../reviews/schema.js").then(({ pageReviewsStep }) => pageReviewsStep(ctx, page, site.origin)) : noStep,
+			// AI Enrichment's Wikidata-grounded entities, when that feature is on.
+			page.content && isOn(on, "ai.entities") ? entitiesStep(ctx, page.content) : noStep,
+		]);
 		enrichImageObjects(publisher, (url) => (url === logoUrl ? logoInfo : null));
+		const { articleType } = resolveTypes(page, config.types, override);
 		const subjectByline = mainSubjectByline(override?.mainSubject);
-		const mainEntity =
-			override?.mainSubject === "publisher" ? publisher : subjectByline ? await mainSubjectPerson(ctx, subjectByline, config, site, on) : null;
+		const [authors, mainEntity] = await Promise.all([
+			articleType !== "none" ? authorNodes(ctx, credited, config, site, on) : [],
+			override?.mainSubject === "publisher" ? publisher : subjectByline ? mainSubjectPerson(ctx, subjectByline, config, site, on) : null,
+		]);
 		const graph = buildGraph({
 			page,
 			origin: site.origin,
@@ -492,15 +542,8 @@ export async function schemaContributions(
 			breadcrumbs: isOn(on, SCHEMA_FEATURES.breadcrumbs),
 			homeLabel: config.settings.schemaBreadcrumbHome || "Home",
 		});
-		// Videos: from the Videos module, and any the theme passes as page.coywolf.videos.
-		await attachPageVideos(ctx, page, graph as { "@graph": Node[] }, site.origin, on);
-		// Reviews: coywolf-review blocks in the entry, and any the theme passes as page.coywolf.reviews.
-		if (isOn(on, "reviews.schema")) {
-			const { attachPageReviews } = await import("../reviews/schema.js");
-			await attachPageReviews(ctx, page, graph as { "@graph": Node[] }, site.origin);
-		}
-		// AI Enrichment's Wikidata-grounded entities, when that feature is on.
-		if (page.content && isOn(on, "ai.entities")) await attachEntities(ctx, page.content, graph);
+		// Videos, then reviews, then entities: each step may look at what the one before added.
+		for (const step of [videosStep, reviewsStep, entityStep]) step(graph as { "@graph": Node[] });
 		// Same id as EmDash's own JSON-LD, so this graph replaces it (first contribution wins).
 		// With a media host, every media-library file in the graph (author images, logo, …) points at it.
 		if (cleanImages && imageCdn()) rewriteMediaUrls(graph);
@@ -525,6 +568,7 @@ export async function schemaContributions(
 	}
 
 	if (ogOn) {
+		const image = await imageRead;
 		const locale = config.settings.schemaOgLocale?.trim() || ogLocale(page.locale || ctx.site.locale);
 		if (locale) out.push({ kind: "property", property: "og:locale", content: locale });
 		// The default OG image at its clean URL, or the page's image on the media host: these win over EmDash's own og:image/twitter:image (first contribution wins).
