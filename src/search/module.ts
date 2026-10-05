@@ -6,22 +6,33 @@
  * - search/live (public): live results for the as-you-type dropdown
  *   (feature "search.live"): title matches, then full text, each with a
  *   highlighted excerpt. Backs the live results script (injected on every
- *   page by the page:fragments hook below) and the SearchBox.
+ *   page by the page:fragments hook below) and the SearchBox. With the pack
+ *   middleware installed, live-serve.ts answers this path first, from the
+ *   edge cache when it can; this route is the fallback.
+ * - search/index (public): the title index for instant results in the
+ *   browser (title-index.ts), likewise served by the middleware first.
+ * - search/touch (admin): a new search content version, after search
+ *   settings change (the Search admin page calls it), so cached answers and
+ *   title indexes are rebuilt.
  * - search/config (admin): each collection's search configuration and
  *   fields, read-only, for the Search admin page. The page changes settings
  *   through EmDash's own /_emdash/api/search/{enable,rebuild,stats}
  *   endpoints, so EmDash's permission checks (search:manage) apply.
  */
-import { PluginRouteError, definePluginRoute } from "emdash";
+import { type PluginContext, PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
-import { requireFeature } from "../core/features.js";
+import { requireCachedFeature, requireFeature } from "../core/features.js";
 import { COLLECTION_SLUG, readCollections } from "../core/content-url.js";
 import { parseInput, workerEnv } from "../shared.js";
+import { liveSearchD1, loadSearchMeta } from "./engine.js";
 import { liveScript } from "./live-client.js";
-import { liveSearch, searchWithFallback } from "./query.js";
+import { normalizeCollections, normalizeLiveQuery, normalizeLocale } from "./live-cache.js";
+import { INDEX_ENDPOINT, LIVE_ENDPOINT, bumpSearchVersion, configureSearchLive, searchVersion } from "./live-serve.js";
+import { searchWithFallback } from "./query.js";
+import { TITLE_INDEX_MAX, buildTitleIndex } from "./title-index.js";
 
-export const LIVE_ENDPOINT = "/_emdash/api/plugins/coywolf-pack/search/live";
+export { INDEX_ENDPOINT, LIVE_ENDPOINT };
 
 export interface SearchOptions {
 	/** D1 binding of the site database. Default "DB". */
@@ -39,8 +50,12 @@ export interface LiveOptions {
 	limit?: number;
 	/** Characters typed before results show. Default 2. */
 	minChars?: number;
-	/** Milliseconds to wait after the last keystroke. Default 200. */
+	/** Milliseconds to wait after the last keystroke before asking the server. Default 120 (title matches show at once). */
 	debounce?: number;
+	/** Instant title matches from a title index loaded in the browser on first focus. Default true. */
+	instant?: boolean;
+	/** Most entries in the title index (newest kept). Default 5000. */
+	indexMax?: number;
 	/** Select the first result as results appear, so Enter opens it (Enter otherwise submits the form). Default true. */
 	enterOpensTop?: boolean;
 }
@@ -56,6 +71,11 @@ const liveInput = z.object({
 	collections: z.string().max(500).optional(),
 	locale: z.string().max(35).optional(),
 	limit: z.coerce.number().int().min(1).max(20).optional(),
+});
+
+const indexInput = z.object({
+	collections: z.string().max(500).optional(),
+	locale: z.string().max(35).optional(),
 });
 
 const queryInput = z.object({
@@ -89,9 +109,12 @@ export function searchModule(options: SearchOptions) {
 		endpoint: LIVE_ENDPOINT,
 		limit: clampInt(options.live?.limit, 1, 20, 8),
 		minChars: clampInt(options.live?.minChars, 1, 20, 2),
-		debounce: clampInt(options.live?.debounce, 0, 2000, 200),
+		debounce: clampInt(options.live?.debounce, 0, 2000, 120),
 		enterOpensTop: options.live?.enterOpensTop ?? true,
 	};
+	const instant = options.live?.instant ?? true;
+	const indexMax = clampInt(options.live?.indexMax, 1, 20_000, TITLE_INDEX_MAX);
+	configureSearchLive({ database, limit: live.limit, indexMax });
 
 	/** Only collections that exist; asking for nothing real finds nothing rather than everything. Undefined means all. */
 	async function knownCollections(list: string | undefined): Promise<string[] | undefined> {
@@ -137,11 +160,46 @@ export function searchModule(options: SearchOptions) {
 			// Published content only, the same for every visitor; a minute keeps a burst of identical keystrokes cheap.
 			cacheControl: "public, max-age=60",
 			handler: async (ctx) => {
-				await requireFeature(ctx, "search.live");
-				const input = parseInput(liveInput, ctx.input);
-				const collections = await knownCollections(input.collections);
-				if (collections && !collections.length) return { items: [], fallback: false };
-				return liveSearch(input.q, { collections, locale: input.locale, limit: input.limit ?? live.limit, database });
+				await requireCachedFeature(ctx, "search.live");
+				const raw = (ctx.input ?? {}) as Record<string, unknown>;
+				const version = await searchVersion(database);
+				if (raw.warm === "1") {
+					await loadSearchMeta(await db(), database, version).catch(() => undefined);
+					return { items: [], fallback: false };
+				}
+				const input = parseInput(liveInput, raw);
+				return liveSearchD1(await db(), normalizeLiveQuery(input.q), {
+					collections: normalizeCollections(input.collections),
+					locale: normalizeLocale(input.locale),
+					limit: input.limit ?? live.limit,
+					database,
+					version,
+				});
+			},
+		}),
+
+		"search/index": definePluginRoute({
+			public: true,
+			methods: ["GET"],
+			request: { body: "none" },
+			cacheControl: "public, max-age=300",
+			handler: async (ctx) => {
+				await requireCachedFeature(ctx, "search.live");
+				const input = parseInput(indexInput, ctx.input ?? {});
+				const version = await searchVersion(database);
+				const d1 = await db();
+				const meta = await loadSearchMeta(d1, database, version);
+				return buildTitleIndex(d1, meta, { collections: normalizeCollections(input.collections), locale: normalizeLocale(input.locale), version, max: indexMax });
+			},
+		}),
+
+		"search/touch": definePluginRoute({
+			permission: "search:manage",
+			methods: ["POST"],
+			request: { body: "none" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, "search");
+				return { version: await bumpSearchVersion(ctx) };
 			},
 		}),
 
@@ -179,14 +237,25 @@ export function searchModule(options: SearchOptions) {
 		},
 	};
 
+	/** Published content changed: cached live answers and title indexes for the old version retire. */
+	const touch = async (ctx: { settings: { set(key: string, value: unknown): Promise<void> } }) => {
+		await bumpSearchVersion(ctx);
+	};
+	const isPublished = (content: Record<string, unknown> | undefined) => !content || content.status === undefined || content.status === "published";
+
 	const hooks = {
 		/** The live results script, on every public page (it attaches only where there's a search form). */
-		"page:fragments": (event: { page: { locale: string | null } }) => ({
+		"page:fragments": async (event: { page: { locale: string | null } }) => ({
 			kind: "inline-script" as const,
 			placement: "body:end" as const,
 			key: "search-live",
-			code: liveScript({ ...live, locale: event.page.locale ?? null }),
+			code: liveScript({ ...live, indexEndpoint: instant ? INDEX_ENDPOINT : null, version: await searchVersion(database), locale: event.page.locale ?? null }),
 		}),
+		"content:afterSave": (event: { content?: Record<string, unknown> }, ctx: PluginContext) => (isPublished(event.content) ? touch(ctx) : undefined),
+		"content:afterPublish": (_event: unknown, ctx: PluginContext) => touch(ctx),
+		"content:afterUnpublish": (_event: unknown, ctx: PluginContext) => touch(ctx),
+		"content:afterDelete": (_event: unknown, ctx: PluginContext) => touch(ctx),
+		"content:afterRestore": (_event: unknown, ctx: PluginContext) => touch(ctx),
 	};
 
 	return { routes, hooks };

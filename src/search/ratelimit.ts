@@ -56,19 +56,24 @@ function tooMany(retryAfter: number): Response {
 	);
 }
 
+/** The 429 response when this client is over the limit, else undefined. */
+export async function rateLimitResponse(context: Parameters<PackMiddleware["handle"]>[0], env: Record<string, unknown>): Promise<Response | undefined> {
+	const binding = config.rateLimiter ? (env[config.rateLimiter] as RateLimitBinding | undefined) : undefined;
+	const limit = config.requestsPerMinute ?? DEFAULT_RPM;
+	if (!binding && limit <= 0) return undefined;
+	const ip = clientIp(context.request, () => context.clientAddress);
+	if (!ip) return undefined;
+	const secret = env[SALT_SECRET];
+	const client = await hashClient(ip, typeof secret === "string" && secret ? secret : DEFAULT_SALT);
+	const result = await limitClient(client, { limit, now: Date.now(), memory, binding });
+	return result.allowed ? undefined : tooMany(result.retryAfter);
+}
+
 export const searchRateLimitMiddleware: PackMiddleware = {
 	module: "search",
 	feature: "search.rateLimit",
 	handle: async (context, env) => {
 		if (!isLimitedPath(context.url.pathname)) return undefined;
-		const binding = config.rateLimiter ? (env[config.rateLimiter] as RateLimitBinding | undefined) : undefined;
-		const limit = config.requestsPerMinute ?? DEFAULT_RPM;
-		if (!binding && limit <= 0) return undefined;
-		const ip = clientIp(context.request, () => context.clientAddress);
-		if (!ip) return undefined;
-		const secret = env[SALT_SECRET];
-		const client = await hashClient(ip, typeof secret === "string" && secret ? secret : DEFAULT_SALT);
-		const result = await limitClient(client, { limit, now: Date.now(), memory, binding });
-		return result.allowed ? undefined : tooMany(result.retryAfter);
+		return rateLimitResponse(context, env);
 	},
 };

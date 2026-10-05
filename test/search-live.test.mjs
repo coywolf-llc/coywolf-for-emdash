@@ -81,14 +81,16 @@ test("snippet: never splits a surrogate pair", () => {
 });
 
 test("live script: valid JavaScript, config embedded safely", () => {
-	const code = liveScript({ endpoint: "/_emdash/api/plugins/coywolf-pack/search/live", limit: 8, minChars: 2, debounce: 200, locale: "</script><x>", enterOpensTop: true });
+	const code = liveScript({ endpoint: "/_emdash/api/plugins/coywolf-pack/search/live", indexEndpoint: "/_emdash/api/plugins/coywolf-pack/search/index", version: "v1", limit: 8, minChars: 2, debounce: 120, locale: "</script><x>", enterOpensTop: true });
 	assert.doesNotThrow(() => new vm.Script(code));
+	// The title matcher ships inside it, compacted like the rest.
+	assert.ok(code.includes("localItems") && code.includes("/search/index"));
 	assert.ok(!code.includes("</script>"));
 	assert.ok(code.includes("\\u003c/script>"));
 });
 
 test("live script: does nothing without a DOM-capable browser (no fetch)", () => {
-	const code = liveScript({ endpoint: "/x", limit: 8, minChars: 2, debounce: 200, locale: null, enterOpensTop: true });
+	const code = liveScript({ endpoint: "/x", indexEndpoint: null, version: "v1", limit: 8, minChars: 2, debounce: 200, locale: null, enterOpensTop: true });
 	const window = {};
 	assert.doesNotThrow(() => vm.runInNewContext(code, { window }));
 	assert.equal(window.__cwLive, undefined);
