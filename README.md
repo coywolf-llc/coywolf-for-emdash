@@ -35,7 +35,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.15.1
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.16.0
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -57,7 +57,7 @@ emdash({
 
 Each module appears under **Plugins → Coywolf Pack** in the admin. Omit a module (or set it to `false`) to turn it off.
 
-Each module's settings live on its own page (Backups, Files → Settings, Videos → Settings, Link Manager → Settings, AI Enrichment → Settings, Schema, Code Blocks, Discovery, Robots.txt), grouped into sections. Features that need an API key or binding stay hidden until it's there, with a setup card in their place. The plugin's generic **Settings** page (**Plugins → Coywolf Pack → Settings**) lists only the API keys and tokens, which EmDash stores encrypted (so the site needs `EMDASH_ENCRYPTION_KEY`): the AI Enrichment API key, the File Downloads R2 secret access key, the Videos Stream API token and webhook secret, and the Cloudflare Radar API token. Each can also be entered on its module's page, which has a step-by-step guide (closed by default) for getting it; the Settings page shows the same guides (the pack's middleware adds them to that EmDash page; without it, each field keeps a short plain-text version).
+Each module's settings live on its own page (Backups, Files → Settings, Videos → Settings, Link Manager → Settings, AI Enrichment → Settings, Schema, Code Blocks, Discovery, Robots.txt, Clean Image URLs), grouped into sections. Features that need an API key or binding stay hidden until it's there, with a setup card in their place. The plugin's generic **Settings** page (**Plugins → Coywolf Pack → Settings**) lists only the API keys and tokens, which EmDash stores encrypted (so the site needs `EMDASH_ENCRYPTION_KEY`): the AI Enrichment API key, the File Downloads R2 secret access key, the Videos Stream API token and webhook secret, the Cloudflare Radar API token, and the Clean image URLs Cloudflare API token. Each can also be entered on its module's page, which has a step-by-step guide (closed by default) for getting it; the Settings page shows the same guides (the pack's middleware adds them to that EmDash page; without it, each field keeps a short plain-text version).
 
 Settings pages save from one bar pinned to the bottom of the page: it appears only when there are unsaved changes, with **Discard** (back to what's saved) and **Save** (also Ctrl/⌘+S), and the browser asks before you leave with changes unsaved.
 
@@ -115,26 +115,88 @@ The options are read when the Worker starts (EmDash creates the plugin then), so
 
 ## Clean Image URLs
 
-Resized copies of media-library images at short, cacheable addresses instead of Astro's `/_image?href=…&w=…&h=…` endpoint. Off until you turn on **Clean image URLs** on the Coywolf Pack page.
+Resized copies of media-library images at short, cacheable addresses instead of Astro's `/_image?href=…&w=…&h=…` endpoint. Off until you turn on **Clean image URLs** on the Coywolf Pack page; the **Clean Image URLs** admin page appears once it's on.
+
+### Two modes
+
+**Media host (recommended).** A subdomain of the site, such as `media.example.com`, serves the media bucket directly from Cloudflare, which resizes on the fly and picks AVIF or WebP for browsers that accept them. Images never touch the site's Worker.
+
+```
+https://media.example.com/<file>               the original file
+https://media.example.com/s/<w>x<h>/<file>     cropped to fill (fit: cover)
+https://media.example.com/s/<w>/<file>         width only, keeps the ratio
+```
+
+`<file>` is the media item's stored file name (`<id>.<ext>`, as in `/_emdash/api/media/file/<id>.<ext>`). Sizes go up to 2560px.
+
+**Worker route (no setup).** Without a media host, the pack's middleware serves
 
 ```
 /media/<file id>-<width>x<height>.<webp|avif|jpg|png>   cropped to fill (fit: cover)
 /media/<file id>-<width>w.<format>                      width only, keeps the ratio
 ```
 
-The pack's middleware reads the original from the media bucket (`MEDIA`), resizes it with the Cloudflare Images binding (`IMAGES`, which the Astro Cloudflare adapter already binds), and caches the result at the edge for a year (file ids never change). Sizes are limited to 2560px; SVGs aren't resized. Other binding names: `coywolfPlugin({ images: { bucket: "MYMEDIA", images: "MYIMAGES" } })`.
+reading the original from the media bucket (`MEDIA`), resizing it with the Cloudflare Images binding (`IMAGES`, which the Astro Cloudflare adapter already binds) and caching the result at the edge for a year. SVGs aren't resized. Other binding names: `coywolfPlugin({ images: { bucket: "MYMEDIA", images: "MYIMAGES" } })`. Once a media host is set, these addresses redirect (301) to the same size on the media host, so old links keep working.
 
-With Schema & Social's **Robots & social** feature on, pages without their own image use the site's default OG image (Settings → SEO) at a clean 1200×630 URL (PNG stays PNG, anything else becomes JPEG), with its width, height, type and alt; clean URLs anywhere in og:image resolve back to their media item for those tags.
+### Setting up a media host
 
-In theme code, build URLs with `cleanImageUrl` (returns `null` when the feature is off or the source isn't a media-library file, so fall back to your usual image code):
+The media host needs three things on Cloudflare, in the zone of the site's domain:
+
+1. **Image Transformations** turned on for the zone (Images → Transformations → Enable for zone; same-zone sources only, so leave "Resize images from any origin" off).
+2. **An R2 custom domain** on the media bucket (the bucket bound as `MEDIA`): R2 → the bucket → Settings → Custom Domains → Add `media.example.com`, minimum TLS 1.2. Cloudflare adds the DNS record and certificate.
+3. **Two URL rewrite rules** (Rules → URL Rewrite, phase `http_request_transform`), named exactly so the setup button recognizes them:
+
+| Name | Filter expression | Path rewrite (dynamic) |
+| --- | --- | --- |
+| `media.example.com: /s/<W>x<H>/<file> → cropped resize (Coywolf Pack clean image URLs)` | `(http.host eq "media.example.com" and http.request.uri.path wildcard "/s/*x*/*")` | `wildcard_replace(http.request.uri.path, "/s/*x*/*", "/cdn-cgi/image/width=${1},height=${2},fit=cover,format=auto,quality=85/${3}")` |
+| `media.example.com: /s/<W>/<file> → resize to width (Coywolf Pack clean image URLs)` | `(http.host eq "media.example.com" and http.request.uri.path wildcard "/s/*/*" and not http.request.uri.path wildcard "/s/*x*/*")` | `wildcard_replace(http.request.uri.path, "/s/*/*", "/cdn-cgi/image/width=${1},format=auto,quality=85/${2}")` |
+
+Do it by hand with the step-by-step guide on the Clean Image URLs page, or let **Set up media host** on that page do it through the Cloudflare API: enter the media host, your Cloudflare account ID, the media bucket's name and an API token, select **Review setup** to see the plan ("Turn on Image Transformations for example.com, connect media.example.com to the R2 bucket example-media, add 2 URL rewrite rules"), then **Apply**. Anything already done is skipped, the zone's other URL rewrite rules are kept as they are, and only the pack's own two rules (matched by name) are replaced. It finishes with a check.
+
+The API token needs these permissions (Account Resources: your account; Zone Resources: the site's zone):
+
+- Zone → Zone → Read (to find the zone)
+- Zone → Zone Settings → Edit (Image Transformations)
+- Zone → Transform Rules → Edit, and Account → Account Rulesets → Read (the URL rewrite rules)
+- Account → Workers R2 Storage → Edit, and Zone → DNS → Edit (the custom domain and its DNS record)
+
+The token can be typed just for the setup, saved (encrypted) on the page or the plugin's Settings page, or set as the `IMAGES_API_TOKEN` (or `CLOUDFLARE_API_TOKEN`) Worker secret; the account ID can come from `CF_ACCOUNT_ID`. It's only sent to `api.cloudflare.com`, and you can delete it in Cloudflare afterward.
+
+**Check** (on the page) fetches a recent image from the media host, and a 64×64 copy of it twice, and reports whether the host is reachable, the original is served, resizing works (`cf-resized` header or an image type) and the copy is cached.
+
+Then turn the media host on, either on the Clean Image URLs page (takes effect within a minute, no deploy) or in `astro.config.mjs`:
+
+```js
+coywolfPlugin({ images: { cdn: "https://media.example.com" } })
+```
+
+A host saved on the page wins over the option; clear it there to fall back to the option. The host must be an `https://` origin with no path.
+
+**Quota.** Cloudflare's Free plan includes 5,000 unique image transformations a month (each new size of each image counts once a month; repeat views come from the cache). Beyond that, transformations need a paid Cloudflare Images plan.
+
+### Open Graph and schema
+
+With Schema & Social's Open Graph extras on:
+
+- Pages without their own image use the site's default OG image (Settings → SEO) at a clean 1200×630 URL with its width, height, type and alt. On the media host that's `https://media.example.com/s/1200x630/<file>` (crawlers that don't ask for WebP get the original format, so the type is the original's); on the Worker route PNG stays PNG and anything else becomes JPEG.
+- With a media host, a page's own image (featured image or SEO image from the media library) is output as its original on the media host, with its width, height, type and alt. The JSON-LD `primaryImageOfPage` uses the same URL.
+- These og:image and twitter:image tags replace EmDash's own (never a second og:image), and clean URLs anywhere in og:image resolve back to their media item.
+
+### In theme code
 
 ```astro
 ---
-import { cleanImageUrl } from "@coywolf/emdash/astro";
-const thumb = await cleanImageUrl(post.data.featured_image?.src, { width: 600, height: 315 });
+import { cleanImageUrl, originalImageUrl } from "@coywolf/emdash/astro";
+const src = post.data.featured_image?.src;
+const thumb = await cleanImageUrl(src, { width: 600, height: 315 });
+const full = await originalImageUrl(src);
 ---
 {thumb && <img src={thumb} width="600" height="315" alt="" />}
+<a href={full}>Full size</a>
 ```
+
+- `cleanImageUrl(src, { width, height?, format? })`: the resized URL (on the media host when set, else `/media/…`; `format` applies to the Worker route only, as the media host picks it). `null` when the feature is off or `src` isn't a media-library file, so fall back to your usual image code.
+- `originalImageUrl(src)` (also exported as `mediaUrl`): the original file on the media host; returns `src` unchanged when the feature is off, no media host is set, or `src` isn't a media-library file.
 
 ## Backups
 

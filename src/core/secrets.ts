@@ -44,6 +44,12 @@ export const SECRET_SETTINGS = {
 		label: "Videos — Stream webhook signing secret",
 		description: "Filled in by Subscribe Stream webhook on the Videos page. Leave as is.",
 	},
+	imagesApiToken: {
+		type: "secret",
+		label: "Clean image URLs — Cloudflare API token",
+		description:
+			"Optional. Only for Set up media host on the Clean Image URLs page, which does the Cloudflare setup for you. To get one: (1) Cloudflare dashboard → My Profile → API Tokens → Create Token → Create Custom Token; (2) add the permissions Zone → Zone → Read, Zone → Zone Settings → Edit, Zone → Transform Rules → Edit, Zone → DNS → Edit, Account → Workers R2 Storage → Edit and Account → Account Rulesets → Read; (3) include your account and the site's zone; (4) create it, copy the token (shown once), paste it here and save. Or set the IMAGES_API_TOKEN Worker secret.",
+	},
 	robotsRadarToken: {
 		type: "secret",
 		label: "Robots.txt Rules — Cloudflare Radar API token",

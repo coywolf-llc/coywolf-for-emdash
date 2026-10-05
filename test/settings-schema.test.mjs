@@ -25,12 +25,13 @@ test("settingsSchema contains only secret fields", () => {
 });
 
 test("the known secrets keep their stored keys", () => {
-	assert.deepEqual(Object.keys(SECRET_SETTINGS).sort(), ["aiApiKey", "filesR2SecretAccessKey", "robotsRadarToken", "videosApiToken", "videosWebhookSecret"]);
+	assert.deepEqual(Object.keys(SECRET_SETTINGS).sort(), ["aiApiKey", "filesR2SecretAccessKey", "imagesApiToken", "robotsRadarToken", "videosApiToken", "videosWebhookSecret"]);
 	assert.match(read("ai/store.ts"), /aiApiKey: \{ type: "secret"/);
 	assert.match(read("files/module.ts"), /"filesR2SecretAccessKey"/);
 	assert.match(read("videos/store.ts"), /token: "videosApiToken"/);
 	assert.match(read("videos/store.ts"), /webhookSecret: "videosWebhookSecret"/);
 	assert.match(read("robots/radar.ts"), /RADAR_TOKEN_SETTING = "robotsRadarToken"/);
+	assert.match(read("images/settings.ts"), /token: "imagesApiToken"/);
 });
 
 test("non-secret module fields are dropped; module secrets are kept", () => {

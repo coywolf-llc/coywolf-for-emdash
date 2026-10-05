@@ -7,6 +7,7 @@ import { CustomBlocksPage } from "./customBlocks.js";
 import { DiscoveryPage } from "./discovery.js";
 import { FeaturesPage } from "./features.js";
 import { HeadingsPage } from "./headings.js";
+import { ImagesPage } from "./images.js";
 import { BreadcrumbsPage } from "./breadcrumbs.js";
 import { FilesPage } from "./files.js";
 import { FormUploadsPage } from "./formUploads.js";
@@ -40,6 +41,7 @@ export const pages: PluginAdminExports["pages"] = {
 	// Called Content Blocks until 0.12.0: old bookmarks still open the page.
 	"/content-blocks": CustomBlocksPage,
 	"/wordpress-import": WpImportPage,
+	"/images": ImagesPage,
 };
 
 export const widgets: PluginAdminExports["widgets"] = {
