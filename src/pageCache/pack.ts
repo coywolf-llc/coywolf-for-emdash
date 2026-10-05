@@ -1,4 +1,3 @@
-import type { PluginContext } from "emdash";
 import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
@@ -9,7 +8,7 @@ import { mediaApiAccess, purgeMediaHost } from "../images/module.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { workerEnv } from "../shared.js";
 import { purgeIfNewVersion, purgePageCache, versionId } from "./lib.js";
-import { WARM_SETTING, collectUrls, readWarmState, startWarm, warmBatch, writeWarmState } from "./warm.js";
+import { WARM_SETTING, readWarmState, startWarm } from "./warm.js";
 
 /**
  * Performance is always on (its page sits right below Coywolf Pack). On a site
@@ -25,44 +24,11 @@ registerSiteSetting(LIFETIME_SETTINGS.maxAgeDays);
 registerSiteSetting(LIFETIME_SETTINGS.refreshDays);
 registerSiteSetting(WARM_SETTING);
 
-const WARM_TASK = "page-cache-warm";
-/** Per minute run: leaves room before the next one starts. */
-const WARM_BUDGET_MS = 45_000;
-
 async function siteDb(): Promise<D1Database | undefined> {
 	const env: Record<string, unknown> = await workerEnv().catch(() => ({}));
 	return env.DB as D1Database | undefined;
 }
 
-/** One minute's warming: read the sitemap first, then visit queued pages until the budget runs out. */
-async function warmTick(ctx: { settings: { get<T>(key: string): Promise<T | null | undefined> }; site?: { url?: string }; log: { info(msg: string, data?: unknown): void } }) {
-	if (!(await ctx.settings.get<boolean>(WARM_SETTING))) return;
-	const env: Record<string, unknown> = await workerEnv().catch(() => ({}));
-	const db = env.DB as D1Database | undefined;
-	if (!db) return;
-	let state = await readWarmState(db);
-	if (!state || state.phase === "done" || state.phase === "failed") return;
-	const self = env.SELF as { fetch(request: Request): Promise<Response> } | undefined;
-	const origin = ctx.site?.url ? new URL(ctx.site.url).origin : null;
-	if (!self || !origin) {
-		await writeWarmState(db, { ...state, phase: "failed", error: "Add a SELF service binding (the Worker's own service) to wrangler.jsonc so the pack can visit its pages." });
-		return;
-	}
-	const generation = state.generation;
-	const isCurrent = async () => (await readWarmState(db))?.generation === generation;
-	if (state.phase === "collect") {
-		const queue = await collectUrls(self, origin).catch(() => []);
-		if (!(await isCurrent())) return;
-		state = { ...state, phase: "warm", queue, total: queue.length };
-		if (!queue.length) state = { ...state, phase: "failed", error: `No pages found in ${origin}/sitemap.xml.` };
-		await writeWarmState(db, state);
-		if (state.phase === "failed") return;
-	}
-	const next = await warmBatch(self, state, { budgetMs: WARM_BUDGET_MS, isCurrent });
-	if (!(await isCurrent())) return;
-	await writeWarmState(db, next);
-	if (next.phase === "done") ctx.log.info("Page cache warmed", { warmed: next.warmed, failed: next.failed });
-}
 
 const lifetimeInput = z.object({
 	maxAgeDays: z.number().int().min(1, "Keep pages for at least 1 day.").max(365, "Keep pages for at most 365 days."),
@@ -203,8 +169,6 @@ export function pageCachePack(): PackModule {
 		},
 		// Its page (/performance) is listed by index.ts, always, right below Coywolf Pack.
 		adminPages: [],
-		// feature "": always runs (Performance has no switch); it returns at once unless warming is on and queued.
-		tasks: [{ name: WARM_TASK, schedule: "* * * * *", feature: "", handler: (ctx: PluginContext) => warmTick(ctx) }],
 		// Clearing the media host's images goes through the Cloudflare API.
 		capabilities: ["network:request"],
 		allowedHosts: [CLOUDFLARE_API_HOST],

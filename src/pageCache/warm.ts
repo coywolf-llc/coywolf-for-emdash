@@ -8,9 +8,17 @@
  * region it runs in (with Smart Placement, the one near the database); other
  * regions still fill on their first visit.
  *
- * The queue lives in one option row and a minute task works through it in
- * time-boxed batches. A new purge restarts it (new generation), so a run never
- * wastes work on pages that were just cleared.
+ * The work rides on real traffic: after the site answers a page request, the
+ * Worker claims a small batch from the queue and visits it in the background
+ * (waitUntil). Cron Triggers can't do this: they run in whatever data center
+ * has spare capacity (often on another continent), far from the database and
+ * the readers, and placement hints don't apply to them. Visits from request
+ * context run where the traffic is (with Smart Placement, near the database),
+ * so they warm the region the readers and crawlers come from.
+ *
+ * The queue lives in one option row. Batches are claimed with a
+ * compare-and-swap on that row, so isolates working in parallel never take
+ * the same pages. A new purge restarts it (new generation).
  */
 
 /** Option rows: the switch, and the job's state. */
@@ -23,6 +31,8 @@ export interface WarmState {
 	startedAt: string;
 	/** "collect" until the sitemap has been read, then "warm" until the queue is empty. */
 	phase: "collect" | "warm" | "done" | "failed";
+	/** When an isolate took the collect step (so a stalled one can be retried). */
+	collectingAt?: string;
 	queue: string[];
 	total: number;
 	warmed: number;
@@ -84,7 +94,7 @@ interface Fetcher {
 /** Read the sitemap (following a sitemap index one level) into the warm order. */
 export async function collectUrls(self: Fetcher, origin: string): Promise<string[]> {
 	const read = async (url: string) => {
-		const res = await self.fetch(new Request(url, { headers: { "User-Agent": "CoywolfPack-CacheWarmer" } }));
+		const res = await self.fetch(new Request(url, { headers: { "User-Agent": WARMER_AGENT } }));
 		return res.ok ? res.text() : "";
 	};
 	const root = sitemapLocs(await read(`${origin}/sitemap.xml`));
@@ -98,44 +108,6 @@ export async function collectUrls(self: Fetcher, origin: string): Promise<string
 		}
 	}
 	return warmOrder(origin, urls);
-}
-
-/**
- * Warm queued URLs until the time budget runs out, the queue is empty, or the
- * job was restarted. Visits go through the Worker's own service binding, which
- * shares the Worker's cache (a Worker can't fetch its own custom domain).
- * `isCurrent` re-reads the generation so a newer purge stops this batch.
- */
-export async function warmBatch(
-	self: Fetcher,
-	state: WarmState,
-	options: { budgetMs: number; concurrency?: number; isCurrent: () => Promise<boolean>; now?: () => number },
-): Promise<WarmState> {
-	const now = options.now ?? Date.now;
-	const deadline = now() + options.budgetMs;
-	const concurrency = options.concurrency ?? 4;
-	const next = { ...state, queue: [...state.queue] };
-	while (next.queue.length && now() < deadline) {
-		if (!(await options.isCurrent())) return next;
-		const batch = next.queue.splice(0, concurrency);
-		const results = await Promise.all(
-			batch.map(async (url) => {
-				try {
-					const res = await self.fetch(new Request(url, { headers: { "User-Agent": "CoywolfPack-CacheWarmer" } }));
-					await res.arrayBuffer();
-					return res.ok || (res.status >= 300 && res.status < 400);
-				} catch {
-					return false;
-				}
-			}),
-		);
-		for (const ok of results) ok ? next.warmed++ : next.failed++;
-	}
-	if (!next.queue.length) {
-		next.phase = "done";
-		next.finishedAt = new Date(now()).toISOString();
-	}
-	return next;
 }
 
 // ── Storage (one option row; works from middleware, routes and the minute task) ──
@@ -162,4 +134,114 @@ export async function startWarm(db: D1Database, reason: string): Promise<WarmSta
 	const state = newWarmState(reason);
 	await writeWarmState(db, state);
 	return state;
+}
+
+// ── Claims (compare-and-swap on the option row) ──
+
+async function readRaw(db: D1Database): Promise<string | null> {
+	const row = await db.prepare("SELECT value FROM options WHERE name = ?").bind(WARM_STATE_OPTION).first<{ value: string }>();
+	return row?.value ?? null;
+}
+
+/** Replace the row only if nobody changed it since `before` was read. */
+async function swap(db: D1Database, before: string, after: WarmState): Promise<boolean> {
+	const result = await db.prepare("UPDATE options SET value = ? WHERE name = ? AND value = ?").bind(JSON.stringify(after), WARM_STATE_OPTION, before).run();
+	return (result.meta?.changes ?? 0) > 0;
+}
+
+export type Claim = { kind: "collect"; state: WarmState } | { kind: "warm"; state: WarmState; urls: string[] } | null;
+
+const COLLECT_STALE_MS = 2 * 60_000;
+
+/** Take the next piece of work, if any: reading the sitemap, or a batch of URLs. */
+export async function claimWork(db: D1Database, batchSize: number, now = Date.now()): Promise<Claim> {
+	const raw = await readRaw(db);
+	if (!raw) return null;
+	let state: WarmState;
+	try {
+		state = JSON.parse(raw) as WarmState;
+	} catch {
+		return null;
+	}
+	if (state.phase === "collect") {
+		if (state.collectingAt && now - Date.parse(state.collectingAt) < COLLECT_STALE_MS) return null;
+		const next = { ...state, collectingAt: new Date(now).toISOString() };
+		return (await swap(db, raw, next)) ? { kind: "collect", state: next } : null;
+	}
+	if (state.phase !== "warm" || !state.queue.length) return null;
+	const urls = state.queue.slice(0, batchSize);
+	const next = { ...state, queue: state.queue.slice(batchSize) };
+	return (await swap(db, raw, next)) ? { kind: "warm", state: next, urls } : null;
+}
+
+/** Store the sitemap's URLs for the run that claimed the collect step. */
+export async function finishCollect(db: D1Database, generation: string, urls: string[], origin: string): Promise<void> {
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const raw = await readRaw(db);
+		if (!raw) return;
+		const state = JSON.parse(raw) as WarmState;
+		if (state.generation !== generation || state.phase !== "collect") return;
+		const next: WarmState = urls.length
+			? { ...state, phase: "warm", queue: urls, total: urls.length, collectingAt: undefined }
+			: { ...state, phase: "failed", error: `No pages found in ${origin}/sitemap.xml.`, collectingAt: undefined };
+		if (await swap(db, raw, next)) return;
+	}
+}
+
+/** Count a finished batch; marks the run done when nothing is left. */
+export async function recordBatch(db: D1Database, generation: string, warmed: number, failed: number, now = Date.now()): Promise<void> {
+	for (let attempt = 0; attempt < 5; attempt++) {
+		const raw = await readRaw(db);
+		if (!raw) return;
+		const state = JSON.parse(raw) as WarmState;
+		if (state.generation !== generation) return;
+		const next: WarmState = { ...state, warmed: state.warmed + warmed, failed: state.failed + failed };
+		if (!next.queue.length && next.warmed + next.failed >= next.total) {
+			next.phase = "done";
+			next.finishedAt = new Date(now).toISOString();
+		}
+		if (await swap(db, raw, next)) return;
+	}
+}
+
+/** Visit URLs through the Worker's own service binding (which shares its cache). */
+export async function visit(self: Fetcher, urls: string[]): Promise<{ warmed: number; failed: number }> {
+	const results = await Promise.all(
+		urls.map(async (url) => {
+			try {
+				const res = await self.fetch(new Request(url, { headers: { "User-Agent": WARMER_AGENT } }));
+				await res.arrayBuffer();
+				return res.ok || (res.status >= 300 && res.status < 400);
+			} catch {
+				return false;
+			}
+		}),
+	);
+	return { warmed: results.filter(Boolean).length, failed: results.filter((ok) => !ok).length };
+}
+
+export const WARMER_AGENT = "CoywolfPack-CacheWarmer";
+
+/**
+ * One step of warming, run in the background of a page request: claim a piece
+ * of work and do it, within a time budget. Returns what it did (for tests/logs).
+ */
+export async function warmStep(db: D1Database, self: Fetcher, origin: string, options: { budgetMs: number; batchSize: number; now?: () => number }): Promise<string> {
+	const now = options.now ?? Date.now;
+	const deadline = now() + options.budgetMs;
+	let did = "idle";
+	while (now() < deadline) {
+		const claim = await claimWork(db, options.batchSize, now());
+		if (!claim) return did;
+		if (claim.kind === "collect") {
+			const urls = await collectUrls(self, origin).catch(() => []);
+			await finishCollect(db, claim.state.generation, urls, origin);
+			did = "collected";
+			continue;
+		}
+		const { warmed, failed } = await visit(self, claim.urls);
+		await recordBatch(db, claim.state.generation, warmed, failed, now());
+		did = "warmed";
+	}
+	return did;
 }
