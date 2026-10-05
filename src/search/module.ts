@@ -19,16 +19,16 @@
  *   through EmDash's own /_emdash/api/search/{enable,rebuild,stats}
  *   endpoints, so EmDash's permission checks (search:manage) apply.
  */
-import { type PluginContext, PluginRouteError, definePluginRoute } from "emdash";
+import { type PluginContext, PluginRouteError, definePluginRoute, pluginResponse } from "emdash";
 import { z } from "zod";
 
 import { requireCachedFeature, requireFeature } from "../core/features.js";
 import { COLLECTION_SLUG, readCollections } from "../core/content-url.js";
 import { parseInput, workerEnv } from "../shared.js";
 import { liveSearchD1, loadSearchMeta } from "./engine.js";
-import { liveScript } from "./live-client.js";
+import { liveScriptConfig } from "./live-client.js";
 import { normalizeCollections, normalizeLiveQuery, normalizeLocale } from "./live-cache.js";
-import { INDEX_ENDPOINT, LIVE_ENDPOINT, bumpSearchVersion, configureSearchLive, searchVersion } from "./live-serve.js";
+import { INDEX_ENDPOINT, LIVE_ENDPOINT, bumpSearchVersion, configureSearchLive, liveAssetParts, liveAssetUrl, searchVersion } from "./live-serve.js";
 import { searchWithFallback } from "./query.js";
 import { TITLE_INDEX_MAX, buildTitleIndex } from "./title-index.js";
 
@@ -153,6 +153,20 @@ export function searchModule(options: SearchOptions) {
 			},
 		}),
 
+		/** The live results client file (the pack middleware answers this path first when it's installed). */
+		"search/live-client": definePluginRoute({
+			public: true,
+			methods: ["GET"],
+			request: { body: "none" },
+			response: "raw",
+			handler: async (ctx) => {
+				await requireCachedFeature(ctx, "search.live");
+				const input = (ctx.input ?? {}) as Record<string, unknown>;
+				const asset = liveAssetParts(typeof input.v === "string" ? input.v : null);
+				return pluginResponse({ status: asset.status, headers: asset.headers, body: { kind: "text", value: asset.body } });
+			},
+		}),
+
 		"search/live": definePluginRoute({
 			public: true,
 			methods: ["GET"],
@@ -244,12 +258,19 @@ export function searchModule(options: SearchOptions) {
 	const isPublished = (content: Record<string, unknown> | undefined) => !content || content.status === undefined || content.status === "published";
 
 	const hooks = {
-		/** The live results script, on every public page (it attaches only where there's a search form). */
+		/**
+		 * The live results script, on every public page (it attaches only where there's a search form):
+		 * a deferred, versioned file browsers cache, with this page's config in an attribute.
+		 */
 		"page:fragments": async (event: { page: { locale: string | null } }) => ({
-			kind: "inline-script" as const,
+			kind: "external-script" as const,
 			placement: "body:end" as const,
 			key: "search-live",
-			code: liveScript({ ...live, indexEndpoint: instant ? INDEX_ENDPOINT : null, version: await searchVersion(database), locale: event.page.locale ?? null }),
+			src: liveAssetUrl(),
+			defer: true,
+			attributes: {
+				"data-cw-live": liveScriptConfig({ ...live, indexEndpoint: instant ? INDEX_ENDPOINT : null, version: await searchVersion(database), locale: event.page.locale ?? null }),
+			},
 		}),
 		"content:afterSave": (event: { content?: Record<string, unknown> }, ctx: PluginContext) => (isPublished(event.content) ? touch(ctx) : undefined),
 		"content:afterPublish": (_event: unknown, ctx: PluginContext) => touch(ctx),

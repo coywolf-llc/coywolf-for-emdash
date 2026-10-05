@@ -4,7 +4,7 @@ import { test } from "node:test";
 import vm from "node:vm";
 
 const { buildSnippet, highlightHtml, highlightWords, escapeHtml, wordPattern } = await import("../src/search/snippet.ts");
-const { liveScript, LIVE_CSS } = await import("../src/search/live-client.ts");
+const { liveScript, liveScriptConfig, LIVE_CSS, LIVE_ASSET, LIVE_ASSET_HASH } = await import("../src/search/live-client.ts");
 const { isLimitedPath } = await import("../src/search/ratelimit-core.ts");
 
 test("highlight words: typed words of two or more characters, longest first, de-duplicated", () => {
@@ -96,6 +96,61 @@ test("live script: does nothing without a DOM-capable browser (no fetch)", () =>
 	assert.equal(window.__cwLive, undefined);
 });
 
+test("live script file: runs the same client with the config from its own script element", () => {
+	assert.doesNotThrow(() => new vm.Script(LIVE_ASSET));
+	const config = { endpoint: "/x", indexEndpoint: null, version: "v1", limit: 8, minChars: 2, debounce: 200, locale: "</script>", enterOpensTop: true };
+	// The inline script is this client called with the config; the file passes the parsed attribute instead.
+	const inline = liveScript(config);
+	assert.ok(LIVE_ASSET.includes(inline.slice(1, 4000)), "same client body");
+	// Executes the client: with a config, it reads document.readyState; without one it touches nothing.
+	const reads = [];
+	const document = {
+		currentScript: { getAttribute: (name) => (name === "data-cw-live" ? liveScriptConfig(config) : null) },
+		get readyState() {
+			reads.push("readyState");
+			return "loading";
+		},
+		addEventListener: (type) => reads.push(type),
+	};
+	const browser = () => ({ fetch() {}, AbortController: class {} });
+	const window = browser();
+	vm.runInNewContext(LIVE_ASSET, { document, window });
+	assert.equal(window.__cwLive, 1, "the client started");
+	assert.ok(reads.includes("DOMContentLoaded"), reads.join());
+	const idle = { currentScript: { getAttribute: () => null } };
+	const idleWindow = browser();
+	assert.doesNotThrow(() => vm.runInNewContext(LIVE_ASSET, { document: idle, window: idleWindow }));
+	assert.equal(idleWindow.__cwLive, undefined, "no config, nothing runs");
+	assert.match(LIVE_ASSET_HASH, /^[0-9a-z]+$/);
+});
+
+test("live script file: immutable for the current version only, from the middleware and the route", async () => {
+	const serve = await import("../src/search/live-serve.ts");
+	assert.equal(serve.liveAssetParts(LIVE_ASSET_HASH).headers["Cache-Control"], "public, max-age=31536000, immutable");
+	assert.equal(serve.liveAssetParts("old").headers["Cache-Control"], "public, max-age=300");
+	assert.equal(serve.liveAssetParts(null).body, LIVE_ASSET);
+	const request = (path, method = "GET") => ({ url: new URL(`https://example.com${path}`), request: new Request(`https://example.com${path}`, { method }) });
+	const res = await serve.searchLiveMiddleware.handle(request(serve.liveAssetUrl()), {}, () => {});
+	assert.equal(res.status, 200);
+	assert.equal(res.headers.get("Content-Type"), "text/javascript; charset=utf-8");
+	assert.equal(res.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+	assert.equal(await res.text(), LIVE_ASSET);
+	const head = await serve.searchLiveMiddleware.handle(request(serve.liveAssetUrl(), "HEAD"), {}, () => {});
+	assert.equal(await head.text(), "");
+
+	const features = await import("../src/core/features.ts");
+	const { searchPack: pack } = await import("../src/search/pack.ts");
+	const { routes } = pack({});
+	features.invalidateFeatures();
+	const route = routes["search/live-client"];
+	assert.ok(route, "fallback route for sites without the middleware");
+	const ctx = { settings: { get: async (key) => (key === "features" ? { search: true } : null) }, log: { info() {}, warn() {}, error() {} }, input: { v: LIVE_ASSET_HASH } };
+	const out = await route.handler(ctx);
+	assert.equal(out.status, 200);
+	assert.equal(out.body.value, LIVE_ASSET);
+	features.invalidateFeatures();
+});
+
 test("live styles: no unbalanced braces", () => {
 	assert.equal((LIVE_CSS.match(/{/g) ?? []).length, (LIVE_CSS.match(/}/g) ?? []).length);
 });
@@ -131,10 +186,15 @@ test("page fragment: the live results script at the end of the body while search
 	invalidateFeatures();
 	const on = await hooks["page:fragments"](event, fakeCtx({ search: true }));
 	assert.equal(on.length, 1);
-	assert.equal(on[0].kind, "inline-script");
+	assert.equal(on[0].kind, "external-script");
 	assert.equal(on[0].placement, "body:end");
-	assert.ok(on[0].code.includes('"limit":5') && on[0].code.includes('"minChars":3') && on[0].code.includes('"locale":"en"'));
-	assert.ok(on[0].code.includes("/_emdash/api/plugins/coywolf-pack/search/live"));
+	assert.equal(on[0].defer, true);
+	assert.equal(on[0].src, `/_emdash/api/plugins/coywolf-pack/search/live-client?v=${LIVE_ASSET_HASH}`);
+	const config = JSON.parse(on[0].attributes["data-cw-live"]);
+	assert.equal(config.limit, 5);
+	assert.equal(config.minChars, 3);
+	assert.equal(config.locale, "en");
+	assert.equal(config.endpoint, "/_emdash/api/plugins/coywolf-pack/search/live");
 
 	invalidateFeatures();
 	assert.deepEqual(await hooks["page:fragments"](event, fakeCtx({ search: true, "search.live": false })), []);
@@ -147,7 +207,7 @@ test("live options are clamped", async () => {
 	const { hooks } = composeHooks([searchPack({ live: { limit: 500, minChars: 0, debounce: -5 } })], { tasks: [] });
 	invalidateFeatures();
 	const [fragment] = await hooks["page:fragments"]({ page: { locale: null } }, fakeCtx({ search: true }));
-	assert.ok(fragment.code.includes('"limit":20,"minChars":1,"debounce":0'), fragment.code.slice(-300));
+	assert.ok(fragment.attributes["data-cw-live"].includes('"limit":20,"minChars":1,"debounce":0'), fragment.attributes["data-cw-live"]);
 	invalidateFeatures();
 });
 
