@@ -45,3 +45,51 @@ test("daily like counts are pruned by day", () => {
 	assert.equal(staleLikesByKey(likesByKey("2026-10-03", "abc"), "2026-10-03"), false);
 	assert.equal(staleLikesByKey("state:videos:likesBy:junk", "2026-10-03"), false);
 });
+
+// ── Routes: requests without an address ──────────────────────────
+
+/** A plugin context for the public play/like routes: one published video, engagement on. */
+function engagementCtx(ip, writes) {
+	const UID = "a67dcf0925d0747f8c5419df6400c2b5";
+	const fail = (what) => async () => {
+		writes.push(what);
+		throw new Error(`unexpected ${what}`);
+	};
+	const collection = (overrides = {}) => ({
+		get: async () => null,
+		exists: async () => false,
+		query: async () => ({ items: [], hasMore: false }),
+		updateIf: fail("updateIf"),
+		compareAndSet: fail("compareAndSet"),
+		delete: fail("delete"),
+		...overrides,
+	});
+	return {
+		input: { uid: UID, liked: true },
+		request: new Request("https://example.com/", { method: "POST", headers: { "X-Coywolf-Video": "1" } }),
+		requestMeta: { ip },
+		settings: { get: async (key) => (key === "features" ? { videos: true, "videos.engagement": true } : null) },
+		kv: { get: async () => null, set: fail("kv.set"), getVersioned: async () => null, compareAndSet: async () => ({ applied: true }), delete: async () => undefined },
+		storage: {
+			videosEmbeds: collection({ query: async () => ({ items: [{ id: "posts:1", data: { status: "published", uids: [UID] } }], hasMore: false }) }),
+			videosStats: collection({ get: async () => ({ plays: 7, likes: 3 }) }),
+			videosLikes: collection(),
+		},
+		log: { info() {}, warn() {}, error() {} },
+	};
+}
+
+test("without a visitor address (no cf object), plays and likes aren't counted as one shared visitor", async () => {
+	const { invalidateFeatures } = await import("../src/core/features.ts");
+	const { videosPack } = await import("../src/videos/pack.ts"); // Registers the videos switches.
+	const { routes } = videosPack({});
+	for (const ip of [null, "", "  "]) {
+		invalidateFeatures();
+		const writes = [];
+		const ctx = engagementCtx(ip, writes);
+		assert.deepEqual(await routes["videos/play"].handler(ctx), { plays: 7, counted: false });
+		assert.deepEqual(await routes["videos/like"].handler(ctx), { likes: 3, liked: false });
+		assert.deepEqual(writes, [], "nothing stored");
+	}
+	invalidateFeatures();
+});

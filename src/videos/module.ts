@@ -320,10 +320,18 @@ async function dailySalt(ctx: Ctx): Promise<{ day: string; salt: string }> {
  * A per-day pseudonymous visitor id from the IP address alone (it never leaves
  * this function). Not the user agent: visitors choose it, so each new one was
  * a new visitor and could add another play or like.
+ *
+ * Null when the request has no address (EmDash reads it from Cloudflare's `cf`
+ * object, missing in some setups such as local dev or a proxy in front). Then
+ * every visitor would hash to one id, sharing a single like and a single play
+ * per half hour, so the routes don't count anything instead (see videos/play
+ * and videos/like).
  */
-async function visitorHash(ctx: Ctx & { requestMeta: { ip: string | null } }): Promise<{ hash: string; day: string }> {
+async function visitorHash(ctx: Ctx & { requestMeta: { ip: string | null } }): Promise<{ hash: string; day: string } | null> {
+	const ip = ctx.requestMeta.ip?.trim();
+	if (!ip) return null;
 	const { day, salt } = await dailySalt(ctx);
-	return { hash: await sha256Hex(`${ctx.requestMeta.ip ?? ""}|${salt}`), day };
+	return { hash: await sha256Hex(`${ip}|${salt}`), day };
 }
 
 const limiter = new EngagementLimiter();
@@ -780,7 +788,10 @@ export function videosModule(options: VideosOptions) {
 				// edge) still send plays without it. A play only bumps a counter, and every address
 				// is rate limited and counted once per half hour per isolate, header or not.
 				// Likes (a stored row per visitor) do require it.
-				const { hash } = await visitorHash(ctx);
+				const visitor = await visitorHash(ctx);
+				// No address: plays aren't counted (they'd all be one visitor, see visitorHash).
+				if (!visitor) return { plays: ((await statsStore(ctx).get(uid)) ?? { plays: 0 }).plays, counted: false };
+				const { hash } = visitor;
 				if (!limiter.play(hash)) throw rateLimited();
 				if (seenRecently(`${uid}:${hash}`)) return { plays: ((await statsStore(ctx).get(uid)) ?? { plays: 0 }).plays, counted: false };
 				const counts = await bump(ctx, uid, "plays", 1);
@@ -799,11 +810,15 @@ export function videosModule(options: VideosOptions) {
 				if (!hasEngagementHeader(ctx.request.headers)) throw PluginRouteError.forbidden("Missing the X-Coywolf-Video header.");
 				const { uid, liked } = parseInput(z.object({ uid: uidSchema, liked: z.boolean().optional() }), ctx.input);
 				if (!(await publishedUids(ctx)).has(uid)) throw PluginRouteError.notFound("Unknown video.");
-				const { hash, day } = await visitorHash(ctx);
+				const current = async (isLiked: boolean) => ({ likes: ((await statsStore(ctx).get(uid)) ?? { likes: 0 }).likes, liked: isLiked });
+				const visitor = await visitorHash(ctx);
+				// No address: likes can't be told apart (every visitor would share one), so nothing
+				// is stored and the button shows the count without the visitor's like.
+				if (!visitor) return current(false);
+				const { hash, day } = visitor;
 				if (!limiter.like(hash)) throw rateLimited();
 				const id = await sha256Hex(`${uid}|${hash}`);
 				const likes = (ctx.storage as Record<string, import("emdash").StorageCollection<{ uid: string; day: string }>>)[COLLECTIONS.likes];
-				const current = async (isLiked: boolean) => ({ likes: ((await statsStore(ctx).get(uid)) ?? { likes: 0 }).likes, liked: isLiked });
 				const action = likeAction(liked, await likes.exists(id));
 				if (action === "keep") return current(Boolean(liked));
 				if (action === "remove") {
