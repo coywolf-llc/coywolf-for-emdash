@@ -16,7 +16,7 @@ import { registerFeatures, siteFeatureOn } from "../core/features.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { CLOUDFLARE_API_HOST } from "./cloudflare.js";
 import { workerEnv } from "../shared.js";
-import { FORMATS, IMAGE_PATH, cdnOriginalUrl, cdnRedirectUrl, cleanImagePath, imageCdn, mediaFile, parseImagePath, parseCdnUrl, setImageCdn } from "./lib.js";
+import { FORMATS, IMAGE_PATH, cdnOriginalUrl, cdnRedirectUrl, cleanImagePath, imageCdn, mediaFile, parseImagePath, parseCdnUrl, setImageCdn, snappedImagePath } from "./lib.js";
 import { imagesModule } from "./module.js";
 import { configureMediaHostDatabase, refreshMediaHost } from "./settings.js";
 
@@ -186,8 +186,13 @@ export const imagesMiddleware: PackMiddleware = {
 			return new Response(null, { status: 301, headers: { Location: target, "Cache-Control": "public, max-age=86400" } });
 		}
 
+		// Only sizes on the grid are resized; anything else moves to the nearest one up.
+		const snapped = snappedImagePath(request);
+		if (snapped) return new Response(null, { status: 301, headers: { Location: snapped, "Cache-Control": "public, max-age=86400" } });
+
 		const cache = (globalThis as unknown as { caches?: { default?: Cache } }).caches?.default;
-		const cacheKey = new Request(context.url.toString(), { method: "GET" });
+		// Keyed by path alone: a query string can't force a fresh (billed) transform.
+		const cacheKey = new Request(`${context.url.origin}${pathname}`, { method: "GET" });
 		const hit = cache ? await cache.match(cacheKey) : undefined;
 		// Cached responses have immutable headers; hand back a copy later middleware can still change.
 		if (hit) return new Response(context.request.method === "HEAD" ? null : hit.body, { status: hit.status, headers: new Headers(hit.headers) });

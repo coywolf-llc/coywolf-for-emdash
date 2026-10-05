@@ -54,6 +54,13 @@ export async function serveRedirect(
 	// didn't stop Workers Cache from storing redirects).
 	const caching = { "Cache-Control": "private, max-age=3600" };
 	if (found.rule.type === 410) return new Response("Gone", { status: 410, headers: caching });
-	const location = found.location.startsWith("/") ? new URL(found.location, url).href : found.location;
+	let location = found.location;
+	if (location.startsWith("/")) {
+		// match() already collapses leading slashes from capture groups; this is a
+		// second check that a site-relative destination never resolves off-site.
+		const resolved = new URL(location, url);
+		if (resolved.origin !== url.origin) return undefined;
+		location = resolved.href;
+	}
 	return new Response(null, { status: found.rule.type, headers: { Location: location, ...caching } });
 }

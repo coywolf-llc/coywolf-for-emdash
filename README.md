@@ -155,7 +155,7 @@ https://media.example.com/s/<w>/<file>         width only, keeps the ratio
 /media/<file id>-<width>w.<format>                      width only, keeps the ratio
 ```
 
-reading the original from the media bucket (`MEDIA`), resizing it with the Cloudflare Images binding (`IMAGES`, which the Astro Cloudflare adapter already binds) and caching the result at the edge for a year. SVGs aren't resized. Other binding names: `coywolfPlugin({ images: { bucket: "MYMEDIA", images: "MYIMAGES" } })`. Once a media host is set, these addresses redirect (301) to the same size on the media host, so old links keep working.
+reading the original from the media bucket (`MEDIA`), resizing it with the Cloudflare Images binding (`IMAGES`, which the Astro Cloudflare adapter already binds) and caching the result at the edge for a year (keyed by the path alone, so a query string never forces a new resize). Widths and heights on this route are multiples of 10px: `cleanImageUrl()` rounds other sizes up (640×336 becomes 640×340), and a request for an off-grid size gets a 301 to the rounded one, so nobody can make the Worker run (and bill) a new resize for every pixel. SVGs aren't resized. Other binding names: `coywolfPlugin({ images: { bucket: "MYMEDIA", images: "MYIMAGES" } })`. Once a media host is set, these addresses redirect (301) to the same size on the media host, so old links keep working.
 
 ### Setting up a media host
 
@@ -340,6 +340,8 @@ EmDash's built-in Redirects (**Manage → Redirects**) handle site-relative page
 - **File paths**, such as old WordPress `/wp-content/uploads/` image URLs. EmDash's middleware skips any path with a file extension.
 
 Features: exact paths (with or without a trailing slash) or regular expressions with `$1`–`$9` substitution, 301/302/307/308/410, enable/disable, notes, hit counts, a URL tester, bulk import (paste or choose a file: JSON, or tab/comma-separated `source, target, type, is_regex` rows; a Coywolf SEO export from WordPress works as is), and **Export** as CSV or JSON. Rules are stored in the site's D1 database (`coywolf_redirects`), so backups include them.
+
+A capture group can't send visitors to another site: with a site-path destination such as `/$1`, leading slashes from the capture are collapsed (`/blog//evil.com` → `/evil.com` on your site, never `//evil.com`), and a destination that names its host (`https://example.com$1`) only redirects when the result keeps that host. A destination whose host is itself a capture (`https://$1/`) is followed as written.
 
 ### Setup
 
