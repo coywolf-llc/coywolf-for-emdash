@@ -27,9 +27,8 @@ import {
 	normalizeCustomerHost,
 	playerConfig,
 	playerSrc,
-	posterImage,
-	posterUrl,
 } from "../../videos/lib.js";
+import { hostedPosterImage } from "../../videos/poster.js";
 
 interface Props {
 	node: VideoBlock;
@@ -88,15 +87,16 @@ const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >=
 const name = str(node?.title) ?? str(node?.name) ?? video?.name ?? "Video";
 const description = str(node?.caption) ?? str(node?.description) ?? video?.description ?? "";
 const block = { posterTime: num(node?.posterTime), posterImage: str(node?.posterImage) };
-const poster = uid
-	? posterUrl(host, uid, block, { posterTime: video?.posterTime ?? (node?.host ? 1 : undefined), posterImage: video?.posterImage ?? undefined }, undefined, Astro.url.origin)
-	: undefined;
+const posterFallback = { posterTime: video?.posterTime ?? (node?.host ? 1 : undefined), posterImage: video?.posterImage ?? undefined };
+// From the media host when there is one (copied from Stream once), else Stream's thumbnails.
+const hostedPoster = uid ? await hostedPosterImage(host, uid, block, posterFallback, Astro.url.origin) : null;
+const poster = hostedPoster?.full;
 const playerExtra = { startTime: num(node?.startTime), poster, accent: data?.accent ?? undefined, background: data?.background ?? undefined };
 const src = uid ? playerSrc(host, uid, cfg, playerExtra) : "";
 // Light embed: the poster now, the player later. Pressing play starts it at once.
 const light = Boolean(uid) && data?.lightEmbed !== false;
 const playSrc = uid && light && !cfg.autoplay ? playerSrc(host, uid, { ...cfg, autoplay: true }, playerExtra) : src;
-const posterImg = uid && light ? posterImage(host, uid, block, { posterTime: video?.posterTime ?? (node?.host ? 1 : undefined), posterImage: video?.posterImage ?? undefined }, Astro.url.origin) : null;
+const posterImg = light ? hostedPoster : null;
 const ratio = aspectRatio(video?.width, video?.height, num(node?.aspect));
 const maxWidth = node?.sizeMode === "maxwidth" && num(node?.maxWidth) ? Math.max(100, Math.round(node.maxWidth as number)) : null;
 const counts = data?.engagement ? data.counts : null;
