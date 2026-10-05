@@ -191,7 +191,8 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 		border-radius: 0.5rem;
 		overflow: hidden;
 	}
-	.cw-video__frame iframe {
+	/* :global: the light embed creates this iframe in script, so it has no scoped-style attribute. */
+	.cw-video__frame :global(iframe) {
 		position: absolute;
 		inset: 0;
 		width: 100%;
