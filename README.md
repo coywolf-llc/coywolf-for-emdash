@@ -202,8 +202,10 @@ const full = await originalImageUrl(src);
 
 - **Database**: a restorable SQL dump of the site's D1 database: users, passkeys, settings, redirects, menus, plugin data, and content. Search indexes rebuild automatically on restore.
 - **Media**: a mirror of the R2 media bucket. Replaced or deleted files are kept under a dated folder until retention expires.
+- **Private form uploads**: when the site has a `FORM_UPLOADS` binding (**Private form uploads**), a mirror of that bucket too, under `uploads/`. Set `backups.uploads` to another binding name, or `false` to leave uploads out. Keep the backup bucket private: these are files people sent through forms.
+- **Large rows**: D1 rejects statements over 100 KB, but posts can be bigger. Rows that don't fit in one INSERT are written with their long values in pieces, and the restore puts them back together exactly. Plugin caches are left out (they rebuild on demand).
 - **Admin**: **Back up now**, **Download** any backup (see below), and a dashboard widget that warns when backups stop. Settings (**Schedule and retention** on the Backups page): daily scheduled backup (default off), retention (default 30 days), staleness warning (default 36 hours).
-- **Restore** (optional, see below): **Rewind to this backup** (D1 Time Travel, with **Undo rewind**), **Restore to a new database** (import plus per-table row-count check), and **Restore missing media**.
+- **Restore** (optional, see below): **Rewind to this backup** (D1 Time Travel, with **Undo rewind**), **Restore to a new database** (import plus per-table row-count check), and **Restore missing media** (media first, then private form uploads, a batch of 200 files per request until done).
 
 Theme code isn't included: it lives in your Git repository.
 
@@ -257,6 +259,8 @@ d1/<stamp>/<name>.sql.gz         database dump
 d1/<stamp>/manifest.json         stamp, size, SHA-256, source, row counts, Time Travel bookmark
 media/current/<key>              mirror of the media bucket
 media/changed/<stamp>/<key>      media replaced or deleted at that backup
+uploads/current/<key>            mirror of the private form uploads bucket
+uploads/changed/<stamp>/<key>    uploads replaced or deleted at that backup
 restore/undo/<time>.json         undo points for rewinds
 downloads/<token>.json           download links (ten minutes each)
 ```
