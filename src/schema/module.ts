@@ -4,9 +4,9 @@
  *
  * Simple values are settings (settingsSchema); structured data lives in
  * plugin storage: schemaDocs ("site" = Site Details, "types" = per-collection
- * type defaults), schemaEntries (per-entry type overrides, id
- * "<collection>:<entry id>") and schemaAuthors (Person property rows per
- * byline id).
+ * type defaults), schemaEntries (per-entry type overrides and main
+ * subject, id "<collection>:<entry id>") and schemaAuthors (Person property
+ * rows per byline id; a row may be marked profile-only).
  */
 import { getManyBatched } from "../core/storage.js";
 import { siteName } from "../core/site.js";
@@ -23,6 +23,7 @@ import {
 	CUSTOM_KEY,
 	HOME_KEY,
 	type ImageInfo,
+	type MainSubject,
 	type Node,
 	type PropertyRow,
 	type SiteDetails,
@@ -34,6 +35,7 @@ import {
 	breadcrumbDocument,
 	buildGraph,
 	enrichImageObjects,
+	mainSubjectByline,
 	mediaRefFromUrl,
 	ogLocale,
 	originOf,
@@ -132,6 +134,8 @@ interface EntryOverride extends TypeChoice {
 	collection: string;
 	entryId: string;
 	title?: string;
+	/** What the entry is about: a byline (Person) or the site publisher. */
+	mainSubject?: MainSubject;
 	updatedAt?: string;
 }
 
@@ -299,6 +303,27 @@ async function authorNodes(ctx: PluginContext, page: PublicPageContext, config: 
 	return nodes.filter((n): n is Node => n !== null);
 }
 
+/**
+ * The Person for a byline chosen as a page's main subject: same @id as when
+ * they're credited as an author, plus their profile-only properties. Null
+ * when the byline no longer exists.
+ */
+async function mainSubjectPerson(ctx: PluginContext, bylineId: string, config: Config, site: SiteFacts, features: FeatureMap): Promise<Node | null> {
+	const facts = await bylineFacts(ctx, bylineId);
+	if (!facts) return null;
+	const stored = isOn(features, SCHEMA_FEATURES.authors) ? ((await authorsStore(ctx).get(bylineId)) as { rows: PropertyRow[] } | null) : null;
+	const path = authorPath(config.settings.schemaAuthorUrlPattern, facts.slug);
+	const authorUrl = path ? absolute(path, site.origin) : null;
+	return personNode({
+		byline: facts,
+		rows: stored?.rows ?? null,
+		origin: site.origin,
+		defaultId: authorId({ bylineId, slug: facts.slug, origin: site.origin, authorUrl, details: config.site, personRows: config.person?.rows }),
+		authorUrl,
+		profile: true,
+	});
+}
+
 /** Every contribution this module makes for a page (also used by the admin preview). */
 /** Fold the page's videos into the graph (see attachVideos). Errors are logged, never fatal. */
 async function attachPageVideos(ctx: PluginContext, page: PublicPageContext, graph: { "@graph": Node[] }, origin: string, on: FeatureMap) {
@@ -380,6 +405,9 @@ export async function schemaContributions(
 		const logoUrl = (publisher.logo as Node | undefined)?.url;
 		const logoInfo = typeof logoUrl === "string" ? await lookupMedia(options, logoUrl, site.origin) : null;
 		enrichImageObjects(publisher, (url) => (url === logoUrl ? logoInfo : null));
+		const subjectByline = mainSubjectByline(override?.mainSubject);
+		const mainEntity =
+			override?.mainSubject === "publisher" ? publisher : subjectByline ? await mainSubjectPerson(ctx, subjectByline, config, site, on) : null;
 		const graph = buildGraph({
 			page,
 			origin: site.origin,
@@ -391,6 +419,7 @@ export async function schemaContributions(
 			searchUrl: config.settings.schemaSearchUrl,
 			publisher,
 			authors,
+			mainEntity,
 			image,
 			breadcrumbs: isOn(on, SCHEMA_FEATURES.breadcrumbs),
 			homeLabel: config.settings.schemaBreadcrumbHome || "Home",
@@ -450,7 +479,11 @@ const PERSON_SET = new Set(PERSON_PROPERTIES);
 const TYPE_SET = new Set(PAGE_TYPES.map(([t]) => t));
 const ARTICLE_SET = new Set(ARTICLE_TYPES.map(([t]) => t));
 
-const rowInput = z.object({ prop: z.string().max(100), value: z.union([z.string().max(5000), z.record(z.string(), z.string().max(2000))]) });
+const rowInput = z.object({
+	prop: z.string().max(100),
+	value: z.union([z.string().max(5000), z.record(z.string(), z.string().max(2000))]),
+	profileOnly: z.boolean().optional(),
+});
 /** max-snippet / max-video-preview: blank or missing means -1 (no limit); anything non-numeric is rejected. */
 const limitInput = z
 	.union([z.number(), z.string().max(20), z.null()])
@@ -475,9 +508,15 @@ function cleanValue(value: string, input: string | undefined): string {
 	return v.replace(/[\u0000-\u001f]/g, " ");
 }
 
-/** Keep only catalog properties with valid values, like Coywolf SEO's sanitize_properties(). */
-export function sanitizeRows(rows: z.infer<typeof rowInput>[], allowed: Set<string>): PropertyRow[] {
+/**
+ * Keep only catalog properties with valid values, like Coywolf SEO's
+ * sanitize_properties(). `profileOnly` keeps the rows' profile-only marks
+ * (Person rows only).
+ */
+export function sanitizeRows(rows: z.infer<typeof rowInput>[], allowed: Set<string>, profileOnly = false): PropertyRow[] {
 	const out: PropertyRow[] = [];
+	// Never @id: the person must keep one @id on every page.
+	const mark = (row: z.infer<typeof rowInput>) => (profileOnly && row.profileOnly === true && row.prop !== "@id" ? { profileOnly: true } : {});
 	for (const row of rows) {
 		if (!allowed.has(row.prop)) continue;
 		const meta = PROPERTY_INPUTS[row.prop] ?? { input: "text" };
@@ -488,11 +527,11 @@ export function sanitizeRows(rows: z.infer<typeof rowInput>[], allowed: Set<stri
 				const v = cleanValue(row.value[sub] ?? "", subMeta.input);
 				if (v) value[sub] = v;
 			}
-			if (Object.keys(value).length) out.push({ prop: row.prop, value });
+			if (Object.keys(value).length) out.push({ prop: row.prop, value, ...mark(row) });
 		} else {
 			if (typeof row.value !== "string") continue;
 			const value = cleanValue(row.value, meta.input);
-			if (value) out.push({ prop: row.prop, value });
+			if (value) out.push({ prop: row.prop, value, ...mark(row) });
 		}
 	}
 	return out;
@@ -651,7 +690,7 @@ export function schemaModule(options: SchemaOptions) {
 				await requireFeature(ctx, SCHEMA_FEATURES.authors);
 				const { bylineId, rows } = parseInput(z.object({ bylineId: z.string().min(1).max(100), rows: z.array(rowInput).max(200) }), ctx.input);
 				if (ctx.bylines && !(await ctx.bylines.get(bylineId))) throw PluginRouteError.notFound("Unknown byline.");
-				const clean = sanitizeRows(rows, PERSON_SET);
+				const clean = sanitizeRows(rows, PERSON_SET, true);
 				if (clean.length) await authorsStore(ctx).put(bylineId, { rows: clean, updatedAt: new Date().toISOString() });
 				else await authorsStore(ctx).delete(bylineId);
 				invalidateSchemaConfig();
@@ -676,6 +715,20 @@ export function schemaModule(options: SchemaOptions) {
 				return { items };
 			},
 		},
+
+		/** An entry's credited byline ids, so the main-subject picker can list them first. */
+		"schema/entries/bylines": definePluginRoute({
+			permission: "plugins:manage",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, MAIN);
+				const { collection, entryId } = parseInput(z.object({ collection: z.string().min(1).max(100), entryId: z.string().min(1).max(100) }), ctx.input);
+				if (!ctx.bylines) return { ids: [] };
+				const [credits] = await ctx.bylines.getEntriesBylines(collection, [entryId]).catch(() => []);
+				return { ids: credits?.bylines.map((c) => c.byline.id) ?? [] };
+			},
+		}),
 
 		/** Recent entries of a collection, for picking one to override or preview. */
 		"schema/entries/find": definePluginRoute({
@@ -704,19 +757,41 @@ export function schemaModule(options: SchemaOptions) {
 			handler: async (ctx) => {
 				await requireFeature(ctx, MAIN);
 				const input = parseInput(
-					z.object({ collection: z.string().min(1).max(100), entryId: z.string().min(1).max(100), title: z.string().max(500).optional() }).merge(typeChoiceInput),
+					z
+						.object({
+							collection: z.string().min(1).max(100),
+							entryId: z.string().min(1).max(100),
+							title: z.string().max(500).optional(),
+							mainSubject: z.string().max(120).nullish(),
+						})
+						.merge(typeChoiceInput),
 					ctx.input,
 				);
 				const choice = cleanChoice(input);
 				const id = `${input.collection}:${input.entryId}`;
-				if (!choice.pageType && !choice.articleType) {
+				let mainSubject: MainSubject | undefined;
+				if (input.mainSubject === "publisher") mainSubject = "publisher";
+				else if (input.mainSubject) {
+					const bylineId = mainSubjectByline(input.mainSubject);
+					if (!bylineId) throw PluginRouteError.badRequest("Choose a byline or the site publisher as the main subject.");
+					if (ctx.bylines && !(await ctx.bylines.get(bylineId).catch(() => null))) throw PluginRouteError.notFound("That byline doesn't exist.");
+					mainSubject = `byline:${bylineId}`;
+				}
+				if (!choice.pageType && !choice.articleType && !mainSubject) {
 					await entries(ctx).delete(id);
 					return { deleted: true };
 				}
 				if (!ctx.content) throw PluginRouteError.badRequest("Content access is unavailable.");
 				const entry = await ctx.content.get(input.collection, input.entryId).catch(() => null);
 				if (!entry) throw PluginRouteError.notFound("That entry doesn't exist.");
-				const item: EntryOverride = { collection: input.collection, entryId: input.entryId, title: input.title, ...choice, updatedAt: new Date().toISOString() };
+				const item: EntryOverride = {
+					collection: input.collection,
+					entryId: input.entryId,
+					title: input.title,
+					...choice,
+					...(mainSubject ? { mainSubject } : {}),
+					updatedAt: new Date().toISOString(),
+				};
 				await entries(ctx).put(id, item);
 				return { item };
 			},

@@ -383,3 +383,132 @@ test("a guest byline (imported from Coywolf Guest Author) becomes the article's 
 		image: `${ORIGIN}/_emdash/api/media/file/abc.jpg`,
 	});
 });
+
+// ── Main subject (WebPage mainEntity) ────────────────────────────
+
+const jon = { id: "b1", slug: "jon-henshaw", displayName: "Jon Henshaw", bio: null, websiteUrl: null, avatarUrl: null };
+const jonId = `${ORIGIN}/jon-henshaw/#person`;
+const jonRows = [
+	{ prop: "name", value: "Jon Henshaw" },
+	{ prop: "jobTitle", value: "Editor" },
+	{ prop: "birthDate", value: "1973-09-09", profileOnly: true },
+	{ prop: "email", value: "jon@example.com", profileOnly: true },
+	{ prop: "birthPlace", value: "Whiteman AFB", profileOnly: true },
+	{ prop: "nationality", value: "US", profileOnly: true },
+	{ prop: "gender", value: "male", profileOnly: true },
+	{ prop: "sameAs", value: "https://henshaw.social/@jon" },
+];
+const jonNode = (profile) => g.personNode({ byline: jon, rows: jonRows, origin: ORIGIN, defaultId: jonId, authorUrl: `${ORIGIN}/jon-henshaw/`, profile });
+const profilePage = (overrides = {}) =>
+	page({
+		url: `${ORIGIN}/jon-henshaw/`,
+		path: "/jon-henshaw/",
+		canonical: `${ORIGIN}/jon-henshaw/`,
+		pageType: "website",
+		pageTitle: "Jon Henshaw",
+		content: { collection: "pages", id: "p1", slug: "jon-henshaw" },
+		...overrides,
+	});
+
+test("main subject byline: ProfilePage mainEntity is the Person, with profile-only properties", () => {
+	const doc = build(profilePage(), { override: { pageType: "ProfilePage", articleType: "none" }, mainEntity: jonNode(true) });
+	const [profile] = byType(doc, "ProfilePage");
+	assert.ok(profile, "ProfilePage node");
+	assert.deepEqual(profile.mainEntity, { "@id": jonId });
+	assert.equal(profile.dateCreated, "2026-01-02T03:04:05Z");
+	assert.equal(profile.dateModified, "2026-02-03T04:05:06Z");
+	const people = byType(doc, "Person");
+	assert.equal(people.length, 1);
+	const person = people[0];
+	assert.equal(person["@id"], jonId);
+	assert.equal(person.birthDate, "1973-09-09");
+	assert.equal(person.email, "jon@example.com");
+	assert.deepEqual(person.birthPlace, { "@type": "Place", name: "Whiteman AFB" });
+	assert.deepEqual(person.nationality, { "@type": "Country", name: "US" });
+	assert.equal(person.gender, "male");
+	assert.equal(person.jobTitle, "Editor");
+	assert.equal(byType(doc, "BlogPosting").length, 0);
+	assertRefsResolve(doc);
+});
+
+test("article authors never get profile-only properties", () => {
+	const author = jonNode(false);
+	for (const key of ["birthDate", "email", "birthPlace", "nationality", "gender"]) assert.equal(author[key], undefined, key);
+	assert.equal(author.jobTitle, "Editor");
+	assert.equal(author["@id"], jonId);
+	const doc = build(page(), { authors: [author] });
+	const person = byId(doc, jonId);
+	assert.equal(person.birthDate, undefined);
+	assert.equal(byType(doc, "BlogPosting")[0].author["@id"], jonId);
+	assert.equal(byType(doc, "WebPage")[0].mainEntity, undefined);
+});
+
+test("main subject who is also the credited author: one Person node, the fuller one", () => {
+	const doc = build(profilePage({ pageType: "article" }), { override: { pageType: "ProfilePage" }, authors: [jonNode(false)], mainEntity: jonNode(true) });
+	const people = byType(doc, "Person");
+	assert.equal(people.length, 1);
+	assert.equal(people[0].birthDate, "1973-09-09");
+	assert.deepEqual(byType(doc, "BlogPosting")[0].author, { "@id": jonId });
+	assert.equal(byType(doc, "ProfilePage")[0].dateCreated, undefined, "the Article carries the dates");
+	assertRefsResolve(doc);
+});
+
+test("main subject publisher: AboutPage mainEntity is the publisher Organization, no second node", () => {
+	const pub = publisher();
+	const doc = build(profilePage({ path: "/about/", url: `${ORIGIN}/about/`, canonical: `${ORIGIN}/about/` }), {
+		override: { pageType: "AboutPage", articleType: "none" },
+		publisher: pub,
+		mainEntity: pub,
+	});
+	const [about] = byType(doc, "AboutPage");
+	assert.deepEqual(about.mainEntity, { "@id": `${ORIGIN}/#organization` });
+	assert.equal(byType(doc, "Organization").length, 1);
+	assertRefsResolve(doc);
+});
+
+test("publisher person as main subject gets their profile-only properties on that page only", () => {
+	const details = { publisherType: "person", personBylineId: "b1", orgRows: [] };
+	const pub = g.publisherNode({ details, origin: ORIGIN, siteName: "Example", person: { byline: jon, rows: jonRows } });
+	assert.equal(pub.birthDate, undefined, "publisher node on every page has no profile-only properties");
+	const main = g.personNode({ byline: jon, rows: jonRows, origin: ORIGIN, defaultId: String(pub["@id"]), profile: true });
+	const doc = build(profilePage(), { override: { pageType: "ProfilePage", articleType: "none" }, publisher: pub, mainEntity: main });
+	const people = byType(doc, "Person");
+	assert.equal(people.length, 1);
+	assert.equal(people[0].birthDate, "1973-09-09");
+	assert.deepEqual(byType(doc, "ProfilePage")[0].mainEntity, { "@id": pub["@id"] });
+	assertRefsResolve(doc);
+});
+
+test("no main subject: output unchanged", () => {
+	const base = build(profilePage(), { override: { pageType: "ProfilePage", articleType: "none" } });
+	const same = build(profilePage(), { override: { pageType: "ProfilePage", articleType: "none" }, mainEntity: null });
+	assert.deepEqual(same, base);
+	assert.equal(byType(base, "ProfilePage")[0].mainEntity, undefined);
+	assert.equal(byType(base, "Person").length, 0);
+});
+
+test("main subject's nested founder/memberOf copies link to graph nodes (no duplicate entities)", () => {
+	const pub = g.publisherNode({
+		details: { publisherType: "organization", orgRows: [{ prop: "founder", value: { name: "Jon Henshaw", url: `${ORIGIN}/jon-henshaw/` } }] },
+		origin: ORIGIN,
+		siteName: "Example",
+	});
+	const main = g.personNode({
+		byline: jon,
+		rows: [...jonRows, { prop: "url", value: `${ORIGIN}/jon-henshaw/` }, { prop: "memberOf", value: { name: "Example", url: `${ORIGIN}/` } }],
+		origin: ORIGIN,
+		defaultId: jonId,
+		profile: true,
+	});
+	const doc = build(profilePage(), { override: { pageType: "ProfilePage", articleType: "none" }, publisher: pub, mainEntity: main });
+	assert.deepEqual(byId(doc, `${ORIGIN}/#organization`).founder, { "@id": jonId });
+	assert.deepEqual(byId(doc, jonId).memberOf, { "@id": `${ORIGIN}/#organization` });
+	assertRefsResolve(doc);
+});
+
+test("mainSubjectByline parses byline subjects only", () => {
+	assert.equal(g.mainSubjectByline("byline:abc"), "abc");
+	assert.equal(g.mainSubjectByline("publisher"), null);
+	assert.equal(g.mainSubjectByline("byline:"), null);
+	assert.equal(g.mainSubjectByline(undefined), null);
+});
