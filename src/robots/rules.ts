@@ -540,7 +540,7 @@ export function generate(config: RobotsConfig, options: GenerateOptions): string
 	const siteUrl = singleLine(options.siteUrl).replace(/\/+$/, "");
 	const rules = enabledRules(config);
 	const names = new Map(rules.map((r) => [r.id, oneLine(r.name)]));
-	const out: string[] = config.comments ? ["# robots.txt managed by Coywolf Pack (Robots.txt Rules)", ""] : [];
+	const out: string[] = config.comments ? ["# robots.txt managed by Coywolf Pack (Robots.txt Rules): https://github.com/coywolf-llc/coywolf-pack", ""] : [];
 
 	for (const group of resolveGroups(config)) {
 		if (config.comments) {
