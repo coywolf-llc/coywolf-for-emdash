@@ -345,6 +345,8 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 	// videos without controls, plays (once per session, after 2 seconds of
 	// playback) and likes. Stream's player SDK is loaded only to count plays or
 	// to pause and play, and only once a player exists.
+	import { playerControl } from "../../videos/pause.js";
+
 	const API = "/_emdash/api/plugins/coywolf-pack/videos/";
 	// X-Coywolf-Video: likes are refused without it, so other sites can't send them.
 	const post = (path: string, body: { uid: string; liked?: boolean }) =>
@@ -377,6 +379,16 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 			players.set(frame, player);
 		}
 		return player;
+	};
+	/** Pause/play that holds to the visitor's choice until the player is ready (see videos/pause.ts). */
+	const controls = new WeakMap<HTMLIFrameElement, (playing: boolean) => void>();
+	const controlFor = (frame: HTMLIFrameElement) => {
+		let control = controls.get(frame);
+		if (!control) {
+			control = playerControl(playerFor(frame));
+			controls.set(frame, control);
+		}
+		return control;
 	};
 	const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -459,13 +471,8 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 			const want = playing;
 			const frame = frameEl.querySelector<HTMLIFrameElement>("iframe");
 			if (frame) {
-				void playerFor(frame).then((player) => {
-					try {
-						void Promise.resolve(want ? player?.play() : player?.pause()).catch(() => undefined);
-					} catch {
-						// The player isn't ready; the next press tries again.
-					}
-				});
+				// Applied once the SDK and player are ready, and again if autoplay starts after a pause.
+				controlFor(frame)(want);
 			} else if (want) {
 				frameEl.removeAttribute("data-cw-held");
 				load(frameEl, false);
@@ -482,16 +489,33 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 	const autos = document.querySelectorAll<HTMLElement>("[data-cw-player][data-cw-auto]");
 	if (autos.length && !reduceMotion) {
 		let interacted = false;
+		// A first interaction on a video's pause/play button: that video waits for the button's
+		// click (which, from the start, pauses it and keeps the poster) instead of autoplaying.
+		let pressing: HTMLElement | null = null;
 		const visible = new Set<HTMLElement>();
 		const flush = () => {
 			if (!interacted) return;
-			// Paused before its player loaded (data-cw-held): keep the poster.
-			visible.forEach((el) => el.hasAttribute("data-cw-held") || load(el, false));
-			visible.clear();
+			visible.forEach((el) => {
+				if (el === pressing && !el.hasAttribute("data-cw-held")) return;
+				visible.delete(el);
+				// Paused before its player loaded (data-cw-held): keep the poster.
+				if (!el.hasAttribute("data-cw-held")) load(el, false);
+			});
 		};
 		const events = ["scroll", "pointermove", "pointerdown", "touchstart", "keydown", "wheel"] as const;
-		const onFirst = () => {
+		const onFirst = (event: Event) => {
 			interacted = true;
+			const toggle = event.target instanceof Element ? event.target.closest("[data-cw-toggle]") : null;
+			pressing = toggle?.closest<HTMLElement>("[data-cw-player][data-cw-auto]") ?? null;
+			if (pressing) {
+				// The click decides; if it never comes (pointer dragged away), load it as usual.
+				const settle = () => {
+					pressing = null;
+					flush();
+				};
+				addEventListener("click", () => setTimeout(settle), { once: true, capture: true });
+				setTimeout(settle, 1000);
+			}
 			events.forEach((e) => removeEventListener(e, onFirst));
 			flush();
 		};
