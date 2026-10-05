@@ -27,12 +27,36 @@ export function purgesAfter(method: string, pathname: string): boolean {
 	return method === "POST" && pathname.startsWith(PACK_API) && !PUBLIC_ROUTE.test(pathname);
 }
 
-/** Purge every cached page. Returns false when there's no Workers Cache to purge. */
-export async function purgePageCache(): Promise<boolean> {
+export type PurgeScope = { purgeEverything: true } | { pathPrefixes: string[] };
+
+/**
+ * What a successful pack admin write has to clear. Most settings change page
+ * output, so everything goes. These don't touch cached pages:
+ * - redirects (answered by middleware and never edge-cached), backups, the link
+ *   report, and the Performance page's own media rule and warming controls;
+ * - robots.txt rules change only /robots.txt.
+ * null: nothing to clear.
+ */
+export function purgeScope(pathname: string): PurgeScope | null {
+	const route = pathname.slice(PACK_API.length);
+	if (/^(redirects|backups|links)\//.test(route) || /^cache\/(media|warm|purge)(\/|$)/.test(route)) return null;
+	if (/^robots\//.test(route)) return { pathPrefixes: ["/robots.txt"] };
+	return { purgeEverything: true };
+}
+
+/** Purge cached pages (all of them unless a scope says otherwise). False when there's no Workers Cache or the purge was refused. */
+export async function purgePageCache(scope: PurgeScope = { purgeEverything: true }): Promise<boolean> {
 	try {
-		const workers = (await import("cloudflare:workers")) as unknown as { cache?: { purge(options: { purgeEverything: true }): Promise<unknown> } };
+		const workers = (await import("cloudflare:workers")) as unknown as {
+			cache?: { purge(options: PurgeScope): Promise<{ success?: boolean; errors?: Array<{ message: string }> } | undefined> };
+		};
 		if (!workers.cache?.purge) return false;
-		await workers.cache.purge({ purgeEverything: true });
+		const result = await workers.cache.purge(scope);
+		// The purge API rate-limits (Free-tier limits for Workers Cache) and says so in the result.
+		if (result && result.success === false) {
+			console.error("coywolf-pack: page cache purge refused", result.errors);
+			return false;
+		}
 		return true;
 	} catch (error) {
 		console.error("coywolf-pack: page cache purge failed", error);

@@ -18,7 +18,8 @@ import { injectAdminEnhancements } from "./core/settings-enhance.js";
 import type { PackMiddleware } from "./core/module.js";
 import { MIDDLEWARE } from "./modules.js";
 import { ALWAYS, LIFETIME_DEFAULTS, LIFETIME_SETTINGS } from "./pageCache/pack.js";
-import { applyPageLifetime, purgePageCache, purgesAfter } from "./pageCache/lib.js";
+import { applyPageLifetime, purgePageCache, purgeScope, purgesAfter } from "./pageCache/lib.js";
+import { WARM_SETTING, startWarm } from "./pageCache/warm.js";
 
 export interface CoywolfPackMiddlewareOptions {
 	/** D1 binding of the site database. Default "DB". */
@@ -45,7 +46,15 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 		// Page cache: a successful pack admin write (settings, redirects, imports…) can change any page.
 		if (purgesAfter(context.request.method, context.url.pathname)) {
 			const response = await next();
-			if (response.status < 400) waitUntil(purgePageCache());
+			const scope = purgeScope(context.url.pathname);
+			if (response.status < 400 && scope) {
+				waitUntil(
+					purgePageCache(scope).then(async (purged) => {
+						const db = env[options.database ?? "DB"] as D1Database | undefined;
+						if (purged && "purgeEverything" in scope && db && (await siteSetting<boolean>(WARM_SETTING, options.database))) await startWarm(db, "settings");
+					}),
+				);
+			}
 			return response;
 		}
 		// Page cache lifetimes from Plugins → Performance, on routes the site made cacheable.
