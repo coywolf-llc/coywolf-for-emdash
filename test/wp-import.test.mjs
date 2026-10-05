@@ -337,6 +337,32 @@ test("core Quote blocks keep their paragraphs and citation (EmDash's converter d
 	assert.equal(b.citation, undefined);
 });
 
+test("core Quote blocks keep spaces between inline elements and attribute-like text in prose", () => {
+	const [a] = ofType(importFixture("quote-edge.html").result.value, "coywolf-quote");
+	assert.equal(
+		a.quote,
+		'<p>Read <a href="https://example.com/one">one</a> <a href="https://example.com/two">two</a> and <em>three</em> <strong>four</strong>.</p><p>Give the link class="btn" and id="cta" in your theme.</p>',
+		"block-level whitespace and class/id attributes go; inline spaces and prose stay",
+	);
+	assert.equal(a.citation, "Pat Example");
+});
+
+test("core Quote blocks: a <cite> inside a paragraph stays in the quote; only direct-child cites are the citation", () => {
+	const [, b, c] = ofType(importFixture("quote-edge.html").result.value, "coywolf-quote");
+	assert.equal(b.quote, "<p>As <cite>The Elements of Style</cite> puts it, omit needless words.</p>");
+	assert.equal(b.citation, undefined);
+	assert.equal(c.quote, "<p>Two people said this.</p>");
+	assert.equal(c.citation, 'Ann Author, <a href="https://example.com/bob">Bob Writer</a>', "several direct cites are joined");
+});
+
+test("core Quote blocks: a nested quote keeps its markup and its own citation inside the outer quote", () => {
+	const quotes = ofType(importFixture("quote-edge.html").result.value, "coywolf-quote");
+	assert.equal(quotes.length, 4);
+	const d = quotes[3];
+	assert.equal(d.citation, "Outer Speaker");
+	assert.equal(d.quote, "<p>The reply:</p><blockquote><p>The original remark.</p><cite>Inner Speaker</cite></blockquote>");
+});
+
 test("with Content Blocks' quote off, core Quote blocks stay HTML with the quote text", () => {
 	const { result } = importFixture("quote.html", { customBlocks: { quote: false } });
 	const html = ofType(result.value, "htmlBlock").map((b) => parseMarker(b.html).inner);

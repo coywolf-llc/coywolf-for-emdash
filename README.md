@@ -1181,7 +1181,7 @@ EmDash converts Gutenberg with `@emdash-cms/gutenberg-to-portable-text`, which p
 | Heading `id`s | the heading's anchor | Kept as written (no `jump-` prefix), so old `#links` work. Turn on Headings & TOC's anchors. |
 | `core/block` (reusable block, synced pattern) | the pattern's blocks | Inlined from the export's `wp_block` items, up to 5 levels deep, and prepared like the rest. A pattern that isn't in the export is listed as `core/block (reusable block not in the export)`. Later edits to the pattern don't carry over (EmDash has no synced patterns). |
 | core `details` | Details | Summary and content exactly; "open by default" kept. Needs the Custom Blocks Details block. |
-| core `quote` | Quote | The paragraphs (formatting and links kept) and the `<cite>` as who said it. Needs the Custom Blocks Quote block; without it, a blockquote in an HTML block. |
+| core `quote` | Quote | The paragraphs (formatting, links and the spaces between them kept) and the `<cite>` directly inside the quote as who said it (several are joined with commas). A `<cite>` inside a paragraph (a cited title) and a quote nested in it stay part of the quote. Needs the Custom Blocks Quote block; without it, a blockquote in an HTML block. |
 | `code` | EmDash code block | Language kept (Prism's `markup` → `html`); bold markup and `&#91;` inside code are cleaned |
 | Yoast related links | HTML block | The markup WordPress rendered |
 | `gravityforms/form` | empty marker (`gravity-form`, with `formId`) | Rebuild the form (EmDash forms plugin or theme) |
