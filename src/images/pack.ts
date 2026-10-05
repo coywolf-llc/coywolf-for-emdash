@@ -15,7 +15,8 @@
 import { registerFeatures, siteFeatureOn } from "../core/features.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { CLOUDFLARE_API_HOST } from "./cloudflare.js";
-import { FORMATS, IMAGE_PATH, cdnOriginalUrl, cdnRedirectUrl, cleanImagePath, imageCdn, parseImagePath, setImageCdn } from "./lib.js";
+import { workerEnv } from "../shared.js";
+import { FORMATS, IMAGE_PATH, cdnOriginalUrl, cdnRedirectUrl, cleanImagePath, imageCdn, mediaFile, parseImagePath, parseCdnUrl, setImageCdn } from "./lib.js";
 import { imagesModule } from "./module.js";
 import { configureMediaHostDatabase, refreshMediaHost } from "./settings.js";
 
@@ -88,6 +89,63 @@ export async function originalImageUrl<T extends string | null | undefined>(src:
 
 /** Same as originalImageUrl. */
 export const mediaUrl = originalImageUrl;
+
+export interface ImageDimensions {
+	width: number;
+	height: number;
+}
+
+const dimensionCache = new Map<string, ImageDimensions | null>();
+
+/** The media library's storage key (<id>.<ext>) of a media-library or media-host URL. */
+function storageKey(src: string): string | null {
+	const file = mediaFile(src) ?? parseCdnUrl(src.trim());
+	return file ? `${file.id}.${file.ext}` : null;
+}
+
+/**
+ * Width and height of media-library images, from the media library itself.
+ * For images whose Portable Text block has none (WordPress imports don't record
+ * them), so themes can still build responsive srcsets and set width/height.
+ * One query for the whole list; answers are remembered per isolate. Works
+ * whether or not Clean image URLs is on. Unknown sources are left out.
+ */
+export async function imageDimensions(srcs: Iterable<string | null | undefined>, database = "DB"): Promise<Map<string, ImageDimensions>> {
+	const result = new Map<string, ImageDimensions>();
+	const wanted = new Map<string, string[]>();
+	for (const src of srcs) {
+		if (!src) continue;
+		const key = storageKey(src);
+		if (!key) continue;
+		if (dimensionCache.has(key)) {
+			const hit = dimensionCache.get(key);
+			if (hit) result.set(src, hit);
+			continue;
+		}
+		wanted.set(key, [...(wanted.get(key) ?? []), src]);
+	}
+	if (!wanted.size) return result;
+	const env: Record<string, unknown> = await workerEnv().catch(() => ({}));
+	const db = env[database] as D1Database | undefined;
+	if (!db) return result;
+	const keys = [...wanted.keys()];
+	// D1 allows at most 100 bound parameters per query.
+	for (let i = 0; i < keys.length; i += 90) {
+		const batch = keys.slice(i, i + 90);
+		const { results } = await db
+			.prepare(`SELECT storage_key, width, height FROM media WHERE storage_key IN (${batch.map(() => "?").join(",")})`)
+			.bind(...batch)
+			.all<{ storage_key: string; width: number | null; height: number | null }>();
+		const found = new Map(results.map((r) => [r.storage_key, r.width && r.height ? { width: r.width, height: r.height } : null]));
+		if (dimensionCache.size > 5000) dimensionCache.clear();
+		for (const key of batch) {
+			const dims = found.get(key) ?? null;
+			dimensionCache.set(key, dims);
+			if (dims) for (const src of wanted.get(key)!) result.set(src, dims);
+		}
+	}
+	return result;
+}
 
 interface ImagesBinding {
 	input(stream: ReadableStream): { transform(options: Record<string, unknown>): { output(options: { format: string; quality?: number }): Promise<{ response(): Response }> } };

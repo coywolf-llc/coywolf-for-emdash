@@ -30,6 +30,7 @@ const PERMISSION_HINT: Record<string, string> = {
 	transformations: "Zone → Zone Settings → Edit",
 	domain: "Account → Workers R2 Storage → Edit and Zone → DNS → Edit",
 	rules: "Zone → Transform Rules → Edit (and Account → Account Rulesets → Read)",
+	purge: "Zone → Cache Purge → Purge",
 };
 
 async function cf<T>(config: CloudflareConfig, path: string, init: RequestInit = {}, step?: string): Promise<{ status: number; result: T | null }> {
@@ -45,6 +46,15 @@ async function cf<T>(config: CloudflareConfig, path: string, init: RequestInit =
 		throw new CloudflareApiError(`Cloudflare API ${res.status}: ${detail}.${hint}`, res.status);
 	}
 	return { status: res.status, result: body.result ?? null };
+}
+
+/**
+ * Clear everything Cloudflare's zone cache holds for one host name (the media
+ * host: originals and resized copies). Purge by hostname works on every plan.
+ */
+export async function purgeHost(config: CloudflareConfig, hostname: string): Promise<void> {
+	const zone = await findZone(config, hostname);
+	await cf(config, `/zones/${zone.id}/purge_cache`, { method: "POST", body: JSON.stringify({ hosts: [hostname] }) }, "purge");
 }
 
 /** The zone that holds a host name, looked up in the account (most specific name first). */

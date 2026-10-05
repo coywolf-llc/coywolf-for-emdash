@@ -48,7 +48,10 @@ export async function serveRedirect(
 
 	waitUntil(recordHit(db, found.rule.id).catch(() => undefined));
 
-	if (found.rule.type === 410) return new Response("Gone", { status: 410 });
+	// Browsers may keep a redirect for an hour, but an edge cache in front of the
+	// Worker (Workers Cache) must not, or hits would stop being counted.
+	const caching = { "Cache-Control": "public, max-age=3600", "Cloudflare-CDN-Cache-Control": "no-store" };
+	if (found.rule.type === 410) return new Response("Gone", { status: 410, headers: caching });
 	const location = found.location.startsWith("/") ? new URL(found.location, url).href : found.location;
-	return new Response(null, { status: found.rule.type, headers: { Location: location } });
+	return new Response(null, { status: found.rule.type, headers: { Location: location, ...caching } });
 }

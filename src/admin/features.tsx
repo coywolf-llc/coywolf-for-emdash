@@ -6,6 +6,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { PageCacheAction } from "./pageCache.js";
+
 const API = "/_emdash/api/plugins/coywolf-pack/features";
 
 interface Feature {
@@ -76,6 +78,8 @@ export function FeaturesPage() {
 		}
 	}
 
+	const pageCacheOn = modules?.some((m) => m.features.some((f) => f.id === "pageCache" && f.enabled)) ?? false;
+
 	return (
 		<div className="space-y-6">
 			<header className="grid min-w-0 gap-4 border-b border-kumo-line pb-4">
@@ -87,6 +91,19 @@ export function FeaturesPage() {
 			</header>
 
 			{error && <Banner variant="error" role="alert" description={error} />}
+
+			{pageCacheOn && (
+				<section className="rounded-lg border border-kumo-line" aria-labelledby="cw-actions-title">
+					<div className="border-b border-kumo-line p-4">
+						<h2 id="cw-actions-title" className="text-base font-semibold">
+							Actions
+						</h2>
+					</div>
+					<div className="p-4">
+						<PageCacheAction />
+					</div>
+				</section>
+			)}
 
 			{!modules && !error && (
 				<div className="flex justify-center py-12">
