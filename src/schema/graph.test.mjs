@@ -512,3 +512,11 @@ test("mainSubjectByline parses byline subjects only", () => {
 	assert.equal(g.mainSubjectByline("byline:"), null);
 	assert.equal(g.mainSubjectByline(undefined), null);
 });
+
+test("address country becomes a two-letter ISO code", async () => {
+	const out = g.shapeRows([{ prop: "address", value: { addressLocality: "Franklin", addressCountry: "USA" } }], "Organization", "https://example.com");
+	assert.equal(out.address.addressCountry, "US");
+	assert.equal(g.countryCode("United Kingdom"), "GB");
+	assert.equal(g.countryCode("de"), "DE");
+	assert.equal(g.countryCode("Narnia"), "Narnia");
+});
