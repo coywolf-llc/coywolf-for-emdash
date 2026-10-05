@@ -34,7 +34,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.13.2
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.14.0
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -442,8 +442,8 @@ The Schema page has:
 
 - **Site details**: whether the publisher is an Organization or a Person (a byline), and the publisher's properties, picked from the same property list as on WordPress (name, legalName, url, logo, sameAs, address, contactPoint, founder, and so on; logo and image can come from the media library). Anything left empty falls back to EmDash's site title, URL and logo.
 - **Types**: the WebPage subtype (AboutPage, ContactPage, CollectionPage…) and Article subtype (BlogPosting, NewsArticle, TechArticle… or none) for the home page, other non-entry pages, and each collection. By default, article pages get a BlogPosting, as with EmDash's own JSON-LD, and everything else a WebPage.
-- **Authors**: Person properties per byline. Bylines without saved properties use their name, website (or the author page URL), bio and avatar.
-- **Overrides**: a different page or article type for a single entry.
+- **Authors**: Person properties per byline. Bylines without saved properties use their name, website (or the author page URL), bio and avatar. Tick **Profile page only** on a property (birthDate, birthPlace, email, gender, nationality…) to output it only on the page whose main subject is that person, not on every article they wrote.
+- **Overrides**: for a single entry, a different page or article type, and its **main subject**: what the page is about. Pick a byline for a profile page, or the site publisher for an About or Contact page. See [Main subject](#main-subject).
 - **Robots & social**: the search URL template (`/?s={search_term_string}` by default; empty for no SearchAction), the author page URL pattern (empty by default: set it to match your site's author pages, e.g. `/author/{slug}/`, so authors get a `url` and `@id` there; without it, authors without a byline website get no `url` and an `@id` on the site root), the breadcrumb home label, the robots directives (a blank max-snippet or max-video-preview means -1, no limit), and an `og:locale` override (derived from the site locale otherwise, e.g. `en` → `en_US`).
 - **Preview**: the tags and JSON-LD the module would add to the home page or an entry.
 
@@ -456,6 +456,22 @@ Nothing to configure beyond the Schema page. The module reads the site database 
 - Page types come from the page context your theme passes to `EmDashHead`: an entry page is matched to its collection through `content`, and `pageType: "article"` is what makes a page an article by default. Pages without `content` use the home page or "other pages" types.
 - Derived breadcrumbs name parent segments from the URL (`/health-tips/` → "Health tips"); pass `breadcrumbs` in the page context for exact names.
 - A content page costs a few extra database reads per render (the entry override, its bylines, and saved author properties); image lookups and settings are cached.
+
+### Main subject
+
+An override's **Main subject** makes the page's WebPage node point at what the page is about with `mainEntity`, and puts that entity in the graph once:
+
+- **A byline**: the Person from the Authors tab, with the same `@id` it has as an article author, plus its **Profile page only** properties. The entry's own credited bylines are listed first.
+- **Site publisher**: the publisher Organization (or Person) from Site details.
+
+For an author's profile page, set the page type to **Profile page**, the article type to **None**, and the main subject to the person:
+
+```json
+{ "@type": "ProfilePage", "@id": "https://example.com/jon-henshaw/#webpage", "mainEntity": { "@id": "https://example.com/jon-henshaw/#person" }, "dateCreated": "…", "dateModified": "…" },
+{ "@type": "Person", "@id": "https://example.com/jon-henshaw/#person", "name": "Jon Henshaw", "birthDate": "1973-09-09", "…": "…" }
+```
+
+A ProfilePage also gets `dateCreated` (the entry's publish date) next to `dateModified`. When the main subject is the publisher, or is also credited as the article's author, it's still one node: the copies are merged. `birthPlace`, `homeLocation` and `workLocation` are output as a `Place` and `nationality` as a `Country` (named by the value).
 
 ### Videos in the graph
 

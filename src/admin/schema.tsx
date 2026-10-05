@@ -3,7 +3,7 @@
  * collection, author profiles, per-entry overrides, robots / Open Graph
  * settings, and a JSON-LD preview.
  */
-import { Badge, Banner, Button, Dialog, Input, Loader, Select, Switch, Tabs } from "@cloudflare/kumo";
+import { Badge, Banner, Button, Checkbox, Dialog, Input, Loader, Select, Switch, Tabs } from "@cloudflare/kumo";
 import { ImageSquare, MagnifyingGlass, PencilSimple, Plus, Trash, TreeStructure } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
@@ -16,6 +16,8 @@ type RowValue = string | Record<string, string>;
 interface Row {
 	prop: string;
 	value: RowValue;
+	/** Person rows: only on the person's profile page (where they're the main subject). */
+	profileOnly?: boolean;
 }
 interface PropertyInput {
 	input?: string;
@@ -66,6 +68,8 @@ interface Override extends TypeChoice {
 	collection: string;
 	entryId: string;
 	title?: string;
+	/** "byline:<id>" or "publisher". */
+	mainSubject?: string;
 	updatedAt?: string;
 }
 interface EntryHit {
@@ -197,10 +201,20 @@ function PropertyEditor(props: {
 	properties: string[];
 	inputs: Record<string, PropertyInput>;
 	label: string;
+	/** Show a "Profile page only" checkbox per row (Person rows). */
+	profileOnly?: boolean;
 }) {
 	const [adding, setAdding] = React.useState(props.properties[0] ?? "");
 	const [picking, setPicking] = React.useState<number | null>(null);
 	const update = (index: number, value: RowValue) => props.onChange(props.rows.map((r, i) => (i === index ? { ...r, value } : r)));
+	const setProfileOnly = (index: number, on: boolean) =>
+		props.onChange(
+			props.rows.map((r, i) => {
+				if (i !== index) return r;
+				const { profileOnly: _drop, ...rest } = r;
+				return on ? { ...rest, profileOnly: true } : rest;
+			}),
+		);
 	const remove = (index: number) => props.onChange(props.rows.filter((_, i) => i !== index));
 	const add = () => {
 		const meta = props.inputs[adding];
@@ -246,6 +260,13 @@ function PropertyEditor(props: {
 										</Button>
 									)}
 								</div>
+							)}
+							{props.profileOnly && row.prop !== "@id" && (
+								<Checkbox
+									label="Profile page only"
+									checked={!!row.profileOnly}
+									onCheckedChange={(checked: boolean) => setProfileOnly(index, checked)}
+								/>
 							)}
 						</div>
 						<Button
@@ -533,7 +554,18 @@ function AuthorsTab(props: { config: Config; bylines: Byline[] | undefined; auth
 				)}
 				{byline && (
 					<>
-						<PropertyEditor label={byline.displayName} rows={rows} onChange={setRows} properties={props.config.catalog.person} inputs={props.config.catalog.inputs} />
+						<PropertyEditor
+							label={byline.displayName}
+							rows={rows}
+							onChange={setRows}
+							properties={props.config.catalog.person}
+							inputs={props.config.catalog.inputs}
+							profileOnly
+						/>
+						<p className="text-xs text-kumo-subtle">
+							<strong>Profile page only</strong> properties (birthDate or email, for example) appear only on a page whose main subject is
+							this person (set on the Overrides tab), not on every article they wrote.
+						</p>
 						{error && <Banner variant="error" role="alert" description={error} />}
 						<div className="flex items-center justify-between gap-2">
 							<Button variant="ghost" onClick={() => setRows(defaultRows(byline))}>
@@ -636,15 +668,55 @@ function EntryPicker(props: { collections: Collection[]; onPick: (collection: st
 
 // ── Overrides ────────────────────────────────────────────────────
 
-function OverrideDialog(props: { config: Config; draft: Override | null; onClose: () => void; onSaved: () => void }) {
+/** The site publisher's name, for the main-subject picker. */
+function publisherLabel(config: Config, bylines: Byline[] | undefined): string {
+	const site = config.site;
+	if (site.publisherType === "person") {
+		const name = bylines?.find((b) => b.id === site.personBylineId)?.displayName;
+		return name ? `Site publisher (${name})` : "Site publisher";
+	}
+	const name = site.orgRows.find((r) => r.prop === "name" && typeof r.value === "string" && r.value.trim())?.value;
+	return typeof name === "string" ? `Site publisher (${name.trim()})` : "Site publisher (organization)";
+}
+
+/** Main-subject choices: the entry's own bylines first, then the publisher, then every other byline. */
+function subjectItems(config: Config, bylines: Byline[] | undefined, credited: string[]): Array<{ value: string; label: string }> {
+	const all = bylines ?? [];
+	const label = (b: Byline) => (all.filter((o) => o.displayName === b.displayName).length > 1 ? `${b.displayName} (${b.locale})` : b.displayName);
+	const own = credited.map((id) => all.find((b) => b.id === id)).filter((b): b is Byline => !!b);
+	const others = all.filter((b) => !credited.includes(b.id));
+	return [
+		{ value: "", label: "None" },
+		...own.map((b) => ({ value: `byline:${b.id}`, label: `${label(b)} (credited on this entry)` })),
+		{ value: "publisher", label: publisherLabel(config, bylines) },
+		...others.map((b) => ({ value: `byline:${b.id}`, label: label(b) })),
+	];
+}
+
+function OverrideDialog(props: { config: Config; bylines: Byline[] | undefined; draft: Override | null; onClose: () => void; onSaved: () => void }) {
 	const [draft, setDraft] = React.useState<Override | null>(props.draft);
 	const [pending, setPending] = React.useState(false);
 	const [error, setError] = React.useState<string>();
+	const [credited, setCredited] = React.useState<string[]>([]);
 	React.useEffect(() => {
 		setDraft(props.draft);
 		setError(undefined);
 	}, [props.draft]);
 	const picking = draft !== null && !draft.entryId;
+	const entryKey = draft?.entryId ? `${draft.collection}:${draft.entryId}` : "";
+	React.useEffect(() => {
+		setCredited([]);
+		if (!draft?.entryId) return;
+		let live = true;
+		post<{ ids: string[] }>("entries/bylines", { collection: draft.collection, entryId: draft.entryId })
+			.then((result) => live && setCredited(result.ids))
+			.catch(() => {});
+		return () => {
+			live = false;
+		};
+		// Only when the entry changes, not on every edit of the draft.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [entryKey]);
 
 	const save = async () => {
 		if (!draft) return;
@@ -663,7 +735,7 @@ function OverrideDialog(props: { config: Config; draft: Override | null; onClose
 	return (
 		<Dialog.Root open={props.draft !== null} onOpenChange={(open) => !open && !pending && props.onClose()}>
 			<Dialog className="p-6" size="lg">
-				<Dialog.Title className="text-lg font-semibold">{picking ? "Choose an entry" : "Entry types"}</Dialog.Title>
+				<Dialog.Title className="text-lg font-semibold">{picking ? "Choose an entry" : "Entry schema"}</Dialog.Title>
 				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">
 					{picking ? "Pick the entry to override." : (draft?.title ?? draft?.entryId)}
 				</Dialog.Description>
@@ -688,6 +760,19 @@ function OverrideDialog(props: { config: Config; draft: Override | null; onClose
 									onValueChange={(value: string | null) => setDraft({ ...draft, articleType: value || undefined })}
 									items={[{ value: "", label: "Collection default" }, ...props.config.catalog.articleTypes.map(([value, label]) => ({ value, label }))]}
 								/>
+								<div className="space-y-1">
+									<Select
+										label="Main subject"
+										value={draft.mainSubject ?? ""}
+										onValueChange={(value: string | null) => setDraft({ ...draft, mainSubject: value || undefined })}
+										items={subjectItems(props.config, props.bylines, credited)}
+									/>
+									<p className="text-xs text-kumo-subtle">
+										What this page is about. For a profile page, pick the person; for About or Contact, pick the organization. It
+										becomes the page's mainEntity, with the person's profile-page-only properties. Profile pages usually use the
+										Profile page type and no Article.
+									</p>
+								</div>
 							</>
 						)
 					)}
@@ -708,13 +793,17 @@ function OverrideDialog(props: { config: Config; draft: Override | null; onClose
 	);
 }
 
-function OverridesTab(props: { config: Config }) {
+function OverridesTab(props: { config: Config; bylines: Byline[] | undefined }) {
 	const [items, setItems] = React.useState<Override[]>();
 	const [error, setError] = React.useState<string>();
 	const [editing, setEditing] = React.useState<Override | null>(null);
 	const [notice, setNotice] = React.useState<string>();
 	const labels = Object.fromEntries([...props.config.catalog.pageTypes, ...props.config.catalog.articleTypes]);
 	const collectionLabel = (slug: string) => props.config.collections.find((c) => c.slug === slug)?.label ?? slug;
+	const subjectLabel = (subject: string) =>
+		subject === "publisher"
+			? "About: site publisher"
+			: `About: ${props.bylines?.find((b) => `byline:${b.id}` === subject)?.displayName ?? "a byline"}`;
 
 	const load = React.useCallback(async () => {
 		try {
@@ -739,7 +828,10 @@ function OverridesTab(props: { config: Config }) {
 	};
 
 	return (
-		<Section title="Per-entry overrides" description="Give a single entry a different page or article type than its collection.">
+		<Section
+			title="Per-entry overrides"
+			description="Give a single entry a different page or article type than its collection, or say who or what it's about (its main subject)."
+		>
 			<div className="flex justify-end">
 				<Button variant="primary" icon={<Plus aria-hidden="true" />} onClick={() => setEditing({ collection: "", entryId: "" })}>
 					New override
@@ -762,6 +854,7 @@ function OverridesTab(props: { config: Config }) {
 							<div className="hidden gap-1 sm:flex">
 								{item.pageType && <Badge variant="secondary">{labels[item.pageType] ?? item.pageType}</Badge>}
 								{item.articleType && <Badge variant="outline">{labels[item.articleType] ?? item.articleType}</Badge>}
+								{item.mainSubject && <Badge variant="outline">{subjectLabel(item.mainSubject)}</Badge>}
 							</div>
 							<Button
 								variant="ghost"
@@ -783,6 +876,7 @@ function OverridesTab(props: { config: Config }) {
 			)}
 			<OverrideDialog
 				config={props.config}
+				bylines={props.bylines}
 				draft={editing}
 				onClose={() => setEditing(null)}
 				onSaved={() => {
@@ -1070,7 +1164,7 @@ export function SchemaPage() {
 						{tab === "site" && <SiteTab config={config} bylines={bylines} onSaved={(site) => setConfig({ ...config, site })} />}
 						{tab === "types" && <TypesTab config={config} onSaved={(types) => setConfig({ ...config, types })} />}
 						{tab === "authors" && <AuthorsTab config={config} bylines={bylines} authorsOn={authorsOn} reload={() => void loadAuthors()} />}
-						{tab === "overrides" && <OverridesTab config={config} />}
+						{tab === "overrides" && <OverridesTab config={config} bylines={bylines} />}
 						{tab === "settings" && <SettingsTab config={config} onSaved={(settings) => setConfig({ ...config, settings })} />}
 						{tab === "preview" && <PreviewTab config={config} />}
 					</div>

@@ -14,6 +14,8 @@ import type { BreadcrumbItem, PublicPageContext } from "emdash";
 export interface PropertyRow {
 	prop: string;
 	value: string | Record<string, string>;
+	/** Person rows only: output only when the person is a page's main subject (their profile page), not on every article. */
+	profileOnly?: boolean;
 }
 
 /** Site Details: who publishes the site. */
@@ -34,6 +36,17 @@ export interface TypeChoice {
 	articleType?: string;
 }
 export type TypeMap = Record<string, TypeChoice>;
+
+/**
+ * What a single entry is about (its WebPage's mainEntity): "byline:<id>" for
+ * a person, or "publisher" for the site publisher. Missing means none.
+ */
+export type MainSubject = `byline:${string}` | "publisher";
+
+/** The byline id in a "byline:<id>" main subject, or null. */
+export function mainSubjectByline(subject: string | null | undefined): string | null {
+	return typeof subject === "string" && subject.startsWith("byline:") && subject.length > 7 ? subject.slice(7) : null;
+}
 
 export const HOME_KEY = "_home";
 export const CUSTOM_KEY = "_custom";
@@ -140,6 +153,10 @@ const OBJECT_PROPS: Record<string, string> = {
 	sponsor: "Organization",
 	funder: "Organization",
 	brand: "Brand",
+	birthPlace: "Place",
+	homeLocation: "Place",
+	workLocation: "Place",
+	nationality: "Country",
 	worksFor: "Organization",
 	affiliation: "Organization",
 	alumniOf: "Organization",
@@ -220,7 +237,8 @@ export interface BylineFacts {
 /**
  * A Person node from a byline: stored property rows first, then the byline's
  * own name, website (or author page), bio and avatar. `defaultId` anchors it
- * unless the rows set an @id.
+ * unless the rows set an @id. Rows marked profile-only are left out unless
+ * `profile` is set (the person is the page's main subject).
  */
 export function personNode(opts: {
 	byline?: BylineFacts | null;
@@ -228,8 +246,10 @@ export function personNode(opts: {
 	origin: string;
 	defaultId: string;
 	authorUrl?: string | null;
+	profile?: boolean;
 }): Node | null {
-	const shaped = shapeRows(opts.rows, "Person", opts.origin);
+	const rows = opts.profile ? opts.rows : opts.rows?.filter((r) => !r?.profileOnly);
+	const shaped = shapeRows(rows, "Person", opts.origin);
 	const node: Node = { "@type": "Person", ...shaped };
 	node["@id"] = (shaped["@id"] as string | undefined) ?? opts.defaultId;
 	const b = opts.byline;
@@ -419,6 +439,11 @@ export interface GraphInput {
 	publisher: Node;
 	/** Author Person nodes for the entry, in credit order. */
 	authors: Node[];
+	/**
+	 * What the page is about (its WebPage's mainEntity): a Person built with its
+	 * profile-only properties, or the publisher node. Null for none.
+	 */
+	mainEntity?: Node | null;
 	/** The page's primary image (og:image), looked up for dimensions and alt. */
 	image?: ImageInfo | null;
 	/** Include a BreadcrumbList (the schema.breadcrumbs feature). */
@@ -493,8 +518,18 @@ export function buildGraph(input: GraphInput): Node {
 		...(modified ? { dateModified: modified } : {}),
 	};
 	if (home) webpage.about = publisherRef;
+	// Profile pages: Google reads dateCreated / dateModified on the ProfilePage.
+	if (pageType === "ProfilePage" && published) webpage.dateCreated = published;
 
 	const nodes: Node[] = [webpage];
+
+	// The page's main subject: one node in the graph, referenced from the WebPage.
+	const mainId = typeof input.mainEntity?.["@id"] === "string" ? (input.mainEntity["@id"] as string) : null;
+	if (input.mainEntity && mainId) {
+		webpage.mainEntity = { "@id": mainId };
+		if (mainId === publisherRef["@id"]) absorb(publisher, input.mainEntity);
+		else nodes.push({ ...input.mainEntity });
+	}
 
 	let imageRef: Node | undefined;
 	if (input.image?.url) {
@@ -535,9 +570,11 @@ export function buildGraph(input: GraphInput): Node {
 			const refs = authors.map((a) => ({ "@id": String(a["@id"]) }));
 			article.author = refs.length === 1 ? refs[0] : refs;
 			for (const a of authors) {
-				if (!publisherIsAuthor(a)) nodes.push(a);
+				// The main subject already has a (fuller) node with this @id.
+				if (a["@id"] === mainId && !publisherIsAuthor(a)) absorb(nodes.find((n) => n["@id"] === mainId) ?? a, a);
+				else if (!publisherIsAuthor(a)) nodes.push(a);
 				// The publisher person also wrote this: one Person node, with the author's extra properties.
-				else for (const [k, v] of Object.entries(a)) if (publisher[k] === undefined) publisher[k] = v;
+				else absorb(publisher, a);
 			}
 		} else if (page.articleMeta?.author) {
 			article.author = { "@type": "Person", name: page.articleMeta.author };
@@ -547,10 +584,16 @@ export function buildGraph(input: GraphInput): Node {
 		delete webpage.description;
 		delete webpage.datePublished;
 		delete webpage.dateModified;
+		delete webpage.dateCreated;
 	}
 
 	nodes.push(website, publisher);
 	return { "@context": "https://schema.org", "@graph": linkNestedEntities(dedupeById(nodes)) };
+}
+
+/** Copy properties `extra` has and `target` lacks (two views of the same entity). */
+function absorb(target: Node, extra: Node): void {
+	for (const [k, v] of Object.entries(extra)) if (target[k] === undefined) target[k] = v;
 }
 
 /**
