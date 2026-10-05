@@ -160,6 +160,49 @@ export async function mirrorMedia(media: R2Bucket, backups: R2Bucket, stamp: str
 	return { copied, preserved, total: source.size, pending };
 }
 
+/**
+ * Copy media files that are in the backup mirror but missing from the media
+ * bucket. Never overwrites. Copies at most `max` files per call so one request
+ * stays well inside Worker limits; `pending` is what's left for the next call
+ * (a coywolf.com restore trial copied 2,021 files in one request and took
+ * over five minutes).
+ */
+export async function restoreMissingMedia(
+	media: R2Bucket,
+	backups: R2Bucket,
+	max = 200,
+): Promise<{ restored: number; checked: number; pending: number }> {
+	const present = new Set<string>();
+	let cursor: string | undefined;
+	do {
+		const page = await media.list({ cursor });
+		for (const o of page.objects) present.add(o.key);
+		cursor = page.truncated ? page.cursor : undefined;
+	} while (cursor);
+
+	let restored = 0;
+	let checked = 0;
+	let pending = 0;
+	do {
+		const page = await backups.list({ prefix: "media/current/", cursor });
+		for (const o of page.objects) {
+			checked++;
+			const key = o.key.slice("media/current/".length);
+			if (present.has(key)) continue;
+			if (restored >= max) {
+				pending++;
+				continue;
+			}
+			const object = await backups.get(o.key);
+			if (!object) continue;
+			await media.put(key, object.body, { httpMetadata: object.httpMetadata });
+			restored++;
+		}
+		cursor = page.truncated ? page.cursor : undefined;
+	} while (cursor);
+	return { restored, checked, pending };
+}
+
 /** Delete database backups and replaced-media copies older than `days`. Returns the number of stamps pruned. */
 export async function pruneBackups(bucket: R2Bucket, days: number): Promise<number> {
 	const cutoff = makeStamp(new Date(Date.now() - days * 86_400_000));

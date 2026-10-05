@@ -295,12 +295,17 @@ export function BackupsPage() {
 		setMediaPending(true);
 		setNotice(undefined);
 		try {
-			const result = await post<{ restored: number; checked: number }>("restore-media");
+			// The server copies a batch per request; keep asking until nothing is left.
+			let restored = 0;
+			for (;;) {
+				const result = await post<{ restored: number; checked: number; pending?: number }>("restore-media");
+				restored += result.restored;
+				if (!result.pending || !result.restored) break;
+				setNotice({ variant: "default", title: `Restoring media: ${restored} copied, ${result.pending} to go…` });
+			}
 			setNotice({
 				variant: "default",
-				title: result.restored
-					? `Restored ${result.restored} missing media ${result.restored === 1 ? "file" : "files"}.`
-					: "No media files were missing.",
+				title: restored ? `Restored ${restored} missing media ${restored === 1 ? "file" : "files"}.` : "No media files were missing.",
 			});
 		} catch (cause) {
 			setNotice({ variant: "error", title: "Media restore failed", description: errorText(cause, "") });
