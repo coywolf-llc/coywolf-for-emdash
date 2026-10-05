@@ -38,7 +38,7 @@ See [Page cache](#page-cache) for setup.
 | **Custom Blocks** | Note (callout), Details (expandable, with a transcript style), Affiliate disclosure, Quote, Testimonial and Podcast links blocks |
 | **Schema & Social** | One Schema.org graph per page (publisher, typed pages and articles, authors), breadcrumbs, robots directives, Open Graph extras |
 | **Robots.txt Rules** | Plain-English robots.txt rules with a guided editor, live checks and a self-check, a verified crawler directory kept current from Cloudflare Radar, version history, and a URL tester |
-| **WordPress import** | Finishes a move from any WordPress site: keeps heading ids, reusable blocks and Details blocks through EmDash's importer, credits co-authors and guest authors, restores category and page parents, points leftover `/wp-content/` URLs (size variants and files outside the media library included) at the media library, and turns old slugs and Redirection, Rank Math and Yoast rules into redirects. Blocks from Coywolf's WordPress plugins become Coywolf Pack blocks |
+| **WordPress import** | Finishes a move from any WordPress site: keeps heading ids, reusable blocks, quotes and Details blocks through EmDash's importer, credits co-authors and guest authors, restores category and page parents, points leftover `/wp-content/` URLs (size variants and files outside the media library included) at the media library, and turns old slugs and Redirection, Rank Math and Yoast rules into redirects. Blocks from Coywolf's WordPress plugins become Coywolf Pack blocks |
 | **AI Enrichment** | Wikidata-grounded entities for schema, meta-description suggestions, and image alt text, with Workers AI or your own key |
 
 Every feature can be turned on or off under **Plugins → Coywolf Pack**, like Coywolf SEO's feature switches. New features start off, so installing or updating changes nothing on the site until you turn them on. A module that is off also leaves the admin sidebar and dashboard.
@@ -1130,6 +1130,7 @@ Sites that used Coywolf's WordPress plugins (Video Manager, Coywolf SEO, Custom 
 | Heading `id`s | Dropped, so old `#links` break | Prepare + converter: each id becomes the heading's anchor (Headings & TOC → Heading anchors) |
 | Reusable blocks (synced patterns) | The `core/block` reference is dropped | Prepare puts the pattern's blocks in its place, from the export's `wp_block` items |
 | Core Details blocks | The summary is dropped | Prepare + converter: a Details block (Custom Blocks → Details) |
+| Core Quote blocks | The quote's paragraphs are dropped; only the citation is kept | Prepare + converter: a Quote block with the paragraphs and citation (Custom Blocks → Quote); with Quote off, the quote stays HTML |
 | Self-closing third-party blocks (all their content is in settings) | Dropped without a trace | Prepare lists them under **Blocks EmDash will drop**; rebuild them by hand |
 | `&#91;` and bold markup in code blocks | Shown as literal text | Prepare cleans them |
 | Co-authors and guest authors (Co-Authors Plus, PublishPress Authors) | Each post is credited to its WordPress user only | Step 3, **Co-authors and guest authors** |
@@ -1180,6 +1181,7 @@ EmDash converts Gutenberg with `@emdash-cms/gutenberg-to-portable-text`, which p
 | Heading `id`s | the heading's anchor | Kept as written (no `jump-` prefix), so old `#links` work. Turn on Headings & TOC's anchors. |
 | `core/block` (reusable block, synced pattern) | the pattern's blocks | Inlined from the export's `wp_block` items, up to 5 levels deep, and prepared like the rest. A pattern that isn't in the export is listed as `core/block (reusable block not in the export)`. Later edits to the pattern don't carry over (EmDash has no synced patterns). |
 | core `details` | Details | Summary and content exactly; "open by default" kept. Needs the Custom Blocks Details block. |
+| core `quote` | Quote | The paragraphs (formatting and links kept) and the `<cite>` as who said it. Needs the Custom Blocks Quote block; without it, a blockquote in an HTML block. |
 | `code` | EmDash code block | Language kept (Prism's `markup` → `html`); bold markup and `&#91;` inside code are cleaned |
 | Yoast related links | HTML block | The markup WordPress rendered |
 | `gravityforms/form` | empty marker (`gravity-form`, with `formId`) | Rebuild the form (EmDash forms plugin or theme) |

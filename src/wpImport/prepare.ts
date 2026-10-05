@@ -159,6 +159,24 @@ function detailsHtml(summary: string, body: string, className: string): string {
 	return `<details class="${className}"><summary>${summary}</summary><div class="${className}__body">${body}</div></details>`;
 }
 
+/**
+ * A core Quote block's fields: its paragraphs (the quote) and its <cite> (who
+ * said it). EmDash's own converter keeps only the citation, dropping the quote.
+ */
+export function coreQuoteFields(block: GBlock): { quote: string; cite: string; url: string } {
+	const html = blockHtml(block).trim();
+	const m = html.match(/^<blockquote\b([^>]*)>([\s\S]*)<\/blockquote>$/i);
+	const inner = m?.[2] ?? html;
+	const cite = inner.match(/<cite\b[^>]*>([\s\S]*?)<\/cite>/i)?.[1] ?? (typeof block.attrs.citation === "string" ? block.attrs.citation : "");
+	const quote = inner
+		.replace(/<cite\b[^>]*>[\s\S]*?<\/cite>/gi, "")
+		.replace(/\s(?:class|id)="[^"]*"/g, "")
+		.replace(/>\s+</g, "><")
+		.trim();
+	const url = m?.[1]?.match(/\scite="([^"]*)"/i)?.[1]?.trim() ?? "";
+	return { quote, cite: cite.trim(), url };
+}
+
 /** A core Details block's summary (HTML), body (its inner blocks' HTML) and whether it starts open. */
 export function coreDetailsFields(block: GBlock): { summary: string; body: string; open: boolean } {
 	const html = blockHtml(block).trim();
@@ -249,6 +267,11 @@ function replacement(block: GBlock, opts: PrepareOptions): { blocks: GBlock[]; a
 		case "coywolf-custom-blocks/podcast-rss":
 			// Same marker name and attrs as 0.10/0.11 (then a theme placeholder), so older markers convert too.
 			return { blocks: [WRAP(markerHtml("podcast-links", { block: block.name, ...a }))], action: "podcast" };
+		case "core/quote": {
+			const f = coreQuoteFields(block);
+			if (!f.quote) return null;
+			return { blocks: [WRAP(markerHtml("blockquote", f, blockquoteHtml(f)))], action: "quote" };
+		}
 		case "core/details":
 			return { blocks: [WRAP(markerHtml("details", coreDetailsFields(block), blockHtml(block).trim()))], action: "details" };
 		case "yoast-seo/related-links":

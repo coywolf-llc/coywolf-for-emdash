@@ -327,6 +327,23 @@ test("core Details blocks become Details blocks with their summary and paragraph
 	assert.ok(!d.body.includes("<!-- wp:"), "the inner blocks' comments are gone");
 });
 
+test("core Quote blocks keep their paragraphs and citation (EmDash's converter drops the quote)", () => {
+	const { prepared, result } = importFixture("quote.html");
+	assert.equal(prepared.counts["core/quote → quote"], 2);
+	const [a, b] = ofType(result.value, "coywolf-quote");
+	assert.equal(a.quote, "<p>One of the most used and trusted sources of domain rankings was <strong>Alexa</strong> [Rank].</p><p>We believe we are in a good position to provide a strong alternative.</p>");
+	assert.match(a.citation, /^<a href="https:\/\/www\.linkedin\.com\/in\/celsomartinho\/">Celso Martinho<\/a> in <a href=/);
+	assert.equal(b.quote, "<p>So clearly, if you want to murder someone, find them the slowest webpage full of pop-ups and make them surf.</p>");
+	assert.equal(b.citation, undefined);
+});
+
+test("with Content Blocks' quote off, core Quote blocks stay HTML with the quote text", () => {
+	const { result } = importFixture("quote.html", { customBlocks: { quote: false } });
+	const html = ofType(result.value, "htmlBlock").map((b) => parseMarker(b.html).inner);
+	assert.equal(html.length, 2);
+	assert.match(html[0], /<blockquote><p>One of the most used[\s\S]*<\/blockquote><figcaption><cite><a href=/);
+});
+
 test("code blocks: Prism language names map to the editor's, bold markup and &#91; are cleaned", () => {
 	const { result } = importFixture("code.html");
 	const [html, json] = ofType(result.value, "code");
