@@ -35,7 +35,7 @@ EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media
 ## Install
 
 ```bash
-npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.15.0
+npm install https://codeload.github.com/coywolf-llc/coywolf-pack/tar.gz/refs/tags/v0.15.1
 ```
 
 Use the tarball URL rather than `github:coywolf-llc/coywolf-pack`: npm records `github:` installs as SSH Git URLs, which CI runners without an SSH key can't fetch.
@@ -123,6 +123,8 @@ Resized copies of media-library images at short, cacheable addresses instead of 
 ```
 
 The pack's middleware reads the original from the media bucket (`MEDIA`), resizes it with the Cloudflare Images binding (`IMAGES`, which the Astro Cloudflare adapter already binds), and caches the result at the edge for a year (file ids never change). Sizes are limited to 2560px; SVGs aren't resized. Other binding names: `coywolfPlugin({ images: { bucket: "MYMEDIA", images: "MYIMAGES" } })`.
+
+With Schema & Social's **Robots & social** feature on, pages without their own image use the site's default OG image (Settings → SEO) at a clean 1200×630 URL (PNG stays PNG, anything else becomes JPEG), with its width, height, type and alt; clean URLs anywhere in og:image resolve back to their media item for those tags.
 
 In theme code, build URLs with `cleanImageUrl` (returns `null` when the feature is off or the source isn't a media-library file, so fall back to your usual image code):
 

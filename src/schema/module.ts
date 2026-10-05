@@ -9,6 +9,7 @@
  * rows per byline id; a row may be marked profile-only).
  */
 import { getManyBatched } from "../core/storage.js";
+import { FORMATS, cleanImagePath, parseImagePath } from "../images/lib.js";
 import { siteName } from "../core/site.js";
 import type { PageMetadataContribution, PluginContext, PublicPageContext } from "emdash";
 import { PluginRouteError, definePluginRoute } from "emdash";
@@ -204,7 +205,38 @@ const MEDIA_TTL_MS = 10 * 60_000;
 const MEDIA_MAX = 500;
 const mediaCache = new Map<string, { at: number; info: ImageInfo | null }>();
 
+/** A clean image URL (/media/<file id>-<w>x<h>.<format>, Clean image URLs module): the media item, at the resized dimensions. */
+async function lookupCleanMedia(options: SchemaOptions, url: string, origin: string): Promise<ImageInfo | null | undefined> {
+	let pathname: string;
+	try {
+		const parsed = new URL(url, origin || "https://site.invalid");
+		if (origin && /^https?:/i.test(url) && parsed.origin !== new URL(origin).origin) return undefined;
+		pathname = parsed.pathname;
+	} catch {
+		return undefined;
+	}
+	const clean = parseImagePath(pathname);
+	if (!clean) return undefined;
+	try {
+		const env = await workerEnv();
+		const db = env[options.database ?? "DB"] as D1Database | undefined;
+		const row = db
+			? await db
+					.prepare("SELECT width, height, alt FROM media WHERE storage_key LIKE ? LIMIT 1")
+					.bind(`${clean.id}.%`)
+					.first<{ width: number | null; height: number | null; alt: string | null }>()
+			: null;
+		if (!row) return null;
+		const height = clean.height ?? (row.width && row.height ? Math.round((clean.width * row.height) / row.width) : null);
+		return { url, width: clean.width, height, alt: row.alt, mimeType: FORMATS[clean.format] };
+	} catch {
+		return null;
+	}
+}
+
 async function lookupMedia(options: SchemaOptions, url: string, origin: string): Promise<ImageInfo | null> {
+	const cleanInfo = await lookupCleanMedia(options, url, origin);
+	if (cleanInfo !== undefined) return cleanInfo;
 	const ref = mediaRefFromUrl(url, origin);
 	if (!ref) return null;
 	const cacheKey = `${ref.by}:${ref.value}`;
@@ -261,10 +293,24 @@ async function siteFacts(ctx: PluginContext, page: PublicPageContext): Promise<S
 	};
 }
 
+/**
+ * The site's default OG image as a clean 1200x630 URL (Clean image URLs on):
+ * PNG stays PNG, anything else becomes JPEG, the formats every social network
+ * reads. Null when it isn't a media-library image.
+ */
+function cleanDefaultOgImage(site: SiteFacts): ImageInfo | null {
+	const d = site.defaultOgImage;
+	if (!d) return null;
+	const format = /\.png(?:$|[?#])/i.test(d.url) ? "png" : "jpg";
+	const path = cleanImagePath(d.url, { width: 1200, height: 630, format });
+	if (!path) return null;
+	return { url: absolute(path, site.origin) ?? path, width: 1200, height: 630, alt: d.alt, mimeType: FORMATS[format] };
+}
+
 /** The og:image EmDash will emit for this page (same precedence as core). */
-async function primaryImage(options: SchemaOptions, page: PublicPageContext, site: SiteFacts): Promise<ImageInfo | null> {
+async function primaryImage(options: SchemaOptions, page: PublicPageContext, site: SiteFacts, cleanUrls = false): Promise<ImageInfo | null> {
 	const own = page.seo?.ogImage || page.image;
-	if (!own) return site.defaultOgImage;
+	if (!own) return cleanUrls ? (cleanDefaultOgImage(site) ?? site.defaultOgImage) : site.defaultOgImage;
 	const url = absolute(own, site.origin) ?? own;
 	return (await lookupMedia(options, own, site.origin)) ?? { url };
 }
@@ -385,7 +431,8 @@ export async function schemaContributions(
 	const out: PageMetadataContribution[] = [];
 	const graphOn = isOn(on, SCHEMA_FEATURES.graph);
 	const ogOn = isOn(on, SCHEMA_FEATURES.openGraph);
-	const image = graphOn || ogOn ? await primaryImage(options, page, site) : null;
+	const cleanImages = isOn(on, "images");
+	const image = graphOn || ogOn ? await primaryImage(options, page, site, cleanImages) : null;
 
 	if (graphOn) {
 		const override = page.content
@@ -457,6 +504,11 @@ export async function schemaContributions(
 	if (ogOn) {
 		const locale = config.settings.schemaOgLocale?.trim() || ogLocale(page.locale || ctx.site.locale);
 		if (locale) out.push({ kind: "property", property: "og:locale", content: locale });
+		// The default OG image at its clean URL: these win over EmDash's own og:image/twitter:image (first contribution wins).
+		if (image && cleanImages && !(page.seo?.ogImage || page.image) && parseImagePath(new URL(image.url, site.origin || "https://site.invalid").pathname)) {
+			out.push({ kind: "property", property: "og:image", content: image.url });
+			out.push({ kind: "meta", name: "twitter:image", content: image.url });
+		}
 		if (image) {
 			if (image.width && image.height) {
 				out.push({ kind: "property", property: "og:image:width", content: String(image.width) });
