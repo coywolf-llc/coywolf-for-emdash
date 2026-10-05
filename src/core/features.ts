@@ -98,8 +98,10 @@ export function knownFeatures(): FeatureMap | null {
  */
 export async function cachedCtxFeatures(ctx: SettingsCtx): Promise<FeatureMap> {
 	if (cached && Date.now() - cached.at < TTL_MS) return cached.features;
+	const started = generation;
 	const features = await ctxFeatures(ctx);
-	cached = { features, at: Date.now() };
+	// Same guard as queryOptions: a save in this isolate while this read ran (invalidateFeatures) makes it stale.
+	if (generation === started) cached = { features, at: Date.now() };
 	return features;
 }
 

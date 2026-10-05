@@ -87,6 +87,37 @@ test("a save during a read: the stale read isn't cached", async () => {
 	assert.deepEqual(await readSiteSetting("testA", db), { value: "new" });
 });
 
+test("a save during a plugin-context read: cachedCtxFeatures doesn't cache the stale switches", async () => {
+	const { cachedCtxFeatures } = await import("../src/core/features.ts");
+	await import("../src/search/pack.ts"); // Registers the "search" switch.
+	invalidateFeatures();
+	let stored = { search: false };
+	let open;
+	const gate = new Promise((resolve) => (open = resolve));
+	let reads = 0;
+	const ctx = {
+		settings: {
+			get: async (key) => {
+				if (key !== "features") return null;
+				reads++;
+				const value = stored;
+				if (reads === 1) await gate;
+				return value;
+			},
+		},
+	};
+	const stale = cachedCtxFeatures(ctx);
+	stored = { search: true };
+	invalidateFeatures(); // Saved while the first read was in flight.
+	open();
+	assert.equal((await stale).search, false, "the in-flight read still answers its caller");
+	assert.equal((await cachedCtxFeatures(ctx)).search, true, "but wasn't cached over the save");
+	assert.equal(reads, 2);
+	assert.equal((await cachedCtxFeatures(ctx)).search, true);
+	assert.equal(reads, 2, "a read with no save in between is cached");
+	invalidateFeatures();
+});
+
 test("File Downloads settings come from the shared read with their defaults", async () => {
 	invalidateFeatures();
 	const db = fakeDb({ [option("filesBase")]: '"get"', [option("filesScheme")]: '"dark"', [option("filesAccent")]: '"#123456"' });
