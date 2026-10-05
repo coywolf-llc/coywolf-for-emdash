@@ -75,7 +75,8 @@ export const imagesMiddleware: PackMiddleware = {
 		const cache = (globalThis as unknown as { caches?: { default?: Cache } }).caches?.default;
 		const cacheKey = new Request(context.url.toString(), { method: "GET" });
 		const hit = cache ? await cache.match(cacheKey) : undefined;
-		if (hit) return context.request.method === "HEAD" ? new Response(null, { headers: hit.headers }) : hit;
+		// Cached responses have immutable headers; hand back a copy later middleware can still change.
+		if (hit) return new Response(context.request.method === "HEAD" ? null : hit.body, { status: hit.status, headers: new Headers(hit.headers) });
 
 		const bucket = env[config.bucket] as R2Bucket | undefined;
 		const images = env[config.images] as ImagesBinding | undefined;
@@ -103,6 +104,6 @@ export const imagesMiddleware: PackMiddleware = {
 		headers.set("X-Content-Type-Options", "nosniff");
 		const response = new Response(out.body, { status: 200, headers });
 		if (cache) waitUntil(cache.put(cacheKey, response.clone()));
-		return context.request.method === "HEAD" ? new Response(null, { headers }) : response;
+		return context.request.method === "HEAD" ? new Response(null, { headers: new Headers(headers) }) : response;
 	},
 };
