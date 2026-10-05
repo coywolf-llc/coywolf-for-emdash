@@ -216,9 +216,9 @@ export function PerformancePage() {
 							<h2 className="text-base font-semibold">Cache warming</h2>
 							<p className="text-sm leading-5 text-pretty text-kumo-subtle">
 								After a deploy or a full clear, every page is cold until someone visits it. Warming visits every page in your
-								sitemap in the background (home page first, then newest posts), a batch each minute, so visitors and search
-								engine crawlers get cached pages. It warms the region where the site runs (with Smart Placement, the one near
-								your database); visitors elsewhere fill their region on their first view.
+								sitemap (home page first, then newest posts) a few at a time, in the background of the requests your site already
+								gets, so the next visitors and search engine crawlers get cached pages. It warms the region your traffic comes
+								from; it doesn't run while nobody is visiting.
 							</p>
 						</div>
 						<Switch

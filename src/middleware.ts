@@ -19,7 +19,12 @@ import type { PackMiddleware } from "./core/module.js";
 import { MIDDLEWARE } from "./modules.js";
 import { ALWAYS, LIFETIME_DEFAULTS, LIFETIME_SETTINGS } from "./pageCache/pack.js";
 import { applyPageLifetime, purgePageCache, purgeScope, purgesAfter } from "./pageCache/lib.js";
-import { WARM_SETTING, startWarm } from "./pageCache/warm.js";
+import { WARMER_AGENT, WARM_SETTING, startWarm, warmStep } from "./pageCache/warm.js";
+
+/** Per isolate: when this isolate last started a warming step (one at a time, at most every few seconds). */
+let warmingUntil = 0;
+const WARM_EVERY_MS = 5_000;
+const WARM_BUDGET_MS = 20_000;
 
 export interface CoywolfPackMiddlewareOptions {
 	/** D1 binding of the site database. Default "DB". */
@@ -68,6 +73,29 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 				maxAgeDays ?? LIFETIME_DEFAULTS.maxAgeDays,
 				refreshDays ?? LIFETIME_DEFAULTS.refreshDays,
 			);
+		}
+		// Cache warming rides on real page traffic (see src/pageCache/warm.ts): after this
+		// response, claim a small batch of cold pages and visit them in the background.
+		if (
+			context.request.method === "GET" &&
+			!context.url.pathname.startsWith("/_emdash/") &&
+			context.request.headers.get("user-agent") !== WARMER_AGENT &&
+			Date.now() > warmingUntil &&
+			(await siteSetting<boolean>(WARM_SETTING, options.database))
+		) {
+			const db = env[options.database ?? "DB"] as D1Database | undefined;
+			const self = env.SELF as { fetch(request: Request): Promise<Response> } | undefined;
+			if (db && self) {
+				warmingUntil = Date.now() + WARM_BUDGET_MS + WARM_EVERY_MS;
+				const origin = (context.site ?? context.url).origin;
+				waitUntil(
+					warmStep(db, self, origin, { budgetMs: WARM_BUDGET_MS, batchSize: 4 })
+						.catch((error) => console.error("coywolf-pack: cache warming failed", error))
+						.finally(() => {
+							warmingUntil = Date.now() + WARM_EVERY_MS;
+						}),
+				);
+			}
 		}
 		for (const handler of handlers) {
 			if (handler.feature !== ALWAYS && !isOn(features, handler.feature)) continue;
