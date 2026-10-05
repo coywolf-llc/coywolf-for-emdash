@@ -119,10 +119,21 @@ export async function writeDumpStream(
 	const gzip = new CompressionStream("gzip");
 	const writer = gzip.writable.getWriter();
 	// Feed the compressor while the loop below drains it (each waits on the other).
+	/** An error from the dump itself (a failed query), which explains more than the stream errors it causes. */
+	let dumpError: { error: unknown } | null = null;
 	const feed = (async () => {
 		let batch = "";
-		for await (const line of lines) {
-			batch += `${line}\n`;
+		const iterator = lines[Symbol.asyncIterator]();
+		for (;;) {
+			let next: IteratorResult<string>;
+			try {
+				next = await iterator.next();
+			} catch (error) {
+				dumpError = { error };
+				throw error;
+			}
+			if (next.done) break;
+			batch += `${next.value}\n`;
 			if (batch.length >= FEED_BYTES) {
 				await writer.write(utf8.encode(batch));
 				batch = "";
@@ -172,9 +183,10 @@ export async function writeDumpStream(
 		}
 	} catch (error) {
 		await upload?.abort().catch(() => undefined);
-		// The dump's own error (a failed query) explains more than the aborted stream.
-		await feed;
-		throw error;
+		// Unblock the feed (it may be waiting for room in the stream) and let it finish.
+		await reader.cancel(error).catch(() => undefined);
+		await feed.catch(() => undefined);
+		throw dumpError ? (dumpError as { error: unknown }).error : error;
 	}
 	return { bytes, sha256: await hash.digest() };
 }

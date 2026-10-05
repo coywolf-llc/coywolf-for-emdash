@@ -179,3 +179,34 @@ test("a failed dump aborts the upload and reports the dump's error", async () =>
 	assert.equal(bucket.uploads[0].aborted, true);
 	assert.equal(bucket.store.size, 0);
 });
+
+test("a failed upload stops the dump instead of hanging", async () => {
+	const { writeDumpStream } = await import("./store.ts");
+	let aborted = false;
+	const bucket = {
+		async put() {},
+		async createMultipartUpload() {
+			return {
+				uploadPart: async () => {
+					throw new Error("R2 unavailable");
+				},
+				complete: async () => {},
+				abort: async () => {
+					aborted = true;
+				},
+			};
+		},
+	};
+	let produced = 0;
+	async function* endless() {
+		for (;;) {
+			produced++;
+			yield `${Math.random().toString(36)}${Math.random().toString(36)}${Math.random().toString(36)}`;
+		}
+	}
+	await assert.rejects(() => writeDumpStream(bucket, "2026-10-05T1200Z", "x.sql.gz", endless(), 1024), /R2 unavailable/);
+	assert.equal(aborted, true);
+	const stopped = produced;
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(produced, stopped, "the dump stops reading rows");
+});
