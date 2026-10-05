@@ -45,3 +45,45 @@ test("page lifetimes apply only to routes the site made cacheable", () => {
 	assert.equal(applyPageLifetime(undefined, 7, 1), false);
 	assert.equal(applyPageLifetime({ ...routeCache(60), enabled: false }, 7, 1), false);
 });
+
+const { shortenStopgapPage, STOPGAP_LIFETIME } = await import("./lib.ts");
+
+const html = (body = "<p>hi</p>", init = {}) => new Response(body, { headers: { "content-type": "text/html; charset=utf-8" }, ...init });
+
+test("a page rendered with a stopgap poster is cached for minutes, decided after its body has rendered", async () => {
+	const page = routeCache(604800);
+	let rendered = false;
+	// The flag is set while the body streams (a component deep in the page), not before next() returns.
+	const stream = new ReadableStream({
+		async pull(controller) {
+			await new Promise((r) => setTimeout(r, 0));
+			rendered = true;
+			controller.enqueue(new TextEncoder().encode("<video>"));
+			controller.close();
+		},
+	});
+	const out = await shortenStopgapPage(page, html(stream, { headers: { "content-type": "text/html", "x-keep": "1" } }), () => rendered);
+	assert.deepEqual(page.sets, [{ maxAge: STOPGAP_LIFETIME.maxAge, swr: STOPGAP_LIFETIME.swr }]);
+	assert.equal(await out.text(), "<video>");
+	assert.equal(out.headers.get("x-keep"), "1");
+	assert.equal(out.status, 200);
+});
+
+test("pages without a stopgap, uncached routes and non-HTML responses keep their lifetime", async () => {
+	const page = routeCache(604800);
+	assert.equal(await (await shortenStopgapPage(page, html(), () => false)).text(), "<p>hi</p>");
+	assert.deepEqual(page.sets, []);
+
+	const untouched = html();
+	assert.equal(await shortenStopgapPage(routeCache(undefined), untouched, () => assert.fail("asked")), untouched);
+	assert.equal(await shortenStopgapPage(undefined, untouched, () => assert.fail("asked")), untouched);
+
+	const json = new Response("{}", { headers: { "content-type": "application/json" } });
+	assert.equal(await shortenStopgapPage(routeCache(60), json, () => assert.fail("asked")), json);
+	const missing = html("gone", { status: 404 });
+	assert.equal(await shortenStopgapPage(routeCache(60), missing, () => assert.fail("asked")), missing);
+
+	const short = routeCache(120);
+	await shortenStopgapPage(short, html(), () => true);
+	assert.deepEqual(short.sets, [{ maxAge: 120, swr: STOPGAP_LIFETIME.swr }], "never lengthens a shorter lifetime");
+});

@@ -93,7 +93,7 @@ const description = str(node?.caption) ?? str(node?.description) ?? video?.descr
 const block = { posterTime: num(node?.posterTime), posterImage: str(node?.posterImage) };
 const posterFallback = { posterTime: video?.posterTime ?? (node?.host ? 1 : undefined), posterImage: video?.posterImage ?? undefined };
 // From the media host when there is one (copied from Stream once), else Stream's thumbnails.
-const hostedPoster = uid ? await hostedPosterImage(host, uid, block, posterFallback, Astro.url.origin) : null;
+const hostedPoster = uid ? await hostedPosterImage(host, uid, block, posterFallback, Astro.url.origin, Astro.locals as Record<string, unknown>) : null;
 const poster = hostedPoster?.full;
 const playerExtra = { startTime: num(node?.startTime), poster, accent: data?.accent ?? undefined, background: data?.background ?? undefined };
 const src = uid ? playerSrc(host, uid, cfg, playerExtra) : "";

@@ -18,8 +18,10 @@ import { injectAdminEnhancements } from "./core/settings-enhance.js";
 import type { PackMiddleware } from "./core/module.js";
 import { MIDDLEWARE } from "./modules.js";
 import { ALWAYS, LIFETIME_DEFAULTS, LIFETIME_SETTINGS } from "./pageCache/pack.js";
-import { applyPageLifetime, purgePageCache, purgeScope, purgesAfter } from "./pageCache/lib.js";
+import { applyPageLifetime, purgePageCache, purgeScope, purgesAfter, shortenStopgapPage } from "./pageCache/lib.js";
 import { WARMER_AGENT, WARM_SETTING, startWarm, warmStep } from "./pageCache/warm.js";
+import { notePackMiddleware } from "./search/live-serve.js";
+import { pendingPosterRenders, renderedPendingPoster } from "./videos/poster.js";
 
 /** Per isolate: when this isolate last started a warming step (one at a time, at most every few seconds). */
 let warmingUntil = 0;
@@ -45,6 +47,8 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 		} catch {
 			return next(); // Not running on Cloudflare.
 		}
+		// Pages rendered in this isolate may now load the live search client as a file (it's served below).
+		notePackMiddleware();
 		const env = workers.env;
 		const waitUntil = (p: Promise<unknown>) => (workers.waitUntil ? workers.waitUntil(p) : void p);
 		const features = await siteFeatures(options.database);
@@ -112,6 +116,17 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 			} catch (error) {
 				console.error(`coywolf-pack: ${handler.module} middleware failed`, error);
 			}
+		}
+		// A page that showed a video's Stream poster while its media-host copy is made
+		// (src/videos/poster.ts) is cached for minutes, not days, so the next render uses the copy.
+		if (context.request.method === "GET" && isOn(features, "images")) {
+			const before = pendingPosterRenders();
+			const response = await next();
+			return shortenStopgapPage(
+				(context as unknown as { cache?: Parameters<typeof shortenStopgapPage>[0] }).cache,
+				response,
+				() => renderedPendingPoster(context.locals, before),
+			);
 		}
 		return next();
 	};

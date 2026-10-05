@@ -11,7 +11,9 @@
  * Rendering never waits on the bucket or on Stream: the copied posters are
  * listed in one plugin setting (read with the feature switches, so it costs no
  * query), and a poster that isn't listed yet is rendered from Stream while it's
- * copied (and listed) after the response.
+ * copied (and listed) in the background. Such a page is marked (see
+ * markPendingPoster) so the pack middleware caches it for minutes, not days:
+ * the next render, once the copy is listed, uses the media host.
  */
 import { PLUGIN_ID, registerSiteSetting, rememberSiteSetting, siteFeatureOn, siteSetting } from "../core/features.js";
 import { imageCdn } from "../images/lib.js";
@@ -131,6 +133,33 @@ export function resetMirroredPosters(): void {
 	mirrored.clear();
 	present.clear();
 	listedMemo = null;
+	pendingRenders = 0;
+}
+
+/** Astro.locals key: this request rendered a Stream poster whose media-host copy is still being made. */
+export const PENDING_POSTER_LOCAL = "__cwPendingPoster";
+/**
+ * Per isolate: Stream posters rendered for callers that didn't pass `locals`
+ * (a theme calling hostedPosterImage itself). The middleware compares it before
+ * and after a render; a concurrent render in the same isolate can shorten
+ * another page's lifetime too, which only costs a re-render.
+ */
+let pendingRenders = 0;
+
+/** Note that this render shows a Stream poster only until its copy is listed. */
+export function markPendingPoster(locals?: Record<string, unknown> | null): void {
+	if (locals && typeof locals === "object") locals[PENDING_POSTER_LOCAL] = true;
+	else pendingRenders++;
+}
+
+/** How many Stream posters this isolate has rendered without `locals` (see markPendingPoster). */
+export function pendingPosterRenders(): number {
+	return pendingRenders;
+}
+
+/** Whether a request rendered a pending poster: flagged on its locals, or counted since `before`. */
+export function renderedPendingPoster(locals: unknown, before: number): boolean {
+	return Boolean((locals as Record<string, unknown> | undefined)?.[PENDING_POSTER_LOCAL]) || pendingRenders !== before;
 }
 
 export interface PosterDeps {
@@ -147,8 +176,10 @@ export interface PosterDeps {
 
 /**
  * The media-host poster when the copy is known to exist (listed, or seen by
- * this isolate), else null right away, with the copy, its listing and (for a
- * new copy only) the resizing of each size scheduled after the response.
+ * this isolate), else null right away. The copy starts at once (during this
+ * render, not after it), and `defer` only keeps it, its listing and (for a new
+ * copy only) the resizing of each size alive past the response, so the next
+ * render a few minutes later finds it listed.
  */
 export async function mediaPoster(uid: string, source: string, deps: PosterDeps): Promise<{ src: string; srcset: string; full: string } | null> {
 	const key = await posterKey(uid, source);
@@ -173,7 +204,9 @@ export async function mediaPoster(uid: string, source: string, deps: PosterDeps)
 /**
  * The poster as a responsive image from the media host when there is one,
  * else Stream's thumbnails (see posterImage). `full` is a single large URL
- * for the player's own poster.
+ * for the player's own poster. Pass the page's `Astro.locals` so a page shown
+ * with Stream's poster while the copy is made gets a short cache lifetime
+ * (without it, the middleware still notices through a per-isolate count).
  */
 export async function hostedPosterImage(
 	host: string | null,
@@ -181,6 +214,7 @@ export async function hostedPosterImage(
 	ref: PosterRef,
 	fallback: PosterRef = {},
 	origin?: string | null,
+	locals?: Record<string, unknown> | null,
 ): Promise<{ src: string; srcset?: string; full: string }> {
 	const stream = posterImage(host, uid, ref, fallback, origin);
 	const source = posterUrl(host, uid, ref, fallback, SOURCE_WIDTH, origin);
@@ -208,7 +242,9 @@ export async function hostedPosterImage(
 			},
 			defer: (work) => void afterResponse(work),
 		});
-		return media ?? { ...stream, full: source };
+		if (media) return media;
+		markPendingPoster(locals);
+		return { ...stream, full: source };
 	} catch {
 		return { ...stream, full: source };
 	}

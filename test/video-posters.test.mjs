@@ -152,3 +152,22 @@ test("listing a poster appends once, keeps other keys and stops at the cap", asy
 	await listPoster(db, "d.jpg");
 	assert.deepEqual(read(), ["d.jpg"]);
 });
+
+test("a Stream poster shown while its copy is made marks the request, through locals or the isolate count", async () => {
+	resetMirroredPosters();
+	const { markPendingPoster, pendingPosterRenders, renderedPendingPoster, PENDING_POSTER_LOCAL } = await import("../src/videos/poster.ts");
+	const locals = {};
+	const before = pendingPosterRenders();
+	assert.equal(renderedPendingPoster(locals, before), false);
+	markPendingPoster(locals);
+	assert.equal(locals[PENDING_POSTER_LOCAL], true);
+	assert.equal(renderedPendingPoster(locals, before), true);
+	assert.equal(pendingPosterRenders(), before, "flagged on locals, not counted");
+
+	// A theme calling hostedPosterImage() without locals is still noticed.
+	const other = {};
+	const start = pendingPosterRenders();
+	markPendingPoster();
+	assert.equal(renderedPendingPoster(other, start), true);
+	assert.equal(renderedPendingPoster(other, pendingPosterRenders()), false);
+});

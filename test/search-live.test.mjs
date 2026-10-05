@@ -124,7 +124,7 @@ test("live script file: runs the same client with the config from its own script
 	assert.match(LIVE_ASSET_HASH, /^[0-9a-z]+$/);
 });
 
-test("live script file: immutable for the current version only, from the middleware and the route", async () => {
+test("live script file: immutable for the current version only, served by the middleware alone", async () => {
 	const serve = await import("../src/search/live-serve.ts");
 	assert.equal(serve.liveAssetParts(LIVE_ASSET_HASH).headers["Cache-Control"], "public, max-age=31536000, immutable");
 	assert.equal(serve.liveAssetParts("old").headers["Cache-Control"], "public, max-age=300");
@@ -138,17 +138,30 @@ test("live script file: immutable for the current version only, from the middlew
 	const head = await serve.searchLiveMiddleware.handle(request(serve.liveAssetUrl(), "HEAD"), {}, () => {});
 	assert.equal(await head.text(), "");
 
-	const features = await import("../src/core/features.ts");
+	// EmDash rejects raw plugin routes with a JavaScript content type (500), so there's no route fallback.
 	const { searchPack: pack } = await import("../src/search/pack.ts");
-	const { routes } = pack({});
-	features.invalidateFeatures();
-	const route = routes["search/live-client"];
-	assert.ok(route, "fallback route for sites without the middleware");
-	const ctx = { settings: { get: async (key) => (key === "features" ? { search: true } : null) }, log: { info() {}, warn() {}, error() {} }, input: { v: LIVE_ASSET_HASH } };
-	const out = await route.handler(ctx);
-	assert.equal(out.status, 200);
-	assert.equal(out.body.value, LIVE_ASSET);
-	features.invalidateFeatures();
+	assert.equal(pack({}).routes["search/live-client"], undefined);
+});
+
+test("live script fragment: the file only while the pack middleware serves it, else inline", async () => {
+	const serve = await import("../src/search/live-serve.ts");
+	const config = { endpoint: "/x", indexEndpoint: null, version: "v1", limit: 8, minChars: 2, debounce: 120, locale: null, enterOpensTop: true };
+	const external = serve.liveScriptFragment(config, true);
+	assert.equal(external.kind, "external-script");
+	assert.equal(external.src, serve.liveAssetUrl());
+	assert.deepEqual(JSON.parse(external.attributes["data-cw-live"]), config);
+	const inline = serve.liveScriptFragment(config, false);
+	assert.equal(inline.kind, "inline-script");
+	assert.equal(inline.placement, "body:end");
+	assert.equal(inline.code, liveScript(config));
+
+	// The default follows whether the middleware has run in this isolate.
+	serve.notePackMiddleware(false);
+	assert.equal(serve.packMiddlewareActive(), false);
+	assert.equal(serve.liveScriptFragment(config).kind, "inline-script", "a site without the middleware");
+	serve.notePackMiddleware();
+	assert.equal(serve.liveScriptFragment(config).kind, "external-script");
+	serve.notePackMiddleware(false);
 });
 
 test("live styles: no unbalanced braces", () => {
@@ -182,9 +195,20 @@ function fakeCtx(features) {
 test("page fragment: the live results script at the end of the body while search.live is on", async () => {
 	const { hooks } = composeHooks([searchPack({ live: { limit: 5, minChars: 3 } })], { tasks: [] });
 	const event = { page: { locale: "en", kind: "custom", url: "https://example.com/" } };
+	const { notePackMiddleware } = await import("../src/search/live-serve.ts");
 
+	// Without the pack middleware: the client inline.
+	notePackMiddleware(false);
+	invalidateFeatures();
+	const inline = await hooks["page:fragments"](event, fakeCtx({ search: true }));
+	assert.equal(inline.length, 1);
+	assert.equal(inline[0].kind, "inline-script");
+	assert.ok(inline[0].code.includes('"limit":5'));
+
+	notePackMiddleware();
 	invalidateFeatures();
 	const on = await hooks["page:fragments"](event, fakeCtx({ search: true }));
+	notePackMiddleware(false);
 	assert.equal(on.length, 1);
 	assert.equal(on[0].kind, "external-script");
 	assert.equal(on[0].placement, "body:end");
@@ -205,8 +229,11 @@ test("page fragment: the live results script at the end of the body while search
 
 test("live options are clamped", async () => {
 	const { hooks } = composeHooks([searchPack({ live: { limit: 500, minChars: 0, debounce: -5 } })], { tasks: [] });
+	const { notePackMiddleware } = await import("../src/search/live-serve.ts");
+	notePackMiddleware();
 	invalidateFeatures();
 	const [fragment] = await hooks["page:fragments"]({ page: { locale: null } }, fakeCtx({ search: true }));
+	notePackMiddleware(false);
 	assert.ok(fragment.attributes["data-cw-live"].includes('"limit":20,"minChars":1,"debounce":0'), fragment.attributes["data-cw-live"]);
 	invalidateFeatures();
 });
