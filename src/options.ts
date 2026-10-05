@@ -36,6 +36,8 @@ export interface CoywolfOptions {
 	reviews?: ReviewsOptions | false;
 	/** Custom Blocks: Note, Details, Affiliate disclosure, Quote, Testimonial and Podcast links blocks (no options yet). `false` leaves the module out. */
 	customBlocks?: Record<string, never> | false;
+	/** Clean image URLs (/media/<id>-<w>x<h>.<format>): media bucket and Images binding names. */
+	images?: import("./images/pack.js").ImagesOptions | false;
 	/** @deprecated Until 0.12.0 the Custom Blocks module was called Content Blocks; `contentBlocks: false` still leaves it out. */
 	contentBlocks?: Record<string, never> | false;
 	/** WordPress import tools (no options yet). `false` leaves the module out. */

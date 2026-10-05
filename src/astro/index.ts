@@ -55,3 +55,7 @@ export type { EntryRef, MatchedEntry } from "../core/content-url.js";
 /** Reviews module: the review box for theme code, and legacy WordPress review marker attrs → review fields. */
 export { Review };
 export { reviewFromAttrs } from "../reviews/lib.js";
+
+/** Clean Image URLs module: build /media/<id>-<w>x<h>.<format> URLs for theme images (null when off). */
+export { cleanImageUrl } from "../images/pack.js";
+export { cleanImagePath, mediaFile } from "../images/lib.js";
