@@ -1,9 +1,15 @@
 ---
 /**
  * Coywolf Video: a Cloudflare Stream player in a <figure>, sized by the
- * video's aspect ratio (no layout shift), lazy-loaded, with an optional
- * caption and plays/likes/date row. Schema comes from the page:metadata hook,
- * not from here.
+ * video's aspect ratio (no layout shift), with an optional caption and
+ * plays/likes/date row. Schema comes from the page:metadata hook, not from here.
+ *
+ * Light embed (the default; Videos → Player): the page shows only the poster,
+ * sized for the screen, and loads Stream's player (~350 KB of JavaScript) when
+ * someone presses play, or for autoplaying videos once the page has loaded and
+ * the video is on screen. Without it a video near the top of a page loaded
+ * with the page and, on a slow phone connection, became the page's largest
+ * paint several seconds late. Without JavaScript the player loads as before.
  *
  * Used for `coywolf-video` Portable Text blocks, and usable directly from a
  * theme: <CoywolfVideo node={{ uid, preset: "gif" }} />. Also accepts the
@@ -21,6 +27,7 @@ import {
 	normalizeCustomerHost,
 	playerConfig,
 	playerSrc,
+	posterImage,
 	posterUrl,
 } from "../../videos/lib.js";
 
@@ -32,6 +39,7 @@ interface EmbedData {
 	host: string | null;
 	accent: string | null;
 	background: string | null;
+	lightEmbed?: boolean;
 	engagement: boolean;
 	video: {
 		name: string | null;
@@ -83,7 +91,12 @@ const block = { posterTime: num(node?.posterTime), posterImage: str(node?.poster
 const poster = uid
 	? posterUrl(host, uid, block, { posterTime: video?.posterTime ?? (node?.host ? 1 : undefined), posterImage: video?.posterImage ?? undefined }, undefined, Astro.url.origin)
 	: undefined;
-const src = uid ? playerSrc(host, uid, cfg, { startTime: num(node?.startTime), poster, accent: data?.accent ?? undefined, background: data?.background ?? undefined }) : "";
+const playerExtra = { startTime: num(node?.startTime), poster, accent: data?.accent ?? undefined, background: data?.background ?? undefined };
+const src = uid ? playerSrc(host, uid, cfg, playerExtra) : "";
+// Light embed: the poster now, the player later. Pressing play starts it at once.
+const light = Boolean(uid) && data?.lightEmbed !== false;
+const playSrc = uid && light && !cfg.autoplay ? playerSrc(host, uid, { ...cfg, autoplay: true }, playerExtra) : src;
+const posterImg = uid && light ? posterImage(host, uid, block, { posterTime: video?.posterTime ?? (node?.host ? 1 : undefined), posterImage: video?.posterImage ?? undefined }, Astro.url.origin) : null;
 const ratio = aspectRatio(video?.width, video?.height, num(node?.aspect));
 const maxWidth = node?.sizeMode === "maxwidth" && num(node?.maxWidth) ? Math.max(100, Math.round(node.maxWidth as number)) : null;
 const counts = data?.engagement ? data.counts : null;
@@ -102,15 +115,29 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 
 {on && uid ? (
 	<figure class:list={["cw-video", cfg.gif && "cw-video--gif"]} style={style} data-cw-video={uid} data-cw-track={track ? "" : undefined}>
-		<div class="cw-video__frame">
-			<iframe
-				src={src}
-				title={name}
-				loading="lazy"
-				allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture;"
-				allowfullscreen
-			></iframe>
-		</div>
+		{light && posterImg ? (
+			<div class="cw-video__frame" data-cw-player={playSrc} data-cw-title={name} data-cw-auto={cfg.autoplay ? "" : undefined}>
+				<img class="cw-video__poster" src={posterImg.src} srcset={posterImg.srcset} sizes="(min-width: 50rem) 768px, 100vw" alt="" loading="lazy" decoding="async" />
+				{!cfg.autoplay && (
+					<button type="button" class="cw-video__play" data-cw-play aria-label={`Play video: ${name}`}>
+						<svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>
+					</button>
+				)}
+				<noscript>
+					<iframe src={src} title={name} loading="lazy" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture;" allowfullscreen></iframe>
+				</noscript>
+			</div>
+		) : (
+			<div class="cw-video__frame">
+				<iframe
+					src={src}
+					title={name}
+					loading="lazy"
+					allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture;"
+					allowfullscreen
+				></iframe>
+			</div>
+		)}
 		{caption && (
 			<figcaption class="cw-video__caption">
 				{cfg.showName && <strong class="cw-video__name">{name}</strong>}
@@ -171,6 +198,37 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 		height: 100%;
 		border: 0;
 	}
+	.cw-video__poster {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+	.cw-video__play {
+		position: absolute;
+		inset: 50% auto auto 50%;
+		translate: -50% -50%;
+		display: grid;
+		place-items: center;
+		width: 4rem;
+		height: 4rem;
+		padding: 0;
+		padding-left: 0.2rem;
+		border: 0;
+		border-radius: 50%;
+		background: rgb(0 0 0 / 0.65);
+		color: #fff;
+		cursor: pointer;
+		transition: background 0.15s;
+	}
+	.cw-video__play:hover {
+		background: var(--cw-video-accent);
+	}
+	.cw-video__play:focus-visible {
+		outline: 3px solid #fff;
+		outline-offset: 2px;
+	}
 	.cw-video--gif .cw-video__frame {
 		border-radius: 0;
 	}
@@ -228,8 +286,9 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 </style>
 
 <script>
-	// Plays (once per session, after 2 seconds of playback) and likes. Runs only
-	// where a figure opted in, and loads Stream's player SDK only for those.
+	// Light embed (poster first, player on demand), plays (once per session,
+	// after 2 seconds of playback) and likes. Stream's player SDK is loaded only
+	// to count plays, and only once a player exists.
 	const API = "/_emdash/api/plugins/coywolf-pack/videos/";
 	const post = (path: string, uid: string) =>
 		fetch(API + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ uid }) })
@@ -254,6 +313,67 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 			document.head.appendChild(s);
 		}));
 
+	/** Count a play (once per session) after 2 seconds of playback in this figure's player. */
+	const track = (fig: HTMLElement, frame: HTMLIFrameElement) => {
+		const uid = fig.dataset.cwVideo as string;
+		if (!fig.hasAttribute("data-cw-track") || store.get(`cw-video-play-${uid}`)) return;
+		void loadSdk().then((Stream) => {
+			if (!Stream) return;
+			const player = Stream(frame);
+			let done = false;
+			player.addEventListener("timeupdate", () => {
+				if (done || player.currentTime < 2) return;
+				done = true;
+				store.session(`cw-video-play-${uid}`);
+				void post("play", uid).then((r) => {
+					const el = fig.querySelector<HTMLElement>("[data-cw-plays]");
+					if (el && r && typeof r.plays === "number" && r.plays > 0) el.textContent = `${r.plays.toLocaleString("en-US")} ${r.plays === 1 ? "view" : "views"}`;
+				});
+			});
+		});
+	};
+
+	/** Light embed: replace the poster with Stream's player. */
+	const load = (frameEl: HTMLElement, focus: boolean) => {
+		if (frameEl.querySelector("iframe")) return;
+		const frame = document.createElement("iframe");
+		frame.src = frameEl.dataset.cwPlayer as string;
+		frame.title = frameEl.dataset.cwTitle ?? "Video";
+		frame.allow = "accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture;";
+		frame.allowFullscreen = true;
+		frameEl.querySelector("[data-cw-play]")?.remove();
+		frameEl.appendChild(frame);
+		// The poster stays underneath until the player has painted, so nothing flashes.
+		frame.addEventListener("load", () => frameEl.querySelector(".cw-video__poster")?.remove(), { once: true });
+		if (focus) frame.focus();
+		const fig = frameEl.closest<HTMLElement>("[data-cw-video]");
+		if (fig) track(fig, frame);
+	};
+
+	document.querySelectorAll<HTMLElement>("[data-cw-player]").forEach((frameEl) => {
+		frameEl.querySelector<HTMLButtonElement>("[data-cw-play]")?.addEventListener("click", () => load(frameEl, true));
+	});
+
+	// Autoplaying videos: once the page has loaded and the video is (nearly) on screen.
+	const autos = document.querySelectorAll<HTMLElement>("[data-cw-player][data-cw-auto]");
+	if (autos.length) {
+		const start = () => {
+			const idle = (fn: () => void) => ("requestIdleCallback" in window ? requestIdleCallback(fn, { timeout: 2000 }) : setTimeout(fn, 200));
+			if (!("IntersectionObserver" in window)) return autos.forEach((el) => idle(() => load(el, false)));
+			const seen = new IntersectionObserver((entries) => {
+				for (const entry of entries) {
+					if (!entry.isIntersecting) continue;
+					seen.unobserve(entry.target);
+					idle(() => load(entry.target as HTMLElement, false));
+				}
+			}, { rootMargin: "200px" });
+			autos.forEach((el) => seen.observe(el));
+		};
+		if (document.readyState === "complete") start();
+		else addEventListener("load", start, { once: true });
+	}
+
+	// Players rendered with the page (light embed off): count plays once they're near the screen.
 	const tracked = document.querySelectorAll<HTMLElement>("[data-cw-video][data-cw-track]");
 	const io = "IntersectionObserver" in window
 		? new IntersectionObserver((entries) => {
@@ -261,23 +381,8 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 					if (!entry.isIntersecting) continue;
 					io?.unobserve(entry.target);
 					const fig = entry.target as HTMLElement;
-					const uid = fig.dataset.cwVideo as string;
-					const frame = fig.querySelector("iframe");
-					if (!frame || store.get(`cw-video-play-${uid}`)) continue;
-					void loadSdk().then((Stream) => {
-						if (!Stream) return;
-						const player = Stream(frame);
-						let done = false;
-						player.addEventListener("timeupdate", () => {
-							if (done || player.currentTime < 2) return;
-							done = true;
-							store.session(`cw-video-play-${uid}`);
-							void post("play", uid).then((r) => {
-								const el = fig.querySelector<HTMLElement>("[data-cw-plays]");
-								if (el && r && typeof r.plays === "number" && r.plays > 0) el.textContent = `${r.plays.toLocaleString("en-US")} ${r.plays === 1 ? "view" : "views"}`;
-							});
-						});
-					});
+					const frame = fig.querySelector<HTMLIFrameElement>(".cw-video__frame:not([data-cw-player]) iframe");
+					if (frame) track(fig, frame);
 				}
 			}, { rootMargin: "200px" })
 		: null;

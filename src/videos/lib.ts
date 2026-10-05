@@ -310,6 +310,26 @@ export function posterUrl(
 	return thumbnailUrl(host, uid, { time: `${time}s`, width });
 }
 
+/** Poster widths for the page's poster image (the player isn't loaded until it's needed). */
+export const POSTER_WIDTHS = [480, 800, 1200] as const;
+
+/**
+ * The poster as a responsive image: Stream thumbnails in a few widths, so a
+ * phone downloads a small one. An explicit poster image is used as it is.
+ */
+export function posterImage(
+	host: string | null,
+	uid: string,
+	ref: { posterImage?: string; posterTime?: number },
+	fallback: { posterImage?: string; posterTime?: number } = {},
+	origin?: string | null,
+): { src: string; srcset?: string } {
+	const explicit = absoluteUrl(ref.posterImage, origin) ?? (ref.posterTime === undefined ? absoluteUrl(fallback.posterImage, origin) : undefined);
+	if (explicit) return { src: explicit };
+	const at = (width: number) => posterUrl(host, uid, ref, fallback, width, origin);
+	return { src: at(800), srcset: POSTER_WIDTHS.map((w) => `${at(w)} ${w}w`).join(", ") };
+}
+
 /** The Stream iframe src for a block. */
 export function playerSrc(host: string | null, uid: string, cfg: PlayerConfig, extra: { startTime?: number; poster?: string; accent?: string; background?: string } = {}): string {
 	return iframeUrl(host, uid, {

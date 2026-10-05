@@ -64,6 +64,7 @@ interface VideosSettings {
 	customerSubdomain: string;
 	accentColor: string;
 	backgroundColor: string;
+	lightEmbed: boolean;
 	envAccountId: boolean;
 	envToken: boolean;
 }
@@ -540,10 +541,17 @@ function ConnectForm(props: { onConnected: () => void }) {
 
 function SettingsPanel(props: { onSaved: (message: string) => void }) {
 	const [saved, setSaved] = React.useState<VideosSettings>();
-	const [draft, setDraft] = React.useState({ accountId: "", token: "", customerSubdomain: "", accentColor: "", backgroundColor: "" });
+	const [draft, setDraft] = React.useState({ accountId: "", token: "", customerSubdomain: "", accentColor: "", backgroundColor: "", lightEmbed: true });
 	const [pending, setPending] = React.useState<"save" | "clear">();
 	const [error, setError] = React.useState<string>();
-	const toDraft = (s: VideosSettings) => ({ accountId: s.accountId, token: "", customerSubdomain: s.customerSubdomain, accentColor: s.accentColor, backgroundColor: s.backgroundColor });
+	const toDraft = (s: VideosSettings) => ({
+		accountId: s.accountId,
+		token: "",
+		customerSubdomain: s.customerSubdomain,
+		accentColor: s.accentColor,
+		backgroundColor: s.backgroundColor,
+		lightEmbed: s.lightEmbed,
+	});
 	const apply = (s: VideosSettings) => {
 		setSaved(s);
 		setDraft(toDraft(s));
@@ -623,6 +631,18 @@ function SettingsPanel(props: { onSaved: (message: string) => void }) {
 						<Input label="Accent color" placeholder="#f6821f" description="Play button and progress bar. Empty uses Stream's default." {...text("accentColor")} />
 						<Input label="Background color" placeholder="#000000" description="Behind letterboxed videos. Empty is transparent." {...text("backgroundColor")} />
 					</div>
+					<Checkbox
+						label="Load the player only when it's needed (faster pages)"
+						checked={draft.lightEmbed}
+						disabled={Boolean(pending)}
+						onCheckedChange={(checked: boolean) => set({ lightEmbed: checked })}
+					/>
+					<p className="text-sm leading-5 text-pretty text-kumo-subtle">
+						Pages show the video's poster, sized for the screen, and load Stream's player (about 350 KB) when someone presses play.
+						Autoplaying videos start once the page has loaded and the video is on screen. On mobile, a video near the top of a
+						page otherwise loads with it and can hold back the page's first paint by several seconds. Turn this off to load the
+						player with the page.
+					</p>
 				</SettingsSection>
 				{error && <Banner variant="error" role="alert" description={error} />}
 			</form>

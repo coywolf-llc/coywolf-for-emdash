@@ -98,6 +98,7 @@ const settingsInput = z.object({
 		.optional(),
 	accentColor: hexColor.optional(),
 	backgroundColor: hexColor.optional(),
+	lightEmbed: z.boolean().optional(),
 });
 
 const uidSchema = z.string().regex(/^[0-9a-f]{32}$/, "Not a Stream video ID.");
@@ -384,6 +385,7 @@ export function videosModule(options: VideosOptions) {
 					await ctx.settings.set(SETTINGS.host, input.customerSubdomain ? (normalizeCustomerHost(input.customerSubdomain) ?? "") : "");
 				if (input.accentColor !== undefined) await ctx.settings.set(SETTINGS.accent, input.accentColor);
 				if (input.backgroundColor !== undefined) await ctx.settings.set(SETTINGS.background, input.backgroundColor);
+				if (input.lightEmbed !== undefined) await ctx.settings.set(SETTINGS.lightEmbed, input.lightEmbed);
 				if (input.clearToken) await ctx.settings.delete(SETTINGS.token);
 				else if (input.token) await ctx.settings.set(SETTINGS.token, input.token);
 				invalidatePublicConfig();

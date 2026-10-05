@@ -43,6 +43,8 @@ export const SETTINGS = {
 	accent: "videosAccentColor",
 	background: "videosBackgroundColor",
 	webhookSecret: "videosWebhookSecret",
+	/** Poster first, player when needed (default on; false loads the player with the page). */
+	lightEmbed: "videosLightEmbed",
 } as const;
 
 /**
@@ -61,6 +63,8 @@ export interface PublicConfig {
 	host: string | null;
 	accent: string | null;
 	background: string | null;
+	/** Show the poster and load Stream's player only when it's needed. */
+	lightEmbed: boolean;
 }
 
 let publicCache: { value: PublicConfig; at: number } | null = null;
@@ -75,15 +79,17 @@ const HOST_KEY = "state:videos:customerHost";
 /** Player settings safe to use on public pages (cached per isolate for a minute). */
 export async function publicConfig(ctx: Ctx): Promise<PublicConfig> {
 	if (publicCache && Date.now() - publicCache.at < PUBLIC_TTL) return publicCache.value;
-	const [host, accent, background] = await Promise.all([
+	const [host, accent, background, lightEmbed] = await Promise.all([
 		ctx.settings.get<string>(SETTINGS.host),
 		ctx.settings.get<string>(SETTINGS.accent),
 		ctx.settings.get<string>(SETTINGS.background),
+		ctx.settings.get<boolean>(SETTINGS.lightEmbed),
 	]);
 	const value: PublicConfig = {
 		host: normalizeCustomerHost(host) ?? normalizeCustomerHost(await ctx.kv.get<string>(HOST_KEY)),
 		accent: isHex(accent) ? accent : null,
 		background: isHex(background) ? background : null,
+		lightEmbed: lightEmbed !== false,
 	};
 	publicCache = { value, at: Date.now() };
 	return value;
@@ -117,12 +123,13 @@ export async function credentials(ctx: Ctx): Promise<StreamCredentials | null> {
 
 /** The saved settings for the Videos page's Settings tab (the token only as set / not set). */
 export async function adminSettings(ctx: Ctx) {
-	const [accountId, token, host, accent, background] = await Promise.all([
+	const [accountId, token, host, accent, background, lightEmbed] = await Promise.all([
 		ctx.settings.get<string>(SETTINGS.accountId),
 		ctx.settings.get<string>(SETTINGS.token).catch(() => null),
 		ctx.settings.get<string>(SETTINGS.host),
 		ctx.settings.get<string>(SETTINGS.accent),
 		ctx.settings.get<string>(SETTINGS.background),
+		ctx.settings.get<boolean>(SETTINGS.lightEmbed),
 	]);
 	let env: Record<string, unknown> = {};
 	try {
@@ -136,6 +143,7 @@ export async function adminSettings(ctx: Ctx) {
 		customerSubdomain: host ?? "",
 		accentColor: accent ?? "",
 		backgroundColor: background ?? "",
+		lightEmbed: lightEmbed !== false,
 		/** Worker variables used when the settings are empty. */
 		envAccountId: Boolean(secret(env, "CF_ACCOUNT_ID")),
 		envToken: Boolean(secret(env, "CF_STREAM_TOKEN")),
