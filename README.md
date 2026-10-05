@@ -2,8 +2,26 @@
 
 One plugin with [Coywolf](https://coywolf.com)'s features for [EmDash](https://emdashcms.com) sites on Cloudflare: the things Coywolf's WordPress plugins do that EmDash doesn't do natively. Enable only the modules you want.
 
+## Faster sites
+
+EmDash on Cloudflare builds every page in a Worker, and a Worker that hasn't run recently in a data center has to start up, load EmDash and query D1 before it can answer. On coywolf.com that meant 1.1–2 seconds before the first byte and a mobile PageSpeed Speed Index of 5–8 seconds. With Coywolf Pack's performance features, the same site scores 100 in every PageSpeed category.
+
+| What it improves | How |
+| --- | --- |
+| **First visits** | Keeps Cloudflare's Workers Cache (the edge HTML cache in front of the Worker) correct, so pages can stay cached for days: it clears everything after each deploy and whenever pack settings change, and sets page lifetimes at runtime. Cached pages answer in 60–90 ms instead of 1–2 s. |
+| **Clearing the cache** | **Plugins → Performance → Clear pages and images**. Cloudflare's zone "Purge Everything" doesn't reach Workers Cache, which belongs to the Worker. |
+| **Images** | Serves media from a `media.` subdomain (R2 custom domain + Image Transformations), never through the Worker, with clean resized URLs, a one-year Cache Rule, responsive `srcset` helpers, and width/height lookups for images that have none (WordPress imports), so layouts don't shift. |
+| **Live search** | Results as you type in tens of milliseconds: an instant title index in the browser, an edge cache keyed to content changes, and 2–3 D1 queries instead of 25–31. |
+| **Redirects** | Answered by middleware from rules cached per isolate, before EmDash renders anything, and kept out of the edge cache so hit counts stay accurate. |
+| **No client JavaScript where it isn't needed** | Code highlighting, tables of contents, breadcrumbs, reviews and schema are rendered on the server. |
+
+See [Page cache](#page-cache) for setup.
+
+## Modules
+
 | Module | What it does |
 | --- | --- |
+| **Performance** | Always on: page cache lifetimes, cache clearing after deploys and settings changes, a Clear pages and images button, and the media host's Cache Rule (see [Faster sites](#faster-sites)) |
 | **Backups** | Full backups (D1 database + R2 media), rewind with undo, restore to a new database, missing-media restore |
 | **Redirects** | Redirect manager for what EmDash's built-in Redirects can't handle: external destinations and file paths |
 | **Headings & TOC** | Linkable headings (`#jump-…` anchors) and a Table of Contents block |
