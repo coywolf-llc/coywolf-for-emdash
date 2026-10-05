@@ -24,6 +24,18 @@ export const IMAGE_PATH = "/media/";
 const MEDIA_FILE = /^(?:https?:\/\/[^/]+)?\/_emdash\/api\/media\/file\/([A-Za-z0-9_-]+)\.([a-z0-9]{2,5})(?:[?#].*)?$/i;
 const CLEAN = /^\/media\/([A-Za-z0-9_-]+)-(?:(\d{1,4})x(\d{1,4})|(\d{1,4})w)\.(webp|avif|jpe?g|png)$/i;
 export const MAX_DIMENSION = 2560;
+/**
+ * Worker-route sizes are multiples of this many pixels, so anyone requesting
+ * /media/ URLs can't make the Worker run (and bill) a new transform for every
+ * pixel. 10 keeps the sizes themes ask for (50, 100, 400, 640, 800, 1200x630)
+ * exact; anything else rounds up.
+ */
+export const SIZE_STEP = 10;
+
+/** Round a size up to the Worker route's grid (at most MAX_DIMENSION). */
+export function snapDimension(n: number): number {
+	return Math.min(MAX_DIMENSION, Math.ceil(n / SIZE_STEP) * SIZE_STEP);
+}
 export const FORMATS: Record<string, string> = { webp: "image/webp", avif: "image/avif", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png" };
 
 /** MIME types of original files by extension (for og:image:type on media-host URLs). */
@@ -118,7 +130,24 @@ export function cleanImagePath(src: string | null | undefined, options: { width:
 	}
 	const format = (options.format ?? "webp").toLowerCase();
 	if (!FORMATS[format]) return null;
-	return `${IMAGE_PATH}${file.id}-${height === undefined ? `${width}w` : `${width}x${height}`}.${format}`;
+	return imagePath({ id: file.id, width: snapDimension(width), height: height === undefined ? undefined : snapDimension(height), format });
+}
+
+/** The Worker-route path of a request, as given (no snapping). */
+function imagePath(request: ImageRequest): string {
+	return `${IMAGE_PATH}${request.id}-${request.height === undefined ? `${request.width}w` : `${request.width}x${request.height}`}.${request.format}`;
+}
+
+/**
+ * The on-grid path for a Worker-route request whose size is off the grid
+ * (see SIZE_STEP), or null when it's already on it. The middleware answers
+ * off-grid requests with a redirect there instead of resizing.
+ */
+export function snappedImagePath(request: ImageRequest): string | null {
+	const width = snapDimension(request.width);
+	const height = request.height === undefined ? undefined : snapDimension(request.height);
+	if (width === request.width && height === request.height) return null;
+	return imagePath({ ...request, width, height });
 }
 
 /** Parse a clean URL path; null when it isn't one (or the size is out of range). */

@@ -4,6 +4,8 @@ import { PLUGIN_ID, registerFeatures } from "../core/features.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { BLOCK_TYPE } from "./lib.js";
 import { F, type VideosOptions, videosModule } from "./module.js";
+// Registers the copied-posters setting before the first settings read (see poster.ts).
+import "./poster.js";
 import { STORAGE } from "./store.js";
 
 export type { VideosOptions } from "./module.js";

@@ -104,3 +104,25 @@ export function applyPageLifetime(cache: RouteCache | undefined, maxAgeDays: num
 	cache.set({ maxAge: Math.round(maxAgeDays * 86400), swr: Math.round(refreshDays * 86400) });
 	return true;
 }
+
+/** Lifetime of a page rendered with a stopgap (a Stream poster while its media-host copy is made). */
+export const STOPGAP_LIFETIME = { maxAge: 300, swr: 60 } as const;
+
+/**
+ * Give a cacheable HTML page a short lifetime when `stopgap()` says its render
+ * used temporary content. Astro streams pages: components deeper in the page
+ * (a video's poster) render after `next()` returns, but the cache headers are
+ * applied when the middleware returns the response. So the body is read in full
+ * first, then `stopgap()` is asked, then the lifetime is set; Astro applies it
+ * (handleCache) once the middleware chain has returned. Only cached HTML pages
+ * are read this way; anything else is returned untouched.
+ */
+export async function shortenStopgapPage(cache: RouteCache | undefined, response: Response, stopgap: () => boolean): Promise<Response> {
+	const maxAge = cache?.options?.maxAge;
+	if (!cache?.enabled || maxAge === undefined || maxAge <= 0) return response;
+	if (response.status !== 200 || !response.body || !(response.headers.get("content-type") ?? "").startsWith("text/html")) return response;
+	const body = await response.arrayBuffer();
+	// A component may have turned caching off while rendering: leave that alone.
+	if (stopgap() && cache.enabled && cache.options?.maxAge !== undefined) cache.set({ maxAge: Math.min(maxAge, STOPGAP_LIFETIME.maxAge), swr: STOPGAP_LIFETIME.swr });
+	return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+}

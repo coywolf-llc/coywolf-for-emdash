@@ -74,9 +74,9 @@ async function post<T>(path: string, body: unknown, fallback: string): Promise<T
 
 function StatusIcon({ ok }: { ok: boolean }) {
 	return ok ? (
-		<CheckCircle size={18} weight="fill" style={{ color: "var(--color-kumo-success, #16a34a)", flexShrink: 0 }} aria-label="Passed" />
+		<CheckCircle size={18} weight="fill" style={{ color: "var(--color-kumo-success, #16a34a)", flexShrink: 0 }} role="img" aria-label="Passed" />
 	) : (
-		<XCircle size={18} weight="fill" style={{ color: "var(--color-kumo-danger, #dc2626)", flexShrink: 0 }} aria-label="Failed" />
+		<XCircle size={18} weight="fill" style={{ color: "var(--color-kumo-danger, #dc2626)", flexShrink: 0 }} role="img" aria-label="Failed" />
 	);
 }
 

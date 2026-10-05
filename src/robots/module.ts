@@ -11,7 +11,7 @@ import { z } from "zod";
 import { ctxFeatures, requireFeature } from "../core/features.js";
 import { parseInput, workerEnv } from "../shared.js";
 import { type BotOverride, applyOverrides, customSlug, mergeDirectory } from "./bots.js";
-import { BASELINE_DATE, baselineBots } from "./directory.js";
+import { baselineBots, baselineDate } from "./directory.js";
 import { ADDITIONS_NOTES, emdashRobots, importRobots } from "./importer.js";
 import { CONFIG_SETTING, invalidateRobotsCache, readEmdashCustomRobots } from "./middleware.js";
 import { RADAR_TOKEN_SETTING, SYNC_STATE_KEY, type SyncState, radarTokenSource, readOverlays, syncRadar } from "./radar.js";
@@ -232,7 +232,7 @@ export function robotsModule(options: RobotsOptions) {
 				const loaded = await loadOrImport(ctx, database);
 				// Rules made from a crawler preset follow the preset's current members.
 				const [overlays, overrides] = await Promise.all([readOverlays(ctx), readBotOverrides(ctx)]);
-				const refreshed = refreshGroups(loaded, applyOverrides(mergeDirectory(baselineBots(), overlays), overrides));
+				const refreshed = refreshGroups(loaded, applyOverrides(mergeDirectory(await baselineBots(), overlays), overrides));
 				let groupChanges: GroupChange[] = [];
 				if (JSON.stringify(refreshed.config.rules) !== JSON.stringify(loaded.rules)) {
 					await ctx.settings.set(CONFIG_SETTING, refreshed.config);
@@ -269,7 +269,7 @@ export function robotsModule(options: RobotsOptions) {
 						tokenSource,
 						tokenConfigured: Boolean(tokenSource),
 						state: await ctx.kv.get<SyncState>(SYNC_STATE_KEY),
-						baselineDate: BASELINE_DATE,
+						baselineDate: await baselineDate(),
 					},
 				};
 			},
@@ -292,7 +292,7 @@ export function robotsModule(options: RobotsOptions) {
 			handler: async (ctx: PluginContext) => {
 				await requireFeature(ctx, "robots");
 				const [overlays, overrides] = await Promise.all([readOverlays(ctx), readBotOverrides(ctx)]);
-				return { bots: applyOverrides(mergeDirectory(baselineBots(), overlays), overrides) };
+				return { bots: applyOverrides(mergeDirectory(await baselineBots(), overlays), overrides) };
 			},
 		},
 
@@ -368,7 +368,7 @@ export function robotsModule(options: RobotsOptions) {
 						const existing = ((await collection.get(slug)) as BotOverride | null) ?? null;
 						if (!input.slug && existing) throw PluginRouteError.badRequest(`You already added a bot with the token ${input.token}.`);
 						if (input.slug && !existing?.custom) throw PluginRouteError.badRequest("Only bots you added can be edited this way.");
-						const directory = mergeDirectory(baselineBots(), await readOverlays(ctx));
+						const directory = mergeDirectory(await baselineBots(), await readOverlays(ctx));
 						const clash = directory.find((b) => b.token.toLowerCase() === input.token.toLowerCase());
 						if (clash && !input.slug) throw PluginRouteError.badRequest(`${input.token} is already in the directory as ${clash.name}.`);
 						await collection.put(slug, {
@@ -398,7 +398,7 @@ export function robotsModule(options: RobotsOptions) {
 				}
 				ctx.log.info("Robots: crawler directory changed", { action: input.action, slug: input.slug ?? "" });
 				const [overlays, overrides] = await Promise.all([readOverlays(ctx), readBotOverrides(ctx)]);
-				return { bots: applyOverrides(mergeDirectory(baselineBots(), overlays), overrides) };
+				return { bots: applyOverrides(mergeDirectory(await baselineBots(), overlays), overrides) };
 			},
 		}),
 

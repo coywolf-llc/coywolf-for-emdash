@@ -48,6 +48,32 @@ test("TOC: escapes heading text, ids and title", () => {
 	assert.match(html, /&lt;b&gt;&amp;&lt;\/b&gt;/);
 });
 
+test("TOC: the title's heading level follows titleTag (h2 by default, only h2–h6)", () => {
+	assert.match(toc({ titleTag: "h3" }), /<h3 id="t" class="cw-toc__title">Table of contents<\/h3>/);
+	assert.match(toc({ titleTag: "p" }), /<h2 id="t" class="cw-toc__title">/);
+	assert.match(toc({ titleTag: "h3", display: "collapsible" }), /<summary class="cw-toc__summary"><span id="t"/);
+});
+
+test("TOC titleTag: the block's field offers exactly the levels the renderer accepts; anything else is h2", async () => {
+	const { TOC_TITLE_TAGS, tocTitleTag } = await import("../src/headings/render.ts");
+	for (const tag of TOC_TITLE_TAGS) {
+		assert.equal(tocTitleTag(tag), tag);
+		assert.match(toc({ titleTag: tag }), new RegExp(`<${tag} id="t" class="cw-toc__title">Table of contents</${tag}>`));
+	}
+	for (const bad of [undefined, null, "", "h1", "H3", "p", "div", 3, { tag: "h3" }]) assert.equal(tocTitleTag(bad), "h2", String(bad));
+	// A stored value outside the list (an old or hand-edited block) renders as h2, never as that tag.
+	assert.doesNotMatch(toc({ titleTag: "h1" }), /<h1/);
+	assert.doesNotMatch(toc({ titleTag: "script" }), /<script/);
+	// Hidden titles print no heading at any level.
+	assert.doesNotMatch(toc({ titleTag: "h4", showTitle: false }), /<h4/);
+
+	const { headingsPack } = await import("../src/headings/pack.ts");
+	const block = headingsPack({}).portableTextBlocks.find((b) => b.type === "coywolf-toc");
+	const field = block.fields.find((f) => f.action_id === "titleTag");
+	assert.deepEqual(field.options.map((o) => o.value), [...TOC_TITLE_TAGS]);
+	assert.equal(field.initial_value, "h2");
+});
+
 test("File card: scheme, accent, meta and toggles", () => {
 	const html = renderFileCardHtml(SAMPLE_FILE, { scheme: "dark", accent: "#b22d47" });
 	assert.match(html, /^<div class="cw-file cw-file--dark" style="--cw-file-accent:#b22d47">/);

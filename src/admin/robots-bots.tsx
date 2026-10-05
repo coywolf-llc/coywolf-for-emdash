@@ -40,6 +40,8 @@ export function BotPicker(props: { bots: BotEntry[]; selected: string[]; onChang
 	const categories = [...new Set(all.map((b) => b.category))].sort((a, b) => catName(a).localeCompare(catName(b)));
 	const byToken = tokenIndex(props.bots);
 	const customOk = custom.trim() && isValidToken(custom.trim()) && custom.trim() !== "*";
+	const customBad = Boolean(custom.trim()) && !customOk;
+	const customErrorId = `${React.useId()}-custom-error`;
 
 	return (
 		<div className="space-y-3">
@@ -127,6 +129,8 @@ export function BotPicker(props: { bots: BotEntry[]; selected: string[]; onChang
 						label="A crawler that isn't listed (its robots.txt token)"
 						placeholder="ExampleBot"
 						value={custom}
+						aria-invalid={customBad || undefined}
+						aria-describedby={customBad ? customErrorId : undefined}
 						onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCustom(e.target.value)}
 						onKeyDown={(e: React.KeyboardEvent) => {
 							if (e.key === "Enter" && customOk) {
@@ -151,7 +155,11 @@ export function BotPicker(props: { bots: BotEntry[]; selected: string[]; onChang
 					Add bot
 				</Button>
 			</div>
-			{custom.trim() && !customOk && <p className="text-sm text-kumo-danger">Tokens use letters, digits, dot, dash and underscore, with no spaces.</p>}
+			{customBad && (
+				<p id={customErrorId} className="text-sm text-kumo-danger">
+					Tokens use letters, digits, dot, dash and underscore, with no spaces.
+				</p>
+			)}
 		</div>
 	);
 }
@@ -311,7 +319,7 @@ export function BotsTab(props: {
 										<div className="text-xs text-kumo-subtle">{bot.purpose ? PURPOSE_LABELS[bot.purpose] : "Purpose not documented"}</div>
 									</td>
 									<td className="px-3 py-2">
-										<StatusBadge bot={bot} />
+										<StatusBadge bot={bot} evidence={false} />
 										<div className="text-xs text-kumo-subtle">
 											{EVIDENCE_LABELS[bot.evidence] ?? ""}
 											{bot.verifiedAt ? ` · ${dateFormat.format(new Date(bot.verifiedAt.length === 10 ? `${bot.verifiedAt}T12:00:00Z` : bot.verifiedAt))}` : ""}

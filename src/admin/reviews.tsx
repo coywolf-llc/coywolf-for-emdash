@@ -153,6 +153,7 @@ export function ReviewsPage() {
 										label="Accent color (rating badge)"
 										value={style.accent}
 										aria-invalid={!accentValid}
+										aria-describedby={accentValid ? undefined : "cw-reviews-accent-error"}
 										onChange={(e: React.ChangeEvent<HTMLInputElement>) => setStyle((cur) => ({ ...cur, accent: e.target.value.trim() }))}
 									/>
 								</div>
@@ -166,7 +167,7 @@ export function ReviewsPage() {
 								</Button>
 							</div>
 							{!accentValid && (
-								<p className="text-sm text-kumo-danger" role="alert">
+								<p id="cw-reviews-accent-error" className="text-sm text-kumo-danger" role="alert">
 									Use a hex color like {DEFAULT_ACCENT}.
 								</p>
 							)}
@@ -181,9 +182,11 @@ export function ReviewsPage() {
 								placeholder={EXAMPLE_CSS}
 								spellCheck={false}
 								className="font-mono text-xs"
+								aria-invalid={tooLong || undefined}
+								aria-describedby="cw-reviews-css-limit"
 								onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setStyle((cur) => ({ ...cur, css: e.target.value }))}
 							/>
-							<p className={`text-xs ${tooLong ? "text-kumo-danger" : "text-kumo-subtle"}`}>
+							<p id="cw-reviews-css-limit" className={`text-xs ${tooLong ? "text-kumo-danger" : "text-kumo-subtle"}`}>
 								{style.css.length.toLocaleString()} / {MAX_CUSTOM_CSS.toLocaleString()} characters. Added after the built-in styles on pages
 								with a review. Start rules with <code>.cw-review</code> and set the <code>--cw-review-*</code> properties (see the README) to
 								change colors and layout.

@@ -15,6 +15,10 @@
  * theme: <CoywolfVideo node={{ uid, preset: "gif" }} />. Also accepts the
  * WordPress cloudflare-stream marker attributes (id, host, aspect, name,
  * description, seconds), which default to the GIF preset.
+ *
+ * Moving pictures can always be stopped (WCAG 2.2.2): autoplaying videos
+ * without controls (the GIF preset) get a pause/play button, and visitors who
+ * ask for reduced motion get the poster and a play button instead of autoplay.
  */
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 
@@ -89,7 +93,7 @@ const description = str(node?.caption) ?? str(node?.description) ?? video?.descr
 const block = { posterTime: num(node?.posterTime), posterImage: str(node?.posterImage) };
 const posterFallback = { posterTime: video?.posterTime ?? (node?.host ? 1 : undefined), posterImage: video?.posterImage ?? undefined };
 // From the media host when there is one (copied from Stream once), else Stream's thumbnails.
-const hostedPoster = uid ? await hostedPosterImage(host, uid, block, posterFallback, Astro.url.origin) : null;
+const hostedPoster = uid ? await hostedPosterImage(host, uid, block, posterFallback, Astro.url.origin, Astro.locals as Record<string, unknown>) : null;
 const poster = hostedPoster?.full;
 const playerExtra = { startTime: num(node?.startTime), poster, accent: data?.accent ?? undefined, background: data?.background ?? undefined };
 const src = uid ? playerSrc(host, uid, cfg, playerExtra) : "";
@@ -110,6 +114,8 @@ const dateText = created && !Number.isNaN(created.getTime()) ? new Intl.DateTime
 const length = clockDuration(video?.duration ?? num(node?.seconds));
 const caption = (cfg.showName && name !== "Video") || (cfg.showDescription && description);
 const track = data?.engagement && !cfg.autoplay;
+// Autoplaying without controls: our own pause/play button is the only way to stop it.
+const pausable = cfg.autoplay && !cfg.controls;
 const fallbackHref = /^https?:\/\//i.test(str(node?.url) ?? "") ? str(node?.url) : undefined;
 const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px` : "", data?.background ? `--cw-video-bg:${data.background}` : ""]
 	.filter(Boolean)
@@ -117,13 +123,20 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 ---
 
 {on && uid ? (
-	<figure class:list={["cw-video", cfg.gif && "cw-video--gif"]} style={style} data-cw-video={uid} data-cw-track={track ? "" : undefined}>
+	<figure class:list={["cw-video", cfg.gif && "cw-video--gif"]} style={style} data-cw-video={uid} data-cw-track={track ? "" : undefined} data-cw-autoplay={cfg.autoplay ? "" : undefined}>
 		{light && posterImg ? (
 			<div class="cw-video__frame" data-cw-player={playSrc} data-cw-title={name} data-cw-auto={cfg.autoplay ? "" : undefined}>
 				<img class="cw-video__poster" src={posterImg.src} srcset={posterImg.srcset} sizes="(min-width: 50rem) 768px, 100vw" alt="" loading={priority ? "eager" : "lazy"} fetchpriority={priority ? "high" : undefined} decoding="async" />
-				{!cfg.autoplay && (
-					<button type="button" class="cw-video__play" data-cw-play aria-label={`Play video: ${name}`}>
+				{/* Autoplaying videos with controls keep this hidden unless the visitor prefers reduced motion. */}
+				{!pausable && (
+					<button type="button" class="cw-video__play" data-cw-play aria-label={`Play video: ${name}`} hidden={cfg.autoplay}>
 						<svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>
+					</button>
+				)}
+				{pausable && (
+					<button type="button" class="cw-video__toggle" data-cw-toggle data-cw-name={name} aria-label={`Pause video: ${name}`}>
+						<svg class="cw-video__pause" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M6 5h4v14H6zm8 0h4v14h-4z" fill="currentColor" /></svg>
+						<svg class="cw-video__resume" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>
 					</button>
 				)}
 				<noscript>
@@ -139,6 +152,12 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 					allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture;"
 					allowfullscreen
 				></iframe>
+				{pausable && (
+					<button type="button" class="cw-video__toggle" data-cw-toggle data-cw-name={name} aria-label={`Pause video: ${name}`}>
+						<svg class="cw-video__pause" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M6 5h4v14H6zm8 0h4v14h-4z" fill="currentColor" /></svg>
+						<svg class="cw-video__resume" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>
+					</button>
+				)}
 			</div>
 		)}
 		{caption && (
@@ -233,6 +252,38 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 		outline: 3px solid #fff;
 		outline-offset: 2px;
 	}
+	.cw-video__play[hidden] {
+		display: none;
+	}
+	/* Pause/play for autoplaying videos without controls: 44 px, above the player. */
+	.cw-video__toggle {
+		position: absolute;
+		inset: auto auto 0.5rem 0.5rem;
+		z-index: 1;
+		display: grid;
+		place-items: center;
+		width: 2.75rem;
+		height: 2.75rem;
+		padding: 0;
+		border: 0;
+		border-radius: 50%;
+		background: rgb(0 0 0 / 0.65);
+		color: #fff;
+		cursor: pointer;
+		transition: background 0.15s;
+	}
+	.cw-video__toggle:hover {
+		background: var(--cw-video-accent);
+	}
+	.cw-video__toggle:focus-visible {
+		outline: 3px solid #fff;
+		outline-offset: 2px;
+		box-shadow: 0 0 0 5px #000;
+	}
+	.cw-video__toggle[data-paused] .cw-video__pause,
+	.cw-video__toggle:not([data-paused]) .cw-video__resume {
+		display: none;
+	}
 	.cw-video--gif .cw-video__frame {
 		border-radius: 0;
 	}
@@ -290,12 +341,16 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 </style>
 
 <script>
-	// Light embed (poster first, player on demand), plays (once per session,
-	// after 2 seconds of playback) and likes. Stream's player SDK is loaded only
-	// to count plays, and only once a player exists.
+	// Light embed (poster first, player on demand), pause/play for autoplaying
+	// videos without controls, plays (once per session, after 2 seconds of
+	// playback) and likes. Stream's player SDK is loaded only to count plays or
+	// to pause and play, and only once a player exists.
+	import { playerControl } from "../../videos/pause.js";
+
 	const API = "/_emdash/api/plugins/coywolf-pack/videos/";
-	const post = (path: string, uid: string) =>
-		fetch(API + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ uid }) })
+	// X-Coywolf-Video: likes are refused without it, so other sites can't send them.
+	const post = (path: string, body: { uid: string; liked?: boolean }) =>
+		fetch(API + path, { method: "POST", headers: { "Content-Type": "application/json", "X-Coywolf-Video": "1" }, body: JSON.stringify(body) })
 			.then((r) => (r.ok ? (r.json() as Promise<{ data?: { plays?: number; likes?: number; liked?: boolean } }>) : null))
 			.then((r) => r?.data ?? null)
 			.catch(() => null);
@@ -305,7 +360,7 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 		like: (k: string, on: boolean) => { try { on ? localStorage.setItem(k, "1") : localStorage.removeItem(k); } catch { /* private mode */ } },
 	};
 
-	type StreamPlayer = { addEventListener(e: string, f: () => void): void; currentTime: number };
+	type StreamPlayer = { addEventListener(e: string, f: () => void): void; currentTime: number; play(): unknown; pause(): unknown };
 	let sdk: Promise<((el: HTMLIFrameElement) => StreamPlayer) | null> | null = null;
 	const loadSdk = () =>
 		(sdk ??= new Promise((resolve) => {
@@ -316,20 +371,39 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 			s.onerror = () => resolve(null);
 			document.head.appendChild(s);
 		}));
+	const players = new WeakMap<HTMLIFrameElement, Promise<StreamPlayer | null>>();
+	const playerFor = (frame: HTMLIFrameElement) => {
+		let player = players.get(frame);
+		if (!player) {
+			player = loadSdk().then((Stream) => (Stream ? Stream(frame) : null));
+			players.set(frame, player);
+		}
+		return player;
+	};
+	/** Pause/play that holds to the visitor's choice until the player is ready (see videos/pause.ts). */
+	const controls = new WeakMap<HTMLIFrameElement, (playing: boolean) => void>();
+	const controlFor = (frame: HTMLIFrameElement) => {
+		let control = controls.get(frame);
+		if (!control) {
+			control = playerControl(playerFor(frame));
+			controls.set(frame, control);
+		}
+		return control;
+	};
+	const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 	/** Count a play (once per session) after 2 seconds of playback in this figure's player. */
 	const track = (fig: HTMLElement, frame: HTMLIFrameElement) => {
 		const uid = fig.dataset.cwVideo as string;
 		if (!fig.hasAttribute("data-cw-track") || store.get(`cw-video-play-${uid}`)) return;
-		void loadSdk().then((Stream) => {
-			if (!Stream) return;
-			const player = Stream(frame);
+		void playerFor(frame).then((player) => {
+			if (!player) return;
 			let done = false;
 			player.addEventListener("timeupdate", () => {
 				if (done || player.currentTime < 2) return;
 				done = true;
 				store.session(`cw-video-play-${uid}`);
-				void post("play", uid).then((r) => {
+				void post("play", { uid }).then((r) => {
 					const el = fig.querySelector<HTMLElement>("[data-cw-plays]");
 					if (el && r && typeof r.plays === "number" && r.plays > 0) el.textContent = `${r.plays.toLocaleString("en-US")} ${r.plays === 1 ? "view" : "views"}`;
 				});
@@ -358,22 +432,90 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 		frameEl.querySelector<HTMLButtonElement>("[data-cw-play]")?.addEventListener("click", () => load(frameEl, true));
 	});
 
+	// Reduced motion: no autoplay. Light embeds keep their poster (data-cw-held) with a play
+	// button; players rendered with the page lose their autoplay parameter.
+	if (reduceMotion) {
+		document.querySelectorAll<HTMLElement>("[data-cw-player][data-cw-auto]").forEach((frameEl) => {
+			frameEl.setAttribute("data-cw-held", "");
+			const play = frameEl.querySelector<HTMLButtonElement>("[data-cw-play]");
+			if (play) play.hidden = false;
+		});
+		document.querySelectorAll<HTMLIFrameElement>("[data-cw-autoplay] .cw-video__frame:not([data-cw-player]) iframe").forEach((frame) => {
+			try {
+				const url = new URL(frame.src);
+				if (!url.searchParams.has("autoplay")) return;
+				url.searchParams.delete("autoplay");
+				frame.src = url.href;
+			} catch {
+				// Leave it as it is.
+			}
+		});
+	}
+
+	// Pause/play for autoplaying videos without controls. Before a light embed's player has
+	// loaded, pausing keeps the poster (the video doesn't autoplay) and playing loads it.
+	document.querySelectorAll<HTMLButtonElement>("[data-cw-toggle]").forEach((btn) => {
+		const frameEl = btn.closest<HTMLElement>(".cw-video__frame");
+		if (!frameEl) return;
+		const name = btn.dataset.cwName ?? "";
+		let playing = !reduceMotion;
+		const show = () => {
+			btn.setAttribute("aria-label", `${playing ? "Pause" : "Play"} video: ${name}`);
+			btn.toggleAttribute("data-paused", !playing);
+		};
+		if (!playing) frameEl.setAttribute("data-cw-held", "");
+		show();
+		btn.addEventListener("click", () => {
+			playing = !playing;
+			show();
+			const want = playing;
+			const frame = frameEl.querySelector<HTMLIFrameElement>("iframe");
+			if (frame) {
+				// Applied once the SDK and player are ready, and again if autoplay starts after a pause.
+				controlFor(frame)(want);
+			} else if (want) {
+				frameEl.removeAttribute("data-cw-held");
+				load(frameEl, false);
+			} else {
+				frameEl.setAttribute("data-cw-held", "");
+			}
+		});
+	});
+
 	// Autoplaying videos: on the visitor's first interaction (scroll, touch, pointer or
 	// key), once the video is (nearly) on screen. Loading on idle instead still ran
 	// Stream's player (about 1.5 s of script on a mid-range phone) inside the page's
 	// load window, which PageSpeed counts as blocking time.
 	const autos = document.querySelectorAll<HTMLElement>("[data-cw-player][data-cw-auto]");
-	if (autos.length) {
+	if (autos.length && !reduceMotion) {
 		let interacted = false;
+		// A first interaction on a video's pause/play button: that video waits for the button's
+		// click (which, from the start, pauses it and keeps the poster) instead of autoplaying.
+		let pressing: HTMLElement | null = null;
 		const visible = new Set<HTMLElement>();
 		const flush = () => {
 			if (!interacted) return;
-			visible.forEach((el) => load(el, false));
-			visible.clear();
+			visible.forEach((el) => {
+				if (el === pressing && !el.hasAttribute("data-cw-held")) return;
+				visible.delete(el);
+				// Paused before its player loaded (data-cw-held): keep the poster.
+				if (!el.hasAttribute("data-cw-held")) load(el, false);
+			});
 		};
 		const events = ["scroll", "pointermove", "pointerdown", "touchstart", "keydown", "wheel"] as const;
-		const onFirst = () => {
+		const onFirst = (event: Event) => {
 			interacted = true;
+			const toggle = event.target instanceof Element ? event.target.closest("[data-cw-toggle]") : null;
+			pressing = toggle?.closest<HTMLElement>("[data-cw-player][data-cw-auto]") ?? null;
+			if (pressing) {
+				// The click decides; if it never comes (pointer dragged away), load it as usual.
+				const settle = () => {
+					pressing = null;
+					flush();
+				};
+				addEventListener("click", () => setTimeout(settle), { once: true, capture: true });
+				setTimeout(settle, 1000);
+			}
 			events.forEach((e) => removeEventListener(e, onFirst));
 			flush();
 		};
@@ -418,7 +560,8 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 			busy = true;
 			const next = btn.getAttribute("aria-pressed") !== "true";
 			btn.setAttribute("aria-pressed", String(next));
-			void post("like", uid).then((r) => {
+			// The wanted state, not a toggle: visitors sharing an address share a like.
+			void post("like", { uid, liked: next }).then((r) => {
 				busy = false;
 				if (!r) return;
 				btn.setAttribute("aria-pressed", String(Boolean(r.liked)));

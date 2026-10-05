@@ -7,9 +7,20 @@
 import type { TocDisplay, TocListStyle } from "./settings.js";
 import type { TocNode } from "./toc.js";
 
+/** Heading levels the TOC title can use when it's shown as a heading (always open). */
+export const TOC_TITLE_TAGS = ["h2", "h3", "h4", "h5", "h6"] as const;
+export type TocTitleTag = (typeof TOC_TITLE_TAGS)[number];
+
+/** A block's titleTag, or h2. */
+export function tocTitleTag(value: unknown): TocTitleTag {
+	return TOC_TITLE_TAGS.includes(value as TocTitleTag) ? (value as TocTitleTag) : "h2";
+}
+
 export interface TocRenderOptions {
 	title: string;
 	showTitle: boolean;
+	/** Heading level of a shown title in an always-open TOC (default h2), so it fits the page's outline. */
+	titleTag?: TocTitleTag;
 	listStyle: TocListStyle;
 	display: TocDisplay;
 	smooth: boolean;
@@ -37,6 +48,7 @@ export function renderTocHtml(tree: readonly TocNode[], o: TocRenderOptions): st
 	const title = escapeHtml(o.title);
 	const list = listHtml(tree, o.listStyle === "numbered", true);
 	const labelled = o.display !== "open" || o.showTitle;
+	const tag = tocTitleTag(o.titleTag);
 	const attrs = [
 		`class="cw-toc cw-toc--${o.listStyle}"`,
 		labelled ? `aria-labelledby="${id}"` : `aria-label="${title}"`,
@@ -46,7 +58,7 @@ export function renderTocHtml(tree: readonly TocNode[], o: TocRenderOptions): st
 		.join(" ");
 	const body =
 		o.display === "open"
-			? `${o.showTitle ? `<h2 id="${id}" class="cw-toc__title">${title}</h2>` : ""}${list}`
+			? `${o.showTitle ? `<${tag} id="${id}" class="cw-toc__title">${title}</${tag}>` : ""}${list}`
 			: `<details class="cw-toc__details"${o.display === "collapsible" ? " open" : ""}><summary class="cw-toc__summary"><span id="${id}" class="cw-toc__title">${title}</span></summary>${list}</details>`;
 	return `<nav ${attrs}>${body}</nav>`;
 }

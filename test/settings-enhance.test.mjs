@@ -20,6 +20,7 @@ test("the script parses and can't close its <script> element", () => {
 	const script = settingsEnhanceScript();
 	assert.doesNotMatch(script, /<\/script/i);
 	assert.doesNotThrow(() => new vm.Script(script));
+	assert.equal(settingsEnhanceScript(), script, "built once per isolate");
 });
 
 test("injects into admin HTML only, keeps status, headers and Astro cookies", async () => {

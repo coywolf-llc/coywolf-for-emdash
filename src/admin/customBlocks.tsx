@@ -194,6 +194,8 @@ export function CustomBlocksPage() {
 								rows={3}
 								value={draft.affiliateText}
 								placeholder={DEFAULT_DISCLOSURE.affiliateText}
+								aria-invalid={draft.affiliateText.length > MAX_DISCLOSURE_TEXT || undefined}
+								aria-describedby="cw-cb-disclosure-limit"
 								onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => set({ affiliateText: e.target.value })}
 							/>
 							<InputArea
@@ -201,9 +203,11 @@ export function CustomBlocksPage() {
 								rows={2}
 								value={draft.amazonText}
 								placeholder={DEFAULT_DISCLOSURE.amazonText}
+								aria-invalid={draft.amazonText.length > MAX_DISCLOSURE_TEXT || undefined}
+								aria-describedby="cw-cb-disclosure-limit"
 								onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => set({ amazonText: e.target.value })}
 							/>
-							<p className={`text-xs ${tooLong ? "text-kumo-danger" : "text-kumo-subtle"}`}>
+							<p id="cw-cb-disclosure-limit" className={`text-xs ${tooLong ? "text-kumo-danger" : "text-kumo-subtle"}`}>
 								Up to {MAX_DISCLOSURE_TEXT.toLocaleString()} characters each. Amazon requires the words “As an Amazon Associate I earn from qualifying
 								purchases.” Empty fields use the wording shown in gray.
 							</p>
@@ -212,10 +216,11 @@ export function CustomBlocksPage() {
 								value={draft.linkUrl}
 								placeholder="/disclosures/"
 								aria-invalid={!linkValid}
+								aria-describedby={linkValid ? undefined : "cw-cb-link-error"}
 								onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ linkUrl: e.target.value })}
 							/>
 							{!linkValid && (
-								<p className="text-sm text-kumo-danger" role="alert">
+								<p id="cw-cb-link-error" className="text-sm text-kumo-danger" role="alert">
 									Use a link like https://example.com/disclosures/ or /disclosures/.
 								</p>
 							)}
@@ -261,10 +266,11 @@ export function CustomBlocksPage() {
 										value={podcast.links[id]}
 										placeholder={id === "rss" ? "https://example.com/podcast.xml" : "https://…"}
 										aria-invalid={badPodcastLinks.includes(id)}
+										aria-describedby={badPodcastLinks.includes(id) ? `cw-cb-podcast-${id}-error` : undefined}
 										onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLink(id, e.target.value)}
 									/>
 									{badPodcastLinks.includes(id) && (
-										<p className="mt-1 text-sm text-kumo-danger" role="alert">
+										<p id={`cw-cb-podcast-${id}-error`} className="mt-1 text-sm text-kumo-danger" role="alert">
 											Use a web address like https://example.com/…{id === "rss" ? " or /podcast.xml" : ""}.
 										</p>
 									)}

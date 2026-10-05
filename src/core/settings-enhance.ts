@@ -27,8 +27,21 @@ export function settingsGuideHtml(): Record<string, string> {
 	return out;
 }
 
-/** The inline script. JSON is escaped so it can't close the <script> element. */
+/** Built once per isolate: its content only changes with a deploy. */
+let enhanceScript: string | null = null;
+
+/**
+ * The inline script. JSON is escaped so it can't close the <script> element.
+ * It goes on every admin page, not just the Settings page: the admin is a
+ * single-page app, so a visit that starts elsewhere reaches Settings without
+ * a page load (the script checks the path itself).
+ */
 export function settingsEnhanceScript(): string {
+	enhanceScript ??= buildEnhanceScript();
+	return enhanceScript;
+}
+
+function buildEnhanceScript(): string {
 	const data = JSON.stringify(settingsGuideHtml()).replace(/</g, "\\u003c").replace(/[\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16)}`);
 	return `(function(){var D=${data};var P=${PAGE.toString()};var q=0;
 function run(){q=0;if(!P.test(location.pathname))return;var f=document.getElementById("plugin-settings-form");if(!f)return;

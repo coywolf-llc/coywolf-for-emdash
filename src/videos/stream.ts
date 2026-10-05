@@ -38,11 +38,11 @@ export interface StreamCaption {
 }
 
 export class StreamError extends Error {
-	constructor(
-		message: string,
-		readonly status: number,
-	) {
+	// A plain field, not a parameter property, so `node --test` can load this file (type stripping).
+	readonly status: number;
+	constructor(message: string, status: number) {
 		super(message);
+		this.status = status;
 	}
 }
 

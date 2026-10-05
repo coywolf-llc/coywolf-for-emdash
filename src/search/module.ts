@@ -26,9 +26,8 @@ import { requireCachedFeature, requireFeature } from "../core/features.js";
 import { COLLECTION_SLUG, readCollections } from "../core/content-url.js";
 import { parseInput, workerEnv } from "../shared.js";
 import { liveSearchD1, loadSearchMeta } from "./engine.js";
-import { liveScript } from "./live-client.js";
 import { normalizeCollections, normalizeLiveQuery, normalizeLocale } from "./live-cache.js";
-import { INDEX_ENDPOINT, LIVE_ENDPOINT, bumpSearchVersion, configureSearchLive, searchVersion } from "./live-serve.js";
+import { INDEX_ENDPOINT, LIVE_ENDPOINT, bumpSearchVersion, configureSearchLive, liveScriptFragment, searchVersion } from "./live-serve.js";
 import { searchWithFallback } from "./query.js";
 import { TITLE_INDEX_MAX, buildTitleIndex } from "./title-index.js";
 
@@ -244,13 +243,13 @@ export function searchModule(options: SearchOptions) {
 	const isPublished = (content: Record<string, unknown> | undefined) => !content || content.status === undefined || content.status === "published";
 
 	const hooks = {
-		/** The live results script, on every public page (it attaches only where there's a search form). */
-		"page:fragments": async (event: { page: { locale: string | null } }) => ({
-			kind: "inline-script" as const,
-			placement: "body:end" as const,
-			key: "search-live",
-			code: liveScript({ ...live, indexEndpoint: instant ? INDEX_ENDPOINT : null, version: await searchVersion(database), locale: event.page.locale ?? null }),
-		}),
+		/**
+		 * The live results script, on every public page (it attaches only where there's a search form):
+		 * a deferred, versioned file browsers cache, with this page's config in an attribute, when the
+		 * pack middleware serves that file; otherwise the same client inline (see liveScriptFragment).
+		 */
+		"page:fragments": async (event: { page: { locale: string | null } }) =>
+			liveScriptFragment({ ...live, indexEndpoint: instant ? INDEX_ENDPOINT : null, version: await searchVersion(database), locale: event.page.locale ?? null }),
 		"content:afterSave": (event: { content?: Record<string, unknown> }, ctx: PluginContext) => (isPublished(event.content) ? touch(ctx) : undefined),
 		"content:afterPublish": (_event: unknown, ctx: PluginContext) => touch(ctx),
 		"content:afterUnpublish": (_event: unknown, ctx: PluginContext) => touch(ctx),

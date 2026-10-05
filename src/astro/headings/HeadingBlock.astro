@@ -47,9 +47,16 @@ if (level && level >= 2) {
 		copyScript = copyLink && firstInRequest(Astro.request, "copy-link");
 	}
 }
+// With a copy-link inside the heading, the heading is named by its text alone
+// (aria-labelledby), so headings lists don't read "Copy link to section" in every name.
+const labelId = copyLink ? `cw-hl-${id}` : undefined;
 ---
 
-<Block {...props} id={id} style={style}><slot />{copyLink && (<a class="cw-heading-link" href={`#${id}`}><span class="cw-sr">Copy link to section: {text}</span><span aria-hidden="true">#</span></a>)}</Block>
+{copyLink ? (
+	<Block {...props} id={id} style={style} aria-labelledby={labelId}><span id={labelId}><slot /></span><a class="cw-heading-link" href={`#${id}`}><span class="cw-sr">Copy link to section: {text}</span><span aria-hidden="true">#</span></a></Block>
+) : (
+	<Block {...props} id={id} style={style}><slot /></Block>
+)}
 {copyScript && (
 	<script is:inline>
 		(() => {
@@ -111,7 +118,7 @@ if (level && level >= 2) {
 	}
 	@media (hover: none) {
 		.cw-heading-link {
-			opacity: 0.4;
+			opacity: 0.6;
 		}
 	}
 	@media (prefers-reduced-motion: reduce) {

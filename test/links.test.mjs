@@ -350,6 +350,51 @@ test("address guard covers trailing-dot localhost, NAT64 and benchmark ranges", 
 	assert.equal(isPublicTarget(new URL("http://198.20.0.1/")), true);
 });
 
+test("address guard covers IPv6 private forms, encoded IPv4 and local names", () => {
+	const refused = [
+		// IPv4 written as one number, in octal or hex, or shortened (the URL parser turns these into dotted form).
+		"http://2130706433/",
+		"http://017700000001/",
+		"http://0x7f000001/",
+		"http://0x7f.0.0.1/",
+		"http://127.1/",
+		"http://0177.0.0.1/",
+		"http://3232235521/",
+		"http://192.0.0.8/",
+		// IPv6 loopback, unspecified, IPv4-compatible/mapped/translated, private, link/site-local, multicast, 6to4, Teredo.
+		"http://[0:0:0:0:0:0:0:1]/",
+		"http://[::]/",
+		"http://[::127.0.0.1]/",
+		"http://[::ffff:10.0.0.1]/",
+		"http://[::ffff:7f00:1]/",
+		"http://[::ffff:0:7f00:1]/",
+		"http://[fd12:3456::1]/",
+		"http://[fc00::1]/",
+		"http://[fe80::1]/",
+		"http://[febf::1]/",
+		"http://[fec0::1]/",
+		"http://[ff02::1]/",
+		"http://[64:ff9b:1::a00:1]/",
+		"http://[100::1]/",
+		"http://[2002:7f00:1::]/",
+		"http://[2001:0:4136:e378::1]/",
+		"http://[2001:db8::1]/",
+		// Local names.
+		"http://ip6-localhost/",
+		"http://app.localdomain/",
+		"http://nas.home.arpa/",
+		"http://router.lan/",
+		"http://metadata.google.internal/",
+		"http://metadata/",
+		"http://LOCALHOST/",
+		"http://sub.localhost./",
+	];
+	for (const u of refused) assert.equal(isPublicTarget(new URL(u)), false, u);
+	for (const u of ["http://[2606:4700:4700::1111]/", "https://[2a00:1450:4001:80b::200e]/", "http://1.1.1.1/", "https://0xford.example/", "https://123.example/"]) {
+		assert.equal(isPublicTarget(new URL(u)), true, u);
+	}
+});
+
 test("regex ignore rules refuse catastrophic patterns", () => {
 	for (const bad of ["(a+)+$", "(a|ab)*c", "(x*){2,}", "(a)\\1", "a".repeat(201)]) assert.throws(() => normalizeIgnore("regex", bad), IgnoreRuleError, bad);
 	assert.equal(normalizeIgnore("regex", "^https://example\\.com/(tag|category)/"), "^https://example\\.com/(tag|category)/");

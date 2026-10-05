@@ -8,8 +8,10 @@
  * visitor types (title-match.ts), while the search/live route's answer
  * (titles first, then full text, with excerpts) merges in without reshuffling.
  *
- * Served inline by the search module's page:fragments hook, so it needs no
- * build step and no asset route. Written as plain ES2020 inside String.raw
+ * Added by the search module's page:fragments hook as a deferred script with
+ * a versioned URL (LIVE_ASSET, served by the pack middleware or the
+ * search/live-client route and cached by browsers for a year), so it needs no
+ * build step and isn't resent with every page. Written as plain ES2020 inside String.raw
  * (no backticks or "${" inside). It attaches to GET forms with a search
  * field (type="search", or a field named "s" or "q"), skipping the pack's
  * own SearchBox, which has its suggestions built in. Progressive
@@ -732,10 +734,34 @@ const COMPACT_SCRIPT = compact(SCRIPT);
 const COMPACT_MATCH = compact(MATCH_SOURCE);
 const COMPACT_CSS = LIVE_CSS.replace(/\n\s*/g, "");
 
+// JSON in a script element: escape "<" so nothing in it can close the tag or open a comment.
+// (U+2028/2029 are legal in JS string literals since ES2019, so JSON needs nothing more.)
+const json = (value: unknown) => JSON.stringify(value).replace(/</g, "\\u003c");
+
 /** The inline script for one page: the client above, called with this config. */
 export function liveScript(config: LiveClientConfig): string {
-	// JSON in a script element: escape "<" so nothing in it can close the tag or open a comment.
-	// (U+2028/2029 are legal in JS string literals since ES2019, so JSON needs nothing more.)
-	const json = (value: unknown) => JSON.stringify(value).replace(/</g, "\\u003c");
 	return `(${COMPACT_SCRIPT})(${json(config)},${json(COMPACT_CSS)},(${COMPACT_MATCH})());`;
+}
+
+/**
+ * The same client as a static file, so browsers download it once and cache
+ * it instead of receiving it inline on every page. It reads the page's config
+ * from its own <script> element's data-cw-live attribute (liveScriptConfig).
+ */
+export const LIVE_ASSET = `(function(){var s=document.currentScript,c=null;try{c=JSON.parse(s&&s.getAttribute("data-cw-live")||"null")}catch(e){}
+if(c)(${COMPACT_SCRIPT})(c,${json(COMPACT_CSS)},(${COMPACT_MATCH})());})();`;
+
+/** A short fingerprint of LIVE_ASSET (FNV-1a), for its immutable URL. Changes whenever the client does. */
+export const LIVE_ASSET_HASH = (() => {
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < LIVE_ASSET.length; i++) {
+		hash ^= LIVE_ASSET.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return (hash >>> 0).toString(36);
+})();
+
+/** The data-cw-live attribute value for the LIVE_ASSET script (the page's renderer escapes it for HTML). */
+export function liveScriptConfig(config: LiveClientConfig): string {
+	return JSON.stringify(config);
 }

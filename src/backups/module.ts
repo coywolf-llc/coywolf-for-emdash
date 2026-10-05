@@ -7,7 +7,7 @@ import { z } from "zod";
 
 import { type CronScheduler, type SettingsReader, parseInput, secret, workerEnv } from "../shared.js";
 import { createDownloadLink } from "./download.js";
-import { dumpDatabase } from "./dump.js";
+import { dumpLines } from "./dump.js";
 import {
 	type RestoreConfig,
 	currentBookmark,
@@ -17,7 +17,7 @@ import {
 	rewind,
 	undoRewind,
 } from "./restore.js";
-import { FILE, type Manifest, STAMP, gzip, listBackups, makeStamp, mirrorBucket, mirrorMedia, pruneBackups, writeDump } from "./store.js";
+import { FILE, type Manifest, STAMP, listBackups, makeStamp, mirrorBucket, mirrorMedia, pruneBackups, writeDumpStream, writeManifest } from "./store.js";
 
 export interface BackupsOptions {
 	/** D1 binding of the site database. Default "DB". */
@@ -109,22 +109,24 @@ export function backupsModule(options: BackupsOptions) {
 		const { db, media, backups, uploads, restore } = await bindings();
 		const stamp = makeStamp();
 		const timeTravelBookmark = restore ? await currentBookmark(restore).catch(() => undefined) : undefined;
-		const dump = await dumpDatabase(db);
-		const body = await gzip(dump.sql);
-		const extra = { database: name, source, timeTravelBookmark, tables: dump.tables, rows: dump.rows };
+		const file = `${name}.sql.gz`;
+		// Streamed: rows are read a page at a time and gzipped straight into the bucket.
+		const counts = { tables: 0, rows: 0 };
+		const written = await writeDumpStream(backups, stamp, file, dumpLines(db, counts));
+		const extra = { database: name, source, timeTravelBookmark, tables: counts.tables, rows: counts.rows };
 		// Save the database first so a media problem can't cost the dump.
-		const manifest = await writeDump(backups, stamp, `${name}.sql.gz`, body, extra);
+		const manifest = await writeManifest(backups, stamp, file, written, extra);
 		let result = manifest;
 		try {
 			const mediaResult = await mirrorMedia(media, backups, stamp);
-			result = await writeDump(backups, stamp, `${name}.sql.gz`, body, { ...extra, media: mediaResult });
+			result = await writeManifest(backups, stamp, file, written, { ...extra, media: mediaResult });
 		} catch (error) {
 			console.error("coywolf backups: media mirror failed; the database backup was saved", error);
 		}
 		if (uploads) {
 			try {
 				const uploadsResult = await mirrorBucket(uploads, backups, stamp, "uploads");
-				result = await writeDump(backups, stamp, `${name}.sql.gz`, body, { ...result, uploads: uploadsResult });
+				result = await writeManifest(backups, stamp, file, written, { ...result, uploads: uploadsResult });
 			} catch (error) {
 				console.error("coywolf backups: form uploads mirror failed; the database backup was saved", error);
 			}

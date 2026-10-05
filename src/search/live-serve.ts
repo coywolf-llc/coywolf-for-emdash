@@ -19,6 +19,7 @@ import { isOn, registerSiteSetting, rememberSiteSetting, siteFeatures, siteSetti
 import type { PackMiddleware } from "../core/module.js";
 import { type QueryStats, countingD1, liveSearchD1, loadSearchMeta } from "./engine.js";
 import { Lru, effectiveVersion, fingerprint, indexCacheKey, liveCacheKey, newContentVersion, normalizeCollections, normalizeLiveQuery, normalizeLocale } from "./live-cache.js";
+import { LIVE_ASSET, LIVE_ASSET_HASH, type LiveClientConfig, liveScript, liveScriptConfig } from "./live-client.js";
 import { rateLimitResponse } from "./ratelimit.js";
 import { TITLE_INDEX_MAX, buildTitleIndex } from "./title-index.js";
 
@@ -191,11 +192,81 @@ async function serveIndex(context: Context, env: Record<string, unknown>, waitUn
 	return jsonResponse(body, 200, { ...headers, "Server-Timing": timing("miss", started, stats), "X-Coywolf-Cache": "MISS" });
 }
 
+/**
+ * The live results client as a file. Only the pack middleware serves it: EmDash's
+ * raw plugin routes can't answer with a JavaScript content type or set
+ * Cache-Control, so sites without the middleware get the script inline instead
+ * (liveScriptFragment).
+ */
+export const ASSET_ENDPOINT = "/_emdash/api/plugins/coywolf-pack/search/live-client";
+
+/**
+ * Per isolate: the pack middleware has run here. It runs before every page
+ * render on a site that installed it, so by the time a page asks for its
+ * fragments this is set when (and only when) the middleware will answer
+ * ASSET_ENDPOINT. A site without it (or a dev setup with a second copy of the
+ * pack) never sets it and keeps the inline script.
+ */
+let middlewareActive = false;
+
+/** Called by the pack middleware on each request it handles (false: tests). */
+export function notePackMiddleware(active = true): void {
+	middlewareActive = active;
+}
+
+/** Whether pages can load the client file, i.e. the pack middleware serves it (see notePackMiddleware). */
+export function packMiddlewareActive(): boolean {
+	return middlewareActive;
+}
+
+/**
+ * The page fragment for live results: the versioned client file when the pack
+ * middleware serves it, else the same client inline (as before the file existed).
+ */
+export function liveScriptFragment(config: LiveClientConfig, external = middlewareActive) {
+	return external
+		? {
+				kind: "external-script" as const,
+				placement: "body:end" as const,
+				key: "search-live",
+				src: liveAssetUrl(),
+				defer: true,
+				attributes: { "data-cw-live": liveScriptConfig(config) },
+			}
+		: { kind: "inline-script" as const, placement: "body:end" as const, key: "search-live", code: liveScript(config) };
+}
+
+/** Where pages load the client from: versioned, so it can be cached for a year. */
+export function liveAssetUrl(): string {
+	return `${ASSET_ENDPOINT}?v=${LIVE_ASSET_HASH}`;
+}
+
+/**
+ * Status, headers and body for the client file. Immutable for a year when the
+ * request names the current version; a few minutes otherwise (an old page's
+ * URL still gets today's client, but nothing pins it).
+ */
+export function liveAssetParts(version: string | null): { status: number; headers: Record<string, string>; body: string } {
+	return {
+		status: 200,
+		headers: {
+			"Content-Type": "text/javascript; charset=utf-8",
+			"X-Content-Type-Options": "nosniff",
+			"Cache-Control": version === LIVE_ASSET_HASH ? "public, max-age=31536000, immutable" : "public, max-age=300",
+		},
+		body: LIVE_ASSET,
+	};
+}
+
 export const searchLiveMiddleware: PackMiddleware = {
 	module: "search",
 	feature: "search.live",
 	handle: async (context, env, waitUntil) => {
 		const path = context.url.pathname.length > 1 ? context.url.pathname.replace(/\/+$/, "") : context.url.pathname;
+		if (path === ASSET_ENDPOINT && (context.request.method === "GET" || context.request.method === "HEAD")) {
+			const asset = liveAssetParts(context.url.searchParams.get("v"));
+			return new Response(context.request.method === "HEAD" ? null : asset.body, { status: asset.status, headers: asset.headers });
+		}
 		if (path !== LIVE_ENDPOINT && path !== INDEX_ENDPOINT) return undefined;
 		if (context.request.method !== "GET") return undefined;
 		const db = env[config.database] as D1Database | undefined;

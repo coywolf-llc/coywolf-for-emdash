@@ -1,0 +1,199 @@
+[
+	{
+		"kind": "jsonld",
+		"id": "primary",
+		"graph": {
+			"@context": "https://schema.org",
+			"@graph": [
+				{
+					"@type": "WebPage",
+					"@id": "https://example.com/my-post/#webpage",
+					"url": "https://example.com/my-post/",
+					"name": "My Post",
+					"isPartOf": {
+						"@id": "https://example.com/#website"
+					},
+					"inLanguage": "en-US",
+					"mainEntity": {
+						"@id": "https://example.com/author/sam/#person"
+					},
+					"primaryImageOfPage": {
+						"@id": "https://example.com/my-post/#primaryimage"
+					},
+					"image": {
+						"@id": "https://example.com/my-post/#primaryimage"
+					},
+					"breadcrumb": {
+						"@id": "https://example.com/my-post/#breadcrumb"
+					}
+				},
+				{
+					"@type": "Person",
+					"knowsAbout": "Wolves",
+					"@id": "https://example.com/author/sam/#person",
+					"name": "Sam Lee",
+					"url": "https://example.com/author/sam/",
+					"description": "Subject."
+				},
+				{
+					"@type": "ImageObject",
+					"@id": "https://example.com/my-post/#primaryimage",
+					"url": "https://cdn.example/cover.jpg",
+					"contentUrl": "https://cdn.example/cover.jpg"
+				},
+				{
+					"@type": "BreadcrumbList",
+					"@id": "https://example.com/my-post/#breadcrumb",
+					"itemListElement": [
+						{
+							"@type": "ListItem",
+							"position": 1,
+							"name": "Home",
+							"item": "https://example.com/"
+						},
+						{
+							"@type": "ListItem",
+							"position": 2,
+							"name": "My Post",
+							"item": "https://example.com/my-post/"
+						}
+					]
+				},
+				{
+					"@type": "Person",
+					"image": "https://cdn.example/ana.jpg",
+					"@id": "https://example.com/author/ana/#person",
+					"name": "Ana Lopez",
+					"url": "https://example.com/author/ana/"
+				},
+				{
+					"@type": "BlogPosting",
+					"@id": "https://example.com/my-post/#article",
+					"url": "https://example.com/my-post/",
+					"headline": "My Post",
+					"description": "About my post.",
+					"image": {
+						"@id": "https://example.com/my-post/#primaryimage"
+					},
+					"datePublished": "2026-01-02T03:04:05Z",
+					"dateModified": "2026-02-03T04:05:06Z",
+					"isPartOf": {
+						"@id": "https://example.com/my-post/#webpage"
+					},
+					"mainEntityOfPage": {
+						"@id": "https://example.com/my-post/#webpage"
+					},
+					"publisher": {
+						"@id": "https://example.com/#person"
+					},
+					"inLanguage": "en-US",
+					"author": [
+						{
+							"@id": "https://example.com/#person"
+						},
+						{
+							"@id": "https://example.com/author/ana/#person"
+						}
+					],
+					"video": {
+						"@id": "https://example.com/my-post/#video-1"
+					},
+					"about": [
+						{
+							"@id": "https://example.com/my-post/#review-1-item"
+						},
+						{
+							"@type": "Thing",
+							"name": "Coyote",
+							"sameAs": "https://www.wikidata.org/wiki/Q44299"
+						}
+					],
+					"mentions": {
+						"@type": "Thing",
+						"name": "Wolf",
+						"sameAs": "https://www.wikidata.org/wiki/Q18498"
+					}
+				},
+				{
+					"@type": "Product",
+					"@id": "https://example.com/my-post/#review-1-item",
+					"name": "Trail camera",
+					"review": {
+						"@type": "Review",
+						"@id": "https://example.com/my-post/#review-1",
+						"reviewRating": {
+							"@type": "Rating",
+							"ratingValue": 4,
+							"bestRating": 5,
+							"worstRating": 0
+						},
+						"author": [
+							{
+								"@id": "https://example.com/#person"
+							},
+							{
+								"@id": "https://example.com/author/ana/#person"
+							}
+						],
+						"publisher": {
+							"@id": "https://example.com/#person"
+						},
+						"datePublished": "2026-01-02T03:04:05Z",
+						"mainEntityOfPage": {
+							"@id": "https://example.com/my-post/#webpage"
+						},
+						"reviewBody": "Good."
+					}
+				},
+				{
+					"@type": "VideoObject",
+					"name": "A video",
+					"description": "Watch it.",
+					"thumbnailUrl": [
+						"https://cdn.example/v.jpg"
+					],
+					"uploadDate": "2026-01-01",
+					"contentUrl": "https://cdn.example/v.mp4",
+					"@id": "https://example.com/my-post/#video-1"
+				},
+				{
+					"@type": "WebSite",
+					"@id": "https://example.com/#website",
+					"url": "https://example.com/",
+					"name": "Example",
+					"publisher": {
+						"@id": "https://example.com/#person"
+					},
+					"inLanguage": "en-US",
+					"potentialAction": {
+						"@type": "SearchAction",
+						"target": {
+							"@type": "EntryPoint",
+							"urlTemplate": "https://example.com/?s={search_term_string}"
+						},
+						"query-input": "required name=search_term_string"
+					}
+				},
+				{
+					"@type": "Person",
+					"jobTitle": "Founder",
+					"@id": "https://example.com/#person",
+					"name": "Jon Henshaw",
+					"url": "https://jon.example",
+					"description": "Writes things.",
+					"image": "https://example.com/_emdash/api/media/file/m1.jpg"
+				}
+			]
+		}
+	},
+	{
+		"kind": "meta",
+		"name": "robots",
+		"content": "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1"
+	},
+	{
+		"kind": "property",
+		"property": "og:locale",
+		"content": "en_US"
+	}
+]

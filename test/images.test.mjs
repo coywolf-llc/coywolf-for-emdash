@@ -4,10 +4,10 @@ import { test } from "node:test";
 
 import "./ts-resolve.mjs";
 
-const { cleanImagePath, parseImagePath, mediaFile } = await import("../src/images/lib.ts");
+const { cleanImagePath, parseImagePath, mediaFile, snappedImagePath, snapDimension } = await import("../src/images/lib.ts");
 
 test("builds clean paths for media-library files", () => {
-	assert.equal(cleanImagePath("/_emdash/api/media/file/01M44MRR9G4JZH2SQTGN4Y4G0D.webp", { width: 600, height: 315 }), "/media/01M44MRR9G4JZH2SQTGN4Y4G0D-600x315.webp");
+	assert.equal(cleanImagePath("/_emdash/api/media/file/01M44MRR9G4JZH2SQTGN4Y4G0D.webp", { width: 600, height: 320 }), "/media/01M44MRR9G4JZH2SQTGN4Y4G0D-600x320.webp");
 	assert.equal(cleanImagePath("https://example.com/_emdash/api/media/file/ABC.jpeg", { width: 400 }), "/media/ABC-400w.webp");
 	assert.equal(cleanImagePath("/_emdash/api/media/file/ABC.png", { width: 800, height: 420, format: "avif" }), "/media/ABC-800x420.avif");
 });
@@ -28,8 +28,28 @@ test("parses clean paths and round-trips", () => {
 	assert.equal(parseImagePath("/media/ABC-99999x1.webp"), null);
 	assert.equal(parseImagePath("/media/../x-1x1.webp"), null);
 	assert.equal(parseImagePath("/media/ABC.webp"), null);
-	const p = cleanImagePath("/_emdash/api/media/file/ID_1.webp", { width: 640, height: 336 });
-	assert.deepEqual(parseImagePath(p), { id: "ID_1", width: 640, height: 336, format: "webp" });
+	const p = cleanImagePath("/_emdash/api/media/file/ID_1.webp", { width: 640, height: 340 });
+	assert.deepEqual(parseImagePath(p), { id: "ID_1", width: 640, height: 340, format: "webp" });
+});
+
+test("Worker-route sizes snap up to a 10px grid", () => {
+	const src = "/_emdash/api/media/file/ABC.webp";
+	// Sizes themes use stay exact.
+	for (const [w, h] of [[50, 50], [100, 100], [400, 210], [800, 420], [1200, 630]]) assert.equal(cleanImagePath(src, { width: w, height: h }), `/media/ABC-${w}x${h}.webp`);
+	for (const w of [400, 640, 800]) assert.equal(cleanImagePath(src, { width: w }), `/media/ABC-${w}w.webp`);
+	// Anything else rounds up, never past the maximum.
+	assert.equal(cleanImagePath(src, { width: 640, height: 336 }), "/media/ABC-640x340.webp");
+	assert.equal(cleanImagePath(src, { width: 600, height: 315 }), "/media/ABC-600x320.webp");
+	assert.equal(cleanImagePath(src, { width: 333 }), "/media/ABC-340w.webp");
+	assert.equal(cleanImagePath(src, { width: 1 }), "/media/ABC-10w.webp");
+	assert.equal(cleanImagePath(src, { width: 2559, height: 2555 }), "/media/ABC-2560x2560.webp");
+	// Everything cleanImagePath emits is on the grid.
+	for (let w = 1; w <= 2560; w += 37) assert.equal(snappedImagePath(parseImagePath(cleanImagePath(src, { width: w, height: w + 3 }))), null);
+	// Off-grid requests name the on-grid path to redirect to (format and id kept).
+	assert.equal(snappedImagePath(parseImagePath("/media/ABC-640x336.jpeg")), "/media/ABC-640x340.jpeg");
+	assert.equal(snappedImagePath(parseImagePath("/media/ABC-641w.avif")), "/media/ABC-650w.avif");
+	assert.equal(snappedImagePath(parseImagePath("/media/ABC-640x340.webp")), null);
+	assert.equal(snapDimension(2551), 2560);
 });
 
 // ── Media host ───────────────────────────────────────────────────

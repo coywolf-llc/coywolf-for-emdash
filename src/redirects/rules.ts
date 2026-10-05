@@ -129,9 +129,30 @@ export function validate(input: RedirectInput): Omit<RedirectInput, "type"> & { 
 	};
 }
 
+/** The table is created once per isolate; concurrent first callers share the one batch. */
+let tableReady: Promise<void> | null = null;
+
+function ensureTableOnce(db: D1Database): Promise<void> {
+	tableReady ??= ensureTable(db).catch((error) => {
+		tableReady = null;
+		throw error;
+	});
+	return tableReady;
+}
+
 export async function listRules(db: D1Database): Promise<RedirectRule[]> {
-	await ensureTable(db);
-	const { results } = await db.prepare(`SELECT * FROM ${TABLE} ORDER BY is_regex, source`).all<Row>();
+	await ensureTableOnce(db);
+	const read = () => db.prepare(`SELECT * FROM ${TABLE} ORDER BY is_regex, source`).all<Row>();
+	let results: Row[];
+	try {
+		({ results } = await read());
+	} catch (error) {
+		// A restore can drop the table after this isolate created it; recreate and retry once.
+		if (!/no such table/i.test(String((error as Error)?.message ?? error))) throw error;
+		tableReady = null;
+		await ensureTableOnce(db);
+		({ results } = await read());
+	}
 	return results.map(toRule);
 }
 
@@ -197,6 +218,29 @@ export function compile(rules: RedirectRule[]): CompiledRules {
 	return { exact, patterns };
 }
 
+const isSitePath = (target: string): boolean => target.startsWith("/") && !target.startsWith("//");
+
+/**
+ * A capture group must not move a redirect to another site. A site-relative
+ * target collapses leading slashes after substitution (in match), so "/$1" with
+ * "/evil.com" stays "/evil.com" rather than becoming "//evil.com". An absolute
+ * target whose host is written out must keep that host, so "https://example.com$1"
+ * can't become "https://example.com.evil.com/".
+ */
+function keepsHost(target: string, location: string): boolean {
+	// The written-out part of the host: up to the first path, query, fragment, or capture.
+	const authority = /^https?:\/\/[^/?#$]*/i.exec(target)?.[0];
+	// A host that is (or starts with) a capture, like "https://$1/", is the site owner's choice.
+	if (!authority || !authority.slice(authority.indexOf("//") + 2).includes(".")) return true;
+	try {
+		const fixed = new URL(authority);
+		const result = new URL(location);
+		return result.protocol === fixed.protocol && result.host === fixed.host;
+	} catch {
+		return false;
+	}
+}
+
 export interface Match {
 	rule: RedirectRule;
 	/** Absolute or site-relative URL; empty for 410. */
@@ -218,6 +262,10 @@ export function match(compiled: CompiledRules, pathname: string, search: string)
 			rule = candidate.rule;
 			location = rule.target.replace(/\$(\d)/g, (_, n: string) => m[Number(n)] ?? "");
 			break;
+		}
+		if (rule && rule.type !== 410) {
+			if (isSitePath(rule.target)) location = location.replace(/^[/\\]+/, "/");
+			else if (!keepsHost(rule.target, location)) return null;
 		}
 	}
 	if (!rule) return null;

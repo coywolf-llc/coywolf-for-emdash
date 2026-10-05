@@ -51,11 +51,30 @@ export async function pageReviews(ctx: PluginContext, page: Page): Promise<Revie
 
 /** Fold the page's reviews into Schema & Social's graph. Errors are logged, never fatal. */
 export async function attachPageReviews(ctx: PluginContext, page: Page, graph: { "@graph": Node[] }, origin: string): Promise<void> {
+	(await pageReviewsStep(ctx, page, origin))(graph);
+}
+
+/**
+ * Load the page's reviews now and return the step that folds them into the
+ * graph later, so Schema & Social can load them alongside its other reads.
+ * Errors are logged, never fatal.
+ */
+export async function pageReviewsStep(ctx: PluginContext, page: Page, origin: string): Promise<(graph: { "@graph": Node[] }) => void> {
+	const warn = (error: unknown) => ctx.log.warn("reviews: could not attach review schema", { error: String(error) });
+	let reviews: Review[];
 	try {
-		attachReviews(graph, await pageReviews(ctx, page), { origin });
+		reviews = await pageReviews(ctx, page);
 	} catch (error) {
-		ctx.log.warn("reviews: could not attach review schema", { error: String(error) });
+		warn(error);
+		return () => {};
 	}
+	return (graph) => {
+		try {
+			attachReviews(graph, reviews, { origin });
+		} catch (error) {
+			warn(error);
+		}
+	};
 }
 
 /** page:metadata (reviews.schema): standalone JSON-LD, only when Schema & Social's graph is off. */

@@ -76,3 +76,98 @@ test("warming requests every size as AVIF and WebP", async () => {
 		"https://m/s/800/k.jpg image/webp",
 	]);
 });
+
+test("rendering never waits: an unlisted poster comes from Stream while it's copied after the response", async () => {
+	resetMirroredPosters();
+	const { mediaPoster } = await import("../src/videos/poster.ts");
+	const b = bucket();
+	// The bucket answers only when released, after the render has returned.
+	let release;
+	const gate = new Promise((r) => (release = r));
+	const head = b.head.bind(b);
+	b.head = async (key) => (await gate, head(key));
+	const deferred = [];
+	const listed = new Set();
+	const warmed = [];
+	const fetcher = async (url, init) => {
+		if (init?.headers?.accept) return (warmed.push(url), new Response("x"));
+		return image();
+	};
+	const deps = { cdn: "https://media.example.com", bucket: b, listed, list: async (k) => void listed.add(k), defer: (p) => deferred.push(p), fetcher };
+	assert.equal(await mediaPoster(UID, SRC, deps), null, "Stream's poster for this render");
+	assert.equal(deferred.length, 1);
+	assert.equal(await mediaPoster(UID, SRC, deps), null);
+	assert.equal(deferred.length, 1, "one copy per isolate");
+	assert.equal(listed.size, 0, "the copy is still waiting on the bucket");
+	release();
+	await Promise.all(deferred);
+	const key = await posterKey(UID, SRC);
+	assert.ok(listed.has(key), "listed once copied");
+	assert.equal(warmed.length, 6, "a new copy is resized at each size, AVIF and WebP");
+	const media = await mediaPoster(UID, SRC, deps);
+	assert.equal(media.full, `https://media.example.com/s/1200/${key}`);
+	assert.match(media.srcset, /\/s\/480\/.* 480w, .*\/s\/800\/.* 800w, .*\/s\/1200\/.* 1200w$/);
+});
+
+test("a listed poster is served from the media host without touching the bucket", async () => {
+	resetMirroredPosters();
+	const { mediaPoster } = await import("../src/videos/poster.ts");
+	const key = await posterKey(UID, SRC);
+	const b = bucket();
+	const deps = { cdn: "https://m", bucket: b, listed: new Set([key]), list: async () => assert.fail("listed again"), defer: () => assert.fail("deferred work") };
+	const media = await mediaPoster(UID, SRC, deps);
+	assert.equal(media.src, `https://m/s/800/${key}`);
+	assert.equal(b.heads, 0);
+});
+
+test("a poster already in the bucket is listed but not warmed again", async () => {
+	resetMirroredPosters();
+	const { mediaPoster } = await import("../src/videos/poster.ts");
+	const key = await posterKey(UID, SRC);
+	const b = bucket({ [key]: {} });
+	const deferred = [];
+	const listed = new Set();
+	const deps = { cdn: "https://m", bucket: b, listed, list: async (k) => void listed.add(k), defer: (p) => deferred.push(p), fetcher: async () => assert.fail("fetched") };
+	await mediaPoster(UID, SRC, deps);
+	await Promise.all(deferred);
+	assert.ok(listed.has(key));
+});
+
+test("listing a poster appends once, keeps other keys and stops at the cap", async () => {
+	const { DatabaseSync } = await import("node:sqlite");
+	const { listPoster, POSTERS_OPTION, MAX_LISTED_POSTERS } = await import("../src/videos/poster.ts");
+	const sqlite = new DatabaseSync(":memory:");
+	sqlite.exec("CREATE TABLE options (name TEXT PRIMARY KEY, value TEXT, revision INTEGER)");
+	const db = { prepare: (sql) => ({ bind: (...args) => ({ run: async () => sqlite.prepare(sql).run(...args) }) }) };
+	const read = () => JSON.parse(sqlite.prepare("SELECT value FROM options WHERE name = ?").get(POSTERS_OPTION).value);
+	const set = (value) => sqlite.prepare("UPDATE options SET value = ? WHERE name = ?").run(value, POSTERS_OPTION);
+	await listPoster(db, "a.jpg");
+	await listPoster(db, "b.jpg");
+	await listPoster(db, "a.jpg");
+	assert.deepEqual(read(), ["a.jpg", "b.jpg"]);
+	set(JSON.stringify(Array.from({ length: MAX_LISTED_POSTERS }, (_, i) => `k${i}`)));
+	await listPoster(db, "c.jpg");
+	assert.equal(read().length, MAX_LISTED_POSTERS);
+	set("not json");
+	await listPoster(db, "d.jpg");
+	assert.deepEqual(read(), ["d.jpg"]);
+});
+
+test("a Stream poster shown while its copy is made marks the request, through locals or the isolate count", async () => {
+	resetMirroredPosters();
+	const { markPendingPoster, pendingPosterRenders, renderedPendingPoster, PENDING_POSTER_LOCAL } = await import("../src/videos/poster.ts");
+	const locals = {};
+	const before = pendingPosterRenders();
+	assert.equal(renderedPendingPoster(locals, before), false);
+	markPendingPoster(locals);
+	assert.equal(locals[PENDING_POSTER_LOCAL], true);
+	assert.equal(renderedPendingPoster(locals, before), true);
+	assert.equal(pendingPosterRenders(), before, "flagged on locals, not counted");
+
+	// A theme calling hostedPosterImage() without locals is still noticed.
+	const other = {};
+	const start = pendingPosterRenders();
+	markPendingPoster();
+	assert.equal(renderedPendingPoster(other, start), true);
+	assert.equal(renderedPendingPoster(other, pendingPosterRenders()), false);
+});

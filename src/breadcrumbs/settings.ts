@@ -3,16 +3,14 @@
  * 0.6.0 they lived inside the Headings & TOC setting ("headings", under
  * `breadcrumbs`), so reads fall back to that sub-object until the Breadcrumb
  * Nav page saves its own. Hooks and routes read through the plugin context;
- * Astro components read the option rows from D1 with a short per-isolate
- * cache (like feature switches).
+ * Astro components read the option rows from D1 in the feature switches'
+ * query and per-isolate cache.
  */
-import { PLUGIN_ID } from "../core/features.js";
-import { workerEnv } from "../shared.js";
+import { invalidateFeatures, readSiteSetting, registerSiteSetting } from "../core/features.js";
 
 export const SETTINGS_KEY = "breadcrumbs";
 /** The setting that held these values before Breadcrumb Nav was its own module. */
 export const LEGACY_SETTINGS_KEY = "headings";
-const optionName = (key: string) => `plugin:${PLUGIN_ID}:settings:${key}`;
 
 export const SEPARATORS = {
 	slash: "/",
@@ -80,32 +78,25 @@ export async function ctxBreadcrumbsSettings(ctx: SettingsCtx): Promise<Breadcru
 
 // ── Outside the plugin context (Astro components) ────────────────
 
-const TTL_MS = 30_000;
-let cached: { settings: BreadcrumbsSettings; at: number } | null = null;
+registerSiteSetting(SETTINGS_KEY);
+registerSiteSetting(LEGACY_SETTINGS_KEY);
+
+/** The last stored values and their resolved settings, so a cache hit doesn't resolve again. */
+let memo: { stored: unknown; legacy: unknown; settings: BreadcrumbsSettings } | null = null;
 
 export function invalidateBreadcrumbsSettings(): void {
-	cached = null;
+	invalidateFeatures();
 }
 
-/** Read the settings straight from D1 (one query for both rows). Falls back to defaults if the database can't be read. */
+/** The settings from D1 (both rows, in the feature switches' query and cache). Falls back to defaults if the database can't be read. */
 export async function siteBreadcrumbsSettings(database = "DB"): Promise<BreadcrumbsSettings> {
-	if (cached && Date.now() - cached.at < TTL_MS) return cached.settings;
-	const rows: Record<string, unknown> = {};
-	try {
-		const env = await workerEnv();
-		const db = env[database] as D1Database | undefined;
-		const result = db
-			? await db
-					.prepare("SELECT name, value FROM options WHERE name IN (?, ?)")
-					.bind(optionName(SETTINGS_KEY), optionName(LEGACY_SETTINGS_KEY))
-					.all<{ name: string; value: string }>()
-			: null;
-		for (const row of result?.results ?? []) rows[row.name] = row.value ? JSON.parse(row.value) : null;
-	} catch (error) {
-		console.error("coywolf-pack: could not read breadcrumb settings", error);
+	const [stored, legacy] = await Promise.all([readSiteSetting(SETTINGS_KEY, database), readSiteSetting(LEGACY_SETTINGS_KEY, database)]);
+	if (!stored || !legacy) {
+		console.error("coywolf-pack: could not read breadcrumb settings");
 		return DEFAULT_SETTINGS;
 	}
-	const settings = resolveSettings(rows[optionName(SETTINGS_KEY)], rows[optionName(LEGACY_SETTINGS_KEY)]);
-	cached = { settings, at: Date.now() };
+	if (memo && memo.stored === stored.value && memo.legacy === legacy.value) return memo.settings;
+	const settings = resolveSettings(stored.value, legacy.value);
+	memo = { stored: stored.value, legacy: legacy.value, settings };
 	return settings;
 }

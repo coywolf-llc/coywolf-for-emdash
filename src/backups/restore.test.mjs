@@ -79,3 +79,25 @@ test("private form uploads mirror to uploads/ and restore from there, separate f
 	assert.equal(await pruneBackups(backups, 1), 0);
 	assert.ok(![...backups.store.keys()].some((k) => k.startsWith("uploads/changed/2020-01-02")), "uploads/changed pruned");
 });
+
+test("the mirror copies a few files at a time, never more than its limit", async () => {
+	const { MIRROR_CONCURRENCY } = await import("./store.ts");
+	const files = {};
+	for (let i = 0; i < 40; i++) files[`f${i}.jpg`] = `v${i}`;
+	const media = bucket(files);
+	const backups = bucket({ "media/current/f0.jpg": "old", "media/current/gone.jpg": "G" });
+	let inFlight = 0;
+	let most = 0;
+	const slowGet = media.get.bind(media);
+	media.get = async (key) => {
+		most = Math.max(most, ++inFlight);
+		await new Promise((resolve) => setTimeout(resolve, 2));
+		inFlight--;
+		return slowGet(key);
+	};
+	const result = await mirrorBucket(media, backups, "2020-01-03T0600Z", "media", 30);
+	assert.equal(most, MIRROR_CONCURRENCY);
+	assert.deepEqual(result, { copied: 30, preserved: 1, total: 40, pending: 11 });
+	assert.equal(backups.store.get("media/changed/2020-01-03T0600Z/f0.jpg"), "old", "a replaced file's old copy is kept before it's overwritten");
+	assert.equal(backups.store.get("media/current/f0.jpg"), "v0");
+});

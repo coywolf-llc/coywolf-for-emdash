@@ -159,6 +159,84 @@ function detailsHtml(summary: string, body: string, className: string): string {
 	return `<details class="${className}"><summary>${summary}</summary><div class="${className}__body">${body}</div></details>`;
 }
 
+/**
+ * A core Quote block's fields: its paragraphs (the quote) and its <cite> (who
+ * said it). EmDash's own converter keeps only the citation, dropping the quote.
+ */
+export function coreQuoteFields(block: GBlock): { quote: string; cite: string; url: string } {
+	const html = blockHtml(block).trim();
+	const m = html.match(/^<blockquote\b([^>]*)>([\s\S]*)<\/blockquote>$/i);
+	const inner = m?.[2] ?? html;
+	// Only a <cite> directly inside the blockquote is its citation; one inside a paragraph
+	// (a cited title) or a nested quote stays in the quote.
+	const cites = directChildren(inner, "cite");
+	let rest = inner;
+	for (const c of [...cites].reverse()) rest = rest.slice(0, c.start) + rest.slice(c.end);
+	const cite = cites.length
+		? cites
+				.map((c) => c.inner.trim())
+				.filter(Boolean)
+				.join(", ")
+		: typeof block.attrs.citation === "string"
+			? block.attrs.citation
+			: "";
+	const quote = collapseBlockWhitespace(stripTagAttributes(rest, /^(?:class|id)$/i)).trim();
+	const url = m?.[1]?.match(/\scite="([^"]*)"/i)?.[1]?.trim() ?? "";
+	return { quote, cite: cite.trim(), url };
+}
+
+/** Elements without a closing tag. */
+const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
+/** A start or end tag, with quoted attribute values that may contain ">". */
+const TAG = /<(\/?)([a-z][a-z0-9-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/gi;
+
+/** `tag` elements at the top level of `html` (not inside another element): their range and inner HTML. */
+function directChildren(html: string, tag: string): { start: number; end: number; inner: string }[] {
+	const out: { start: number; end: number; inner: string }[] = [];
+	let depth = 0;
+	let open: { start: number; innerStart: number } | null = null;
+	for (const t of html.matchAll(TAG)) {
+		const closing = t[1] === "/";
+		const name = (t[2] as string).toLowerCase();
+		const at = t.index ?? 0;
+		if (closing) {
+			depth = Math.max(0, depth - 1);
+			if (open && depth === 0 && name === tag) {
+				out.push({ start: open.start, end: at + t[0].length, inner: html.slice(open.innerStart, at) });
+				open = null;
+			}
+			continue;
+		}
+		if (VOID_TAGS.has(name) || /\/\s*$/.test(t[3] as string)) continue;
+		if (depth === 0 && name === tag) open = { start: at, innerStart: at + t[0].length };
+		depth++;
+	}
+	return out;
+}
+
+/** Remove attributes whose name matches `names` from every tag (never from the text between tags). */
+function stripTagAttributes(html: string, names: RegExp): string {
+	return html.replace(TAG, (whole, slash: string, name: string, attrs: string) => {
+		if (slash || !attrs) return whole;
+		const kept = attrs.replace(/\s+([^\s=/>"']+)(\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'>]+))?/g, (attr, attrName: string) => (names.test(attrName) ? "" : attr));
+		return `<${name}${kept}>`;
+	});
+}
+
+/** Block-level tags: whitespace between two of them is only source formatting. */
+const BLOCK_TAG = "(?:address|article|aside|blockquote|dd|details|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|ol|p|pre|section|summary|table|tbody|td|tfoot|th|thead|tr|ul)";
+const AFTER_BLOCK = new RegExp(`(<\\/?${BLOCK_TAG}\\b(?:[^>"']|"[^"]*"|'[^']*')*>)\\s+(?=<)`, "gi");
+const BEFORE_BLOCK = new RegExp(`>\\s+(?=<\\/?${BLOCK_TAG}\\b)`, "gi");
+
+/**
+ * Drop whitespace between two tags when one of them is block-level (`</p>\n<p>`,
+ * `</p>\n<cite>`): it's source formatting that never renders. Whitespace between
+ * inline elements (`<a>one</a> <a>two</a>`) and in text is kept.
+ */
+function collapseBlockWhitespace(html: string): string {
+	return html.replace(AFTER_BLOCK, "$1").replace(BEFORE_BLOCK, ">");
+}
+
 /** A core Details block's summary (HTML), body (its inner blocks' HTML) and whether it starts open. */
 export function coreDetailsFields(block: GBlock): { summary: string; body: string; open: boolean } {
 	const html = blockHtml(block).trim();
@@ -249,6 +327,11 @@ function replacement(block: GBlock, opts: PrepareOptions): { blocks: GBlock[]; a
 		case "coywolf-custom-blocks/podcast-rss":
 			// Same marker name and attrs as 0.10/0.11 (then a theme placeholder), so older markers convert too.
 			return { blocks: [WRAP(markerHtml("podcast-links", { block: block.name, ...a }))], action: "podcast" };
+		case "core/quote": {
+			const f = coreQuoteFields(block);
+			if (!f.quote) return null;
+			return { blocks: [WRAP(markerHtml("blockquote", f, blockquoteHtml(f)))], action: "quote" };
+		}
 		case "core/details":
 			return { blocks: [WRAP(markerHtml("details", coreDetailsFields(block), blockHtml(block).trim()))], action: "details" };
 		case "yoast-seo/related-links":
