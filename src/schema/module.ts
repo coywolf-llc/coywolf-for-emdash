@@ -9,7 +9,7 @@
  * rows per byline id; a row may be marked profile-only).
  */
 import { getManyBatched } from "../core/storage.js";
-import { FORMATS, parseCdnUrl, parseImagePath } from "../images/lib.js";
+import { FORMATS, cdnOriginalUrl, imageCdn, parseCdnUrl, parseImagePath } from "../images/lib.js";
 import { refreshMediaHost } from "../images/settings.js";
 import { siteName } from "../core/site.js";
 import type { PageMetadataContribution, PluginContext, PublicPageContext } from "emdash";
@@ -502,6 +502,8 @@ export async function schemaContributions(
 		// AI Enrichment's Wikidata-grounded entities, when that feature is on.
 		if (page.content && isOn(on, "ai.entities")) await attachEntities(ctx, page.content, graph);
 		// Same id as EmDash's own JSON-LD, so this graph replaces it (first contribution wins).
+		// With a media host, every media-library file in the graph (author images, logo, …) points at it.
+		if (cleanImages && imageCdn()) rewriteMediaUrls(graph);
 		out.push({ kind: "jsonld", id: "primary", graph });
 	} else if (isOn(on, SCHEMA_FEATURES.breadcrumbs)) {
 		const doc = breadcrumbDocument(page, site.origin, config.settings.schemaBreadcrumbHome || "Home");
@@ -941,4 +943,18 @@ export function schemaModule(options: SchemaOptions) {
 /** The hook EmDash calls for each rendered page. */
 export function schemaMetadataHook(options: SchemaOptions) {
 	return async (event: { page: PublicPageContext }, ctx: PluginContext) => schemaContributions(ctx, event.page, options);
+}
+
+/** Replace media-library file URLs (/_emdash/api/media/file/<file>) anywhere in a JSON-LD value with their media-host originals, in place. */
+export function rewriteMediaUrls(value: unknown): unknown {
+	if (typeof value === "string") return cdnOriginalUrl(value) ?? value;
+	if (Array.isArray(value)) {
+		for (let i = 0; i < value.length; i++) value[i] = rewriteMediaUrls(value[i]);
+		return value;
+	}
+	if (value && typeof value === "object") {
+		const obj = value as Record<string, unknown>;
+		for (const key of Object.keys(obj)) obj[key] = rewriteMediaUrls(obj[key]);
+	}
+	return value;
 }
