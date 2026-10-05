@@ -369,15 +369,16 @@ const inputId = `${id}-input`;
 				list.append(note);
 			}
 			items.forEach((item, i) => {
-				const option = document.createElement("li");
-				option.id = `${list.id}-${i}`;
-				option.className = "cw-search__option";
-				option.setAttribute("role", "option");
-				option.setAttribute("aria-selected", "false");
-				option.dataset.url = item.url;
-				// A real link inside the option, so middle-click and "open in new tab" work.
+				// The option is a real link (so middle-click and "open in new tab" work), in a
+				// presentational list item: a listbox may only contain options.
+				const row = document.createElement("li");
+				row.setAttribute("role", "none");
 				const link = document.createElement("a");
-				link.className = "cw-search__link";
+				link.id = `${list.id}-${i}`;
+				link.className = "cw-search__option cw-search__link";
+				link.setAttribute("role", "option");
+				link.setAttribute("aria-selected", "false");
+				link.dataset.url = item.url;
 				link.href = item.url;
 				link.tabIndex = -1;
 				const title = document.createElement("span");
@@ -399,11 +400,11 @@ const inputId = `${id}-input`;
 					snippet.innerHTML = item.snippet.replace(MARK, "&lt;");
 					link.append(snippet);
 				}
-				option.append(link);
+				row.append(link);
 				// Keep focus in the field while clicking; the link still navigates.
-				option.addEventListener("mousedown", (e) => e.preventDefault());
-				list.append(option);
-				options.push(option);
+				link.addEventListener("mousedown", (e) => e.preventDefault());
+				list.append(row);
+				options.push(link);
 			});
 			if (!items.length) {
 				const empty = document.createElement("li");

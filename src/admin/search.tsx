@@ -90,6 +90,11 @@ function CollectionCard(props: {
 	const { weights, tokenize } = draft;
 	const invalid = invalidDraft(draft);
 	const headingId = `cw-search-${collection.slug}`;
+	const weightsErrorId = `cw-search-${collection.slug}-weights-error`;
+	const badWeight = (slug: string) => {
+		const n = Number(weights[slug] ?? "1");
+		return !Number.isFinite(n) || n < 0 || n > 100;
+	};
 
 	return (
 		<section aria-labelledby={headingId} className="rounded-lg border border-kumo-line">
@@ -140,6 +145,8 @@ function CollectionCard(props: {
 									step={0.5}
 									inputMode="decimal"
 									value={weights[f.slug] ?? "1"}
+									aria-invalid={badWeight(f.slug) || undefined}
+									aria-describedby={invalid ? weightsErrorId : undefined}
 									onChange={(e: React.ChangeEvent<HTMLInputElement>) => props.onDraft({ ...draft, weights: { ...weights, [f.slug]: e.target.value } })}
 								/>
 							))}
@@ -151,7 +158,11 @@ function CollectionCard(props: {
 						onValueChange={(value: string | null) => props.onDraft({ ...draft, tokenize: value ?? "porter unicode61" })}
 						items={TOKENIZERS}
 					/>
-					{invalid && <p className="text-sm text-kumo-danger">Weights must be numbers from 0 to 100.</p>}
+					{invalid && (
+						<p id={weightsErrorId} className="text-sm text-kumo-danger">
+							Weights must be numbers from 0 to 100.
+						</p>
+					)}
 					<div className="flex flex-wrap justify-end gap-2">
 						<Button type="button" variant="secondary" icon={<ArrowsClockwise />} disabled={props.busy} onClick={() => void props.onRebuild()}>
 							Rebuild index

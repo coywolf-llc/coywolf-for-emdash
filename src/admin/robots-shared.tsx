@@ -45,25 +45,34 @@ export const EVIDENCE_LABELS: Record<string, string> = {
 	none: "Not checked",
 };
 
-export function StatusBadge({ bot }: { bot: BotEntry }) {
+/**
+ * A bot's verification status. The evidence (for verified bots) and the note
+ * (for unverified ones) are shown as text, not only in a hover title, so
+ * keyboard and touch users see them too. Pass `evidence={false}` where the
+ * evidence is already shown next to it.
+ */
+export function StatusBadge({ bot, evidence = true }: { bot: BotEntry; evidence?: boolean }) {
 	if (bot.origin === "custom" && bot.status !== "verified") return <Badge variant="outline">custom</Badge>;
 	if (bot.status === "verified") {
+		const label = EVIDENCE_LABELS[bot.evidence];
 		return (
-			<span className="inline-flex items-center gap-1 text-xs text-kumo-subtle" title={EVIDENCE_LABELS[bot.evidence] ?? "Verified"}>
+			<span className="inline-flex items-center gap-1 text-xs text-kumo-subtle" title={label ?? "Verified"}>
 				<CheckCircle className="text-kumo-success" aria-hidden="true" />
 				<span>verified</span>
+				{evidence && label && <span>· {label}</span>}
 			</span>
 		);
 	}
 	return (
-		<span title={bot.note ?? "This token hasn't been confirmed in the operator's documentation."}>
+		<span className="inline-flex flex-wrap items-center gap-1" title={bot.note ?? "This token hasn't been confirmed in the operator's documentation."}>
 			<Badge variant="warning">unverified</Badge>
+			{bot.note && <span className="text-xs text-kumo-subtle">{bot.note}</span>}
 		</span>
 	);
 }
 
 export function UnverifiedIcon() {
-	return <WarningCircle className="text-kumo-warning" aria-label="unverified" />;
+	return <WarningCircle className="text-kumo-warning" role="img" aria-label="unverified" />;
 }
 
 /** A checkbox that can show "some selected". */

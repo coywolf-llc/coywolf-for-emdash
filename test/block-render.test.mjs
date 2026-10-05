@@ -48,6 +48,12 @@ test("TOC: escapes heading text, ids and title", () => {
 	assert.match(html, /&lt;b&gt;&amp;&lt;\/b&gt;/);
 });
 
+test("TOC: the title's heading level follows titleTag (h2 by default, only h2–h6)", () => {
+	assert.match(toc({ titleTag: "h3" }), /<h3 id="t" class="cw-toc__title">Table of contents<\/h3>/);
+	assert.match(toc({ titleTag: "p" }), /<h2 id="t" class="cw-toc__title">/);
+	assert.match(toc({ titleTag: "h3", display: "collapsible" }), /<summary class="cw-toc__summary"><span id="t"/);
+});
+
 test("File card: scheme, accent, meta and toggles", () => {
 	const html = renderFileCardHtml(SAMPLE_FILE, { scheme: "dark", accent: "#b22d47" });
 	assert.match(html, /^<div class="cw-file cw-file--dark" style="--cw-file-accent:#b22d47">/);

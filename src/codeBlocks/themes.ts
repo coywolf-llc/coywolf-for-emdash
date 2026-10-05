@@ -1,9 +1,11 @@
 /**
  * Code block themes: Coywolf's own palette (auto / light / dark), a few
  * light+dark pairs that follow the visitor's system setting, and a curated
- * set of highlight.js themes (themes.generated.ts). Only the active theme's
- * CSS is sent, and only on pages that render a code block.
+ * set of highlight.js themes (themes.generated.ts), with any color under
+ * 4.5:1 against its background darkened or lightened to pass (contrast.ts).
+ * Only the active theme's CSS is sent, and only on pages that render a code block.
  */
+import { mutedColor, readableThemeCss } from "./contrast.js";
 import { HLJS_THEMES } from "./themes.generated.js";
 
 export const THEME_SETTING = "codeBlocksTheme";
@@ -34,7 +36,7 @@ const COYWOLF_DARK =
 	"--cw-bg:#050520;--cw-fg:#e6edf3;--cw-comment:#8b949e;--cw-punct:#c9d1d9;--cw-keyword:#c084fc;--cw-function:#60a5fa;--cw-string:#4ade80;--cw-variable:#fb923c;--cw-number:#22d3ee;--cw-operator:#e6edf3;--cw-del:#f87171";
 
 const COYWOLF_TOKENS = [
-	".cw-code{background:var(--cw-bg);color:var(--cw-fg)}",
+	".cw-code{background:var(--cw-bg);color:var(--cw-fg);--cw-line:var(--cw-comment)}",
 	".cw-code .hljs-comment,.cw-code .hljs-quote,.cw-code .hljs-meta{color:var(--cw-comment)}",
 	".cw-code .hljs-comment,.cw-code .hljs-quote{font-style:italic}",
 	".cw-code .hljs-punctuation,.cw-code .hljs-tag{color:var(--cw-punct)}",
@@ -60,9 +62,20 @@ const COYWOLF: Record<string, { label: string; mode: "auto" | "light" | "dark" }
 	"coywolf-dark": { label: "Coywolf — Always dark", mode: "dark" },
 };
 
+/** Per-isolate: each theme's CSS with its low-contrast colors fixed (see contrast.ts). */
+const readable = new Map<string, string>();
+
 function hljsCss(id: string): string {
 	const theme = HLJS_THEMES[id];
-	return theme ? `.cw-code{color-scheme:${theme.scheme}}${theme.css}` : "";
+	if (!theme) return "";
+	let css = readable.get(id);
+	if (css === undefined) {
+		const fixed = readableThemeCss(theme.css);
+		// --cw-line: the line-number color (render.ts), muted but still 4.5:1.
+		css = `${fixed}.cw-code{--cw-line:${mutedColor(fixed)}}`;
+		readable.set(id, css);
+	}
+	return `.cw-code{color-scheme:${theme.scheme}}${css}`;
 }
 
 export function themeOptions(): ThemeOption[] {

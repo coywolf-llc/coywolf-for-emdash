@@ -819,7 +819,16 @@ function UsagePanel() {
 									<td className="py-1 pe-3 font-mono text-xs">{r.model}</td>
 									<td className="py-1 pe-3 text-end tabular-nums">{r.inputTokens.toLocaleString()}</td>
 									<td className="py-1 pe-3 text-end tabular-nums">{r.outputTokens.toLocaleString()}</td>
-									<td className="py-1">{r.ok ? "OK" : <span title={r.error}>Failed</span>}</td>
+									<td className="py-1">
+										{r.ok ? (
+											"OK"
+										) : (
+											<>
+												<span title={r.error}>Failed</span>
+												{r.error && <span className="block max-w-xs text-xs break-words text-kumo-subtle">{r.error}</span>}
+											</>
+										)}
+									</td>
 								</tr>
 							))}
 						</tbody>
