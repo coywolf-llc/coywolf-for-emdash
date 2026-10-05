@@ -20,3 +20,28 @@ test("public pack routes, reads, and other plugins don't", () => {
 	assert.equal(purgesAfter("POST", "/_emdash/api/plugins/emdash-forms/submit"), false);
 	assert.equal(purgesAfter("POST", "/_emdash/api/content/posts"), false, "EmDash purges its own content by tag");
 });
+
+const { applyPageLifetime } = await import("./lib.ts");
+
+function routeCache(maxAge) {
+	return {
+		enabled: true,
+		options: maxAge === undefined ? {} : { maxAge },
+		sets: [],
+		set(o) {
+			this.sets.push(o);
+		},
+	};
+}
+
+test("page lifetimes apply only to routes the site made cacheable", () => {
+	const page = routeCache(3600);
+	assert.equal(applyPageLifetime(page, 7, 1), true);
+	assert.deepEqual(page.sets, [{ maxAge: 604800, swr: 86400 }]);
+
+	const uncached = routeCache(undefined);
+	assert.equal(applyPageLifetime(uncached, 7, 1), false, "never turns caching on");
+	assert.deepEqual(uncached.sets, []);
+	assert.equal(applyPageLifetime(undefined, 7, 1), false);
+	assert.equal(applyPageLifetime({ ...routeCache(60), enabled: false }, 7, 1), false);
+});

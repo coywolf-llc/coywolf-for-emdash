@@ -113,3 +113,12 @@ test("knows original MIME types by extension", () => {
 	assert.equal(mimeForExt("svg"), "image/svg+xml");
 	assert.equal(mimeForExt("bin"), undefined);
 });
+
+test("the media host only resizes formats Cloudflare's resizer reads (no AVIF originals)", () => {
+	withHost("https://media.example.com", null, () => {
+		assert.equal(cleanImagePath("/_emdash/api/media/file/ABC.webp", { width: 400 }), "https://media.example.com/s/400/ABC.webp");
+		assert.equal(cleanImagePath("/_emdash/api/media/file/ABC.gif", { width: 400 }), "https://media.example.com/s/400/ABC.gif");
+		assert.equal(cleanImagePath("/_emdash/api/media/file/ABC.avif", { width: 400 }), null);
+		assert.equal(cdnOriginalUrl("/_emdash/api/media/file/ABC.avif"), "https://media.example.com/ABC.avif", "the original still loads from the host");
+	});
+});

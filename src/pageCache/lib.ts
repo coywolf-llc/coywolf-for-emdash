@@ -62,3 +62,21 @@ export async function purgeIfNewVersion(db: D1Database, id: string): Promise<boo
 		.run();
 	return true;
 }
+
+/** Astro's per-request cache controls (route caching), as far as the pack uses them. */
+interface RouteCache {
+	enabled?: boolean;
+	options?: { maxAge?: number };
+	set(options: { maxAge?: number; swr?: number }): void;
+}
+
+/**
+ * Apply the Page cache lifetimes to a request whose route the site made
+ * cacheable (a routeRules entry gave it a maxAge). Other routes are left alone,
+ * so this never turns caching on for anything the site didn't.
+ */
+export function applyPageLifetime(cache: RouteCache | undefined, maxAgeDays: number, refreshDays: number): boolean {
+	if (!cache?.enabled || cache.options?.maxAge === undefined) return false;
+	cache.set({ maxAge: Math.round(maxAgeDays * 86400), swr: Math.round(refreshDays * 86400) });
+	return true;
+}

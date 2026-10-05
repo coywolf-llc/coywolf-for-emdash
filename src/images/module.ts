@@ -120,32 +120,39 @@ async function credentials(ctx: PluginContext, input: z.infer<typeof setupInput>
 }
 
 /**
- * Clear the media host's images from Cloudflare's zone cache, with the same
- * token and account as the media host setup (the token also needs
- * Zone → Cache Purge → Purge). Says why when it can't, instead of throwing.
+ * The media host and the Cloudflare API access for it (the token and account
+ * saved on this page, else the IMAGES_API_TOKEN / CLOUDFLARE_API_TOKEN and
+ * CF_ACCOUNT_ID Worker secrets). `reason` says what's missing instead.
  */
-export async function purgeMediaHost(ctx: PluginContext): Promise<{ purged: boolean; host: string | null; message?: string }> {
+export async function mediaApiAccess(
+	ctx: PluginContext,
+): Promise<{ hostname: string; config: CloudflareConfig } | { hostname: string | null; reason: string }> {
 	await refreshMediaHost();
 	const host = imageCdn();
-	if (!host) return { purged: false, host: null, message: "No media host is set, so there are no images to clear." };
+	if (!host) return { hostname: null, reason: "No media host is set (Clean Image URLs)." };
 	const hostname = new URL(host).hostname;
 	const e = await env();
 	const savedToken = await ctx.settings.get<string>(IMAGES_SETTINGS.token).catch(() => null);
 	const token = savedToken?.trim() || secret(e, "IMAGES_API_TOKEN") || secret(e, "CLOUDFLARE_API_TOKEN");
 	const accountId = (await ctx.settings.get<string>(IMAGES_SETTINGS.accountId))?.trim() || secret(e, "CF_ACCOUNT_ID") || secret(e, "CLOUDFLARE_ACCOUNT_ID");
 	if (!token || !accountId) {
-		return {
-			purged: false,
-			host: hostname,
-			message: `Images on ${hostname} weren't cleared: add a Cloudflare API token and account ID on the Clean Image URLs page (the token needs Zone → Cache Purge → Purge).`,
-		};
+		return { hostname, reason: "Add a Cloudflare API token and account ID on the Clean Image URLs page." };
 	}
 	const doFetch = ctx.http ? (ctx.http.fetch.bind(ctx.http) as CloudflareConfig["fetch"]) : undefined;
+	return { hostname, config: { token, accountId, fetch: doFetch } };
+}
+
+/** Clear the media host's images from Cloudflare's zone cache. Says why when it can't, instead of throwing. */
+export async function purgeMediaHost(ctx: PluginContext): Promise<{ purged: boolean; host: string | null; message?: string }> {
+	const access = await mediaApiAccess(ctx);
+	if (!("config" in access)) {
+		return { purged: false, host: access.hostname, message: access.hostname ? `Images on ${access.hostname} weren't cleared. ${access.reason} The token needs Zone → Cache Purge → Purge.` : access.reason };
+	}
 	try {
-		await purgeHost({ token, accountId, fetch: doFetch }, hostname);
-		return { purged: true, host: hostname };
+		await purgeHost(access.config, access.hostname);
+		return { purged: true, host: access.hostname };
 	} catch (error) {
-		return { purged: false, host: hostname, message: `Images on ${hostname} weren't cleared. ${error instanceof Error ? error.message : String(error)}` };
+		return { purged: false, host: access.hostname, message: `Images on ${access.hostname} weren't cleared. ${error instanceof Error ? error.message : String(error)}` };
 	}
 }
 
