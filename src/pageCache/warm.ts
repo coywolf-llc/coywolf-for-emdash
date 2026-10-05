@@ -43,7 +43,7 @@ export interface WarmState {
 	finishedAt?: string;
 	error?: string;
 	reason: string;
-	/** Read from a row in the format before 0.26 (progress only; nothing works on it). */
+	/** Read from a row in the format before 0.26 (progress only; the next claim converts it, see migrateLegacy). */
 	legacy?: boolean;
 }
 
@@ -166,14 +166,45 @@ type LegacyState = Omit<WarmState, "next"> & { next?: number; queue?: string[] }
 function parseState(raw: string): WarmState | null {
 	try {
 		const state = JSON.parse(raw) as LegacyState;
-		if (typeof state.next === "number") return state as WarmState;
-		// Older format: report it, but it can't be worked on (the next deploy or clear starts a new run).
+		// A `queue` array means the older format, even with a numeric `next`: during a deploy an
+		// old-version isolate can finish a new run's collect step by spreading the new state and
+		// adding `queue` (no URL rows). claimWork migrates it (migrateLegacy).
+		if (typeof state.next === "number" && !Array.isArray(state.queue)) return state as WarmState;
 		const left = Array.isArray(state.queue) ? state.queue.length : 0;
 		const { queue: _queue, ...rest } = state;
-		return { ...rest, next: state.total - left, legacy: true } as WarmState;
+		return { ...rest, next: Math.max(0, (state.total ?? 0) - left), legacy: true } as WarmState;
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Turn a state row in the older format into the current one, so the run goes
+ * on: a pending collect step stays pending; a warm phase's remaining `queue`
+ * is written to URL rows under a new generation (a stale cleanup of the old
+ * one can't delete them) and counted from zero. Finished runs are left as
+ * they are. True when the row now holds a current-format state.
+ */
+async function migrateLegacy(db: D1Database, raw: string, now: number): Promise<boolean> {
+	let legacy: LegacyState;
+	try {
+		legacy = JSON.parse(raw) as LegacyState;
+	} catch {
+		return false;
+	}
+	const { queue, ...rest } = legacy;
+	if (rest.phase === "collect") return swap(db, raw, { ...rest, next: 0, total: 0 });
+	if (rest.phase !== "warm") return false;
+	const urls = Array.isArray(queue) ? queue.filter((u): u is string => typeof u === "string") : [];
+	if (!urls.length) {
+		return swap(db, raw, { ...rest, phase: "done", next: 0, total: 0, finishedAt: rest.finishedAt ?? new Date(now).toISOString() });
+	}
+	const generation = newWarmState(rest.reason, new Date(now)).generation;
+	await writeWarmQueue(db, generation, urls);
+	const migrated: WarmState = { ...rest, generation, next: 0, total: urls.length, warmed: 0, failed: 0 };
+	if (await swap(db, raw, migrated)) return true;
+	await deleteQueue(db, generation).catch(() => undefined);
+	return false;
 }
 
 export async function readWarmState(db: D1Database): Promise<WarmState | null> {
@@ -283,10 +314,16 @@ const COLLECT_STALE_MS = 2 * 60_000;
 
 /** Take the next piece of work, if any: reading the sitemap, or a batch of URLs. */
 export async function claimWork(db: D1Database, batchSize: number, now = Date.now()): Promise<Claim> {
-	const raw = await readRaw(db);
+	let raw = await readRaw(db);
 	if (!raw) return null;
-	const state = parseState(raw);
-	if (!state || state.legacy) return null;
+	let state = parseState(raw);
+	if (state?.legacy) {
+		// Written by an isolate still running the older version (during a deploy): convert it, then claim.
+		if (!(await migrateLegacy(db, raw, now))) return null;
+		raw = await readRaw(db);
+		state = raw ? parseState(raw) : null;
+	}
+	if (!raw || !state || state.legacy) return null;
 	if (state.phase === "collect") {
 		if (state.collectingAt && now - Date.parse(state.collectingAt) < COLLECT_STALE_MS) return null;
 		const next = { ...state, collectingAt: new Date(now).toISOString() };

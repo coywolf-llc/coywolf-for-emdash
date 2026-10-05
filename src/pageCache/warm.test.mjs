@@ -194,13 +194,56 @@ test("a new run clears older runs' URL rows; a superseded collect doesn't leave 
 	assert.equal((await readWarmState(db)).generation, fresh.generation);
 });
 
-test("progress rows from before the queue rows are reported but not worked on", async () => {
+test("progress rows from before the queue rows are reported, then moved to URL rows and worked on", async () => {
 	const db = fakeDb();
-	db.rows.set(WARM_STATE_OPTION, JSON.stringify({ ...newWarmState("x"), next: undefined, phase: "warm", queue: ["https://x.com/3/"], total: 3, warmed: 2 }));
+	const legacy = { ...newWarmState("x"), next: undefined, phase: "warm", queue: ["https://x.com/3/"], total: 3, warmed: 2 };
+	db.rows.set(WARM_STATE_OPTION, JSON.stringify(legacy));
 	const state = await readWarmState(db);
+	assert.equal(state.legacy, true);
 	assert.equal(remainingUrls(state), 1);
 	assert.equal(state.queue, undefined);
+	const claim = await claimWork(db, 4);
+	assert.equal(claim.kind, "warm");
+	assert.deepEqual(claim.urls, ["https://x.com/3/"]);
+	assert.notEqual(claim.state.generation, legacy.generation, "a new generation, so a stale cleanup of the old one can't remove its rows");
+	const migrated = JSON.parse(db.rows.get(WARM_STATE_OPTION));
+	assert.equal(migrated.queue, undefined);
+	assert.equal(migrated.total, 1);
+});
+
+test("deploy race: an old isolate finishing a new run's collect (queue + next, no URL rows) doesn't fail every page", async () => {
+	const db = fakeDb();
+	const s = site(["/a/", "/b/", "/c/"]);
+	const fresh = await startWarm(db, "deploy");
+	// What the older version's finishCollect writes: the new state spread, plus `queue`.
+	const urls = ["https://x.com/", "https://x.com/a/", "https://x.com/b/", "https://x.com/c/"];
+	db.rows.set(WARM_STATE_OPTION, JSON.stringify({ ...fresh, phase: "warm", queue: urls, total: urls.length }));
+	assert.deepEqual(queueRows(db), []);
+	await warmStep(db, s, "https://x.com", { budgetMs: 10_000, batchSize: 2 });
+	const state = await readWarmState(db);
+	assert.equal(state.phase, "done");
+	assert.equal(state.warmed, 4);
+	assert.equal(state.failed, 0);
+	assert.equal(state.legacy, undefined);
+	assert.deepEqual(queueRows(db), []);
+});
+
+test("an older-format collect step (queue: [], no next) is still collected", async () => {
+	const db = fakeDb();
+	const { next: _next, ...rest } = newWarmState("deploy");
+	db.rows.set(WARM_STATE_OPTION, JSON.stringify({ ...rest, queue: [] }));
+	const claim = await claimWork(db, 4);
+	assert.equal(claim.kind, "collect");
+	assert.equal(claim.state.next, 0);
+	assert.equal(JSON.parse(db.rows.get(WARM_STATE_OPTION)).queue, undefined);
+});
+
+test("an older-format finished run is only reported", async () => {
+	const db = fakeDb();
+	db.rows.set(WARM_STATE_OPTION, JSON.stringify({ ...newWarmState("x"), next: undefined, phase: "done", queue: [], total: 2, warmed: 2 }));
+	const before = db.rows.get(WARM_STATE_OPTION);
 	assert.equal(await claimWork(db, 4), null);
+	assert.equal(db.rows.get(WARM_STATE_OPTION), before);
 });
 
 test("parallel claims never take the same pages", async () => {
