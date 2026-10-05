@@ -90,10 +90,25 @@ export async function serveRobots(url: URL, method: string, env: Record<string, 
 
 	if (!cache || Date.now() - cache.at > TTL_MS) {
 		try {
-			const [stored, siteUrl] = await Promise.all([
-				readOption<Partial<RobotsConfig>>(db, CONFIG_OPTION),
-				readOption<string>(db, "site:url").catch(() => null),
-			]);
+			// Both rows in one query. The rules can be large and are only needed here, so they
+			// stay out of the feature switches' per-request read (core/features.ts).
+			const { results } = await db
+				.prepare("SELECT name, value FROM options WHERE name IN (?, ?)")
+				.bind(CONFIG_OPTION, "site:url")
+				.all<{ name: string; value: string }>();
+			const parse = (name: string): unknown => {
+				const value = results.find((r) => r.name === name)?.value;
+				if (!value) return null;
+				try {
+					return JSON.parse(value);
+				} catch (error) {
+					// An unreadable Site URL falls back to the request origin; unreadable rules fail the load.
+					if (name === CONFIG_OPTION) throw error;
+					return null;
+				}
+			};
+			const stored = parse(CONFIG_OPTION) as Partial<RobotsConfig> | null;
+			const siteUrl = parse("site:url");
 			const site = typeof siteUrl === "string" ? siteUrl : null;
 			const config = stored ? normalizeConfig(stored) : await importOnce(db, siteOrigin(site, url));
 			if (!config) return undefined; // Import deferred: EmDash's robots.txt is served, and nothing is cached.

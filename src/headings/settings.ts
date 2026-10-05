@@ -1,14 +1,12 @@
 /**
  * Headings & TOC site defaults: one plugin setting ("headings"). Hooks and
  * routes read it through the plugin context; Astro components read the same
- * option row from D1 with a short per-isolate cache (like feature switches).
+ * option row from D1 in the feature switches' query and per-isolate cache.
  */
-import { PLUGIN_ID } from "../core/features.js";
-import { workerEnv } from "../shared.js";
+import { invalidateFeatures, readSiteSetting, registerSiteSetting } from "../core/features.js";
 import { validPrefix } from "./slug.js";
 
 export const SETTINGS_KEY = "headings";
-const OPTION_NAME = `plugin:${PLUGIN_ID}:settings:${SETTINGS_KEY}`;
 
 export type TocListStyle = "none" | "bulleted" | "numbered";
 export type TocDisplay = "open" | "collapsible" | "collapsed";
@@ -96,27 +94,24 @@ export function withLegacyBreadcrumbs(previous: unknown, settings: HeadingsSetti
 
 // ── Outside the plugin context (Astro components) ────────────────
 
-const TTL_MS = 30_000;
-let cached: { settings: HeadingsSettings; at: number } | null = null;
+registerSiteSetting(SETTINGS_KEY);
+
+/** The last stored value and its normalized settings, so a cache hit doesn't normalize again. */
+let memo: { raw: unknown; settings: HeadingsSettings } | null = null;
 
 export function invalidateHeadingsSettings(): void {
-	cached = null;
+	invalidateFeatures();
 }
 
-/** Read the settings straight from D1. Falls back to defaults if the database can't be read. */
+/** The settings from D1 (in the feature switches' query and cache). Falls back to defaults if the database can't be read. */
 export async function siteHeadingsSettings(database = "DB"): Promise<HeadingsSettings> {
-	if (cached && Date.now() - cached.at < TTL_MS) return cached.settings;
-	let stored: unknown = null;
-	try {
-		const env = await workerEnv();
-		const db = env[database] as D1Database | undefined;
-		const row = db ? await db.prepare("SELECT value FROM options WHERE name = ?").bind(OPTION_NAME).first<{ value: string }>() : null;
-		stored = row?.value ? JSON.parse(row.value) : null;
-	} catch (error) {
-		console.error("coywolf-pack: could not read heading settings", error);
+	const read = await readSiteSetting(SETTINGS_KEY, database);
+	if (!read) {
+		console.error("coywolf-pack: could not read heading settings");
 		return DEFAULT_SETTINGS;
 	}
-	const settings = normalizeSettings(stored);
-	cached = { settings, at: Date.now() };
+	if (memo && memo.raw === read.value) return memo.settings;
+	const settings = normalizeSettings(read.value);
+	memo = { raw: read.value, settings };
 	return settings;
 }

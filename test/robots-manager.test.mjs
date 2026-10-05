@@ -661,6 +661,7 @@ test("Extra lines that block everything are reported (without blocking the save)
 test("takeover: a failed read of EmDash's settings imports nothing and serves EmDash's file", async () => {
 	const mw = await import("../src/robots/middleware.ts");
 	let writes = 0;
+	let reads = 0;
 	// A tiny fake: SELECTs return null except site:seo, which fails.
 	const db = {
 		prepare(sql) {
@@ -674,6 +675,10 @@ test("takeover: a failed read of EmDash's settings imports nothing and serves Em
 					if (arg === "site:seo") throw new Error("D1 timeout");
 					return null;
 				},
+				async all() {
+					reads++;
+					return { results: [] };
+				},
 				async run() {
 					writes++;
 				},
@@ -683,5 +688,7 @@ test("takeover: a failed read of EmDash's settings imports nothing and serves Em
 	const res = await mw.serveRobots(new URL("https://example.com/robots.txt"), "GET", { DB: db });
 	assert.equal(res, undefined);
 	assert.equal(writes, 0);
+	// The saved rules and the Site URL come from one query.
+	assert.equal(reads, 1);
 	await assert.rejects(() => mw.readEmdashCustomRobots(db));
 });

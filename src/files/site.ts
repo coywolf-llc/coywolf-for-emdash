@@ -1,11 +1,11 @@
 /**
  * Site-side reads and writes for File Downloads, outside the plugin context
  * (the download middleware and the Astro download card). They go straight to
- * D1: plugin settings live in `options`, large uploads and download counts in
- * `_plugin_storage`, media library files in `media`. Reads are cached per
- * isolate; download counts are batched and written after the response.
+ * D1: plugin settings live in `options` (read with the feature switches),
+ * large uploads and download counts in `_plugin_storage`, media library files
+ * in `media`. Reads are cached per isolate; download counts are batched and written after the response.
  */
-import { PLUGIN_ID } from "../core/features.js";
+import { PLUGIN_ID, invalidateFeatures, readSiteSetting, registerSiteSetting } from "../core/features.js";
 import { createDownloadCounter } from "./counts.js";
 import { isUploadId, normalizeBase, safeColor } from "./format.js";
 
@@ -48,18 +48,21 @@ export interface UploadDoc {
 }
 
 const SETTING_KEYS = ["filesBase", "filesPublicBaseUrl", "filesScheme", "filesAccent"] as const;
-const SETTINGS_TTL = 30_000;
+for (const key of SETTING_KEYS) registerSiteSetting(key);
 const FILE_TTL = 60_000;
 const FILE_CACHE_MAX = 500;
 
-let settingsCache: { value: SiteSettings; at: number } | null = null;
+/** The last stored values and the settings made from them, so a cache hit doesn't rebuild them. */
+let settingsMemo: { raw: unknown[]; value: SiteSettings } | null = null;
 const fileCache = new Map<string, { value: FileRecord | null; at: number }>();
 
 /** Forget cached settings and files (after admin changes in this isolate). */
 export function invalidateSiteCache(id?: string): void {
-	settingsCache = null;
 	if (id) fileCache.delete(id);
-	else fileCache.clear();
+	else {
+		invalidateFeatures();
+		fileCache.clear();
+	}
 }
 
 export function settingsFrom(raw: Record<string, unknown>): SiteSettings {
@@ -73,27 +76,15 @@ export function settingsFrom(raw: Record<string, unknown>): SiteSettings {
 	};
 }
 
+/** The settings from D1, in the feature switches' query and per-isolate cache (defaults if it can't be read). */
 export async function readSiteSettings(db: D1Database): Promise<SiteSettings> {
-	if (settingsCache && Date.now() - settingsCache.at < SETTINGS_TTL) return settingsCache.value;
-	const raw: Record<string, unknown> = {};
-	try {
-		const names = SETTING_KEYS.map((k) => `plugin:${PLUGIN_ID}:settings:${k}`);
-		const { results } = await db
-			.prepare(`SELECT name, value FROM options WHERE name IN (${names.map(() => "?").join(",")})`)
-			.bind(...names)
-			.all<{ name: string; value: string }>();
-		for (const row of results ?? []) {
-			try {
-				raw[row.name.slice(row.name.lastIndexOf(":") + 1)] = JSON.parse(row.value);
-			} catch {
-				// Ignore an unreadable value; the default applies.
-			}
-		}
-	} catch (error) {
-		console.error("coywolf-pack files: could not read settings", error);
-	}
-	const value = settingsFrom(raw);
-	settingsCache = { value, at: Date.now() };
+	const reads = await Promise.all(SETTING_KEYS.map((key) => readSiteSetting(key, db)));
+	if (reads.some((r) => !r)) console.error("coywolf-pack files: could not read settings");
+	const raw = reads.map((r) => r?.value ?? null);
+	const memo = settingsMemo;
+	if (memo && raw.every((v, i) => v === memo.raw[i])) return memo.value;
+	const value = settingsFrom(Object.fromEntries(SETTING_KEYS.map((key, i) => [key, raw[i] ?? undefined])));
+	settingsMemo = { raw, value };
 	return value;
 }
 
