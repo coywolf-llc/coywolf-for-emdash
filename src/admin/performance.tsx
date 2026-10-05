@@ -5,8 +5,8 @@
  * images. Cloudflare's zone "Purge Everything" doesn't reach the pages (the
  * cache belongs to the Worker, not the zone).
  */
-import { Banner, Button, Input } from "@cloudflare/kumo";
-import { ArrowsClockwise, Lightning } from "@phosphor-icons/react";
+import { Banner, Button, Input, Switch } from "@cloudflare/kumo";
+import { ArrowsClockwise, Fire, Lightning } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
@@ -29,6 +29,32 @@ interface MediaCache {
 
 type Notice = { variant: "default" | "error"; text: string } | null;
 
+interface WarmStatus {
+	enabled: boolean;
+	state: {
+		phase: "collect" | "warm" | "done" | "failed";
+		startedAt: string;
+		finishedAt?: string;
+		total: number;
+		warmed: number;
+		failed: number;
+		remaining: number;
+		error?: string;
+		reason: string;
+	} | null;
+}
+
+const REASON: Record<string, string> = { deploy: "after a deploy", settings: "after a settings change", cleared: "after the cache was cleared", manual: "on request" };
+
+function warmText(state: NonNullable<WarmStatus["state"]>): string {
+	const when = REASON[state.reason] ?? "";
+	if (state.phase === "collect") return `Starting ${when}: reading the sitemap…`;
+	if (state.phase === "warm") return `Warming ${when}: ${state.warmed} of ${state.total} pages done.`;
+	if (state.phase === "failed") return state.error ?? "The last run failed.";
+	const at = state.finishedAt ? new Date(state.finishedAt).toLocaleString() : "";
+	return `Last run ${when}: ${state.warmed} of ${state.total} pages warmed${state.failed ? ` (${state.failed} didn't load)` : ""}${at ? `, finished ${at}` : ""}.`;
+}
+
 async function post<T>(path: string, body?: unknown): Promise<T> {
 	const response = await apiFetch(`${API}/${path}`, {
 		method: "POST",
@@ -43,8 +69,28 @@ export function PerformancePage() {
 	const [lifetimes, setLifetimes] = React.useState<Lifetimes | null>(null);
 	const [draft, setDraft] = React.useState({ maxAgeDays: "", refreshDays: "" });
 	const [media, setMedia] = React.useState<MediaCache | null>(null);
-	const [busy, setBusy] = React.useState<"save" | "media" | "clear" | null>(null);
+	const [busy, setBusy] = React.useState<"save" | "media" | "clear" | "warm" | null>(null);
 	const [notice, setNotice] = React.useState<Notice>(null);
+	const [warm, setWarm] = React.useState<WarmStatus | null>(null);
+
+	const loadWarm = React.useCallback(async () => {
+		try {
+			setWarm(await parseApiResponse<WarmStatus>(await apiFetch(`${API}/warm/status`), "Couldn't load cache warming"));
+		} catch {
+			// Shown as missing; the rest of the page still works.
+		}
+	}, []);
+
+	// While a run is going, refresh its progress.
+	const running = warm?.state && (warm.state.phase === "collect" || warm.state.phase === "warm");
+	React.useEffect(() => {
+		void loadWarm();
+	}, [loadWarm]);
+	React.useEffect(() => {
+		if (!running) return;
+		const timer = setInterval(() => void loadWarm(), 5000);
+		return () => clearInterval(timer);
+	}, [running, loadWarm]);
 
 	const load = React.useCallback(async () => {
 		try {
@@ -61,7 +107,7 @@ export function PerformancePage() {
 		void load();
 	}, [load]);
 
-	async function run(kind: "save" | "media" | "clear", action: () => Promise<string>) {
+	async function run(kind: "save" | "media" | "clear" | "warm", action: () => Promise<string>) {
 		setBusy(kind);
 		setNotice(null);
 		try {
@@ -97,6 +143,20 @@ export function PerformancePage() {
 			const warning = !result.images.purged && result.images.host ? ` ${result.images.message ?? ""}` : "";
 			if (warning) throw new Error(`Cleared ${done || "nothing"}.${warning}`);
 			return `Cleared ${done}. Everything is cached again the next time someone visits it.`;
+		});
+
+	const toggleWarm = (enabled: boolean) =>
+		run("warm", async () => {
+			await post("warm/settings/save", { enabled });
+			await loadWarm();
+			return enabled ? "Cache warming is on. It runs after each deploy and whenever the whole cache is cleared." : "Cache warming is off.";
+		});
+
+	const warmNow = () =>
+		run("warm", async () => {
+			await post("warm/start");
+			await loadWarm();
+			return "Warming started. Progress shows below.";
 		});
 
 	const dirty = lifetimes && (String(lifetimes.maxAgeDays) !== draft.maxAgeDays || String(lifetimes.refreshDays) !== draft.refreshDays);
@@ -148,6 +208,37 @@ export function PerformancePage() {
 							{busy === "save" ? "Saving…" : "Save"}
 						</Button>
 					</div>
+				</div>
+
+				<div className="grid gap-3 p-4">
+					<div className="flex flex-wrap items-center justify-between gap-4">
+						<div className="min-w-0 max-w-2xl">
+							<h2 className="text-base font-semibold">Cache warming</h2>
+							<p className="text-sm leading-5 text-pretty text-kumo-subtle">
+								After a deploy or a full clear, every page is cold until someone visits it. Warming visits every page in your
+								sitemap in the background (home page first, then newest posts), a batch each minute, so visitors and search
+								engine crawlers get cached pages. It warms the region where the site runs (with Smart Placement, the one near
+								your database); visitors elsewhere fill their region on their first view.
+							</p>
+						</div>
+						<Switch
+							aria-label={`Cache warming: ${warm?.enabled ? "on" : "off"}`}
+							checked={Boolean(warm?.enabled)}
+							disabled={!warm || busy !== null}
+							transitioning={busy === "warm"}
+							onCheckedChange={(on) => void toggleWarm(on)}
+						/>
+					</div>
+					{warm?.enabled && (
+						<div className="flex flex-wrap items-center justify-between gap-4">
+							<p className="text-sm leading-5 text-kumo-subtle" aria-live="polite">
+								{warm.state ? warmText(warm.state) : "No run yet. It starts after the next deploy or full clear."}
+							</p>
+							<Button variant="secondary" icon={<Fire />} disabled={busy !== null || Boolean(running)} onClick={() => void warmNow()}>
+								{running ? "Warming…" : "Warm now"}
+							</Button>
+						</div>
+					)}
 				</div>
 
 				{lifetimes?.images && media && (
