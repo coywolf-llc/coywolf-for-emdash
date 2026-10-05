@@ -5,6 +5,11 @@
  *   d1/<stamp>/manifest.json   what the dump is and where it came from
  *   media/current/<key>        mirror of the media bucket
  *   media/changed/<stamp>/<key> media replaced or deleted since the previous run
+ *   uploads/current/<key>      mirror of the private form uploads bucket (when bound)
+ *   uploads/changed/<stamp>/<key> uploads replaced or deleted since the previous run
+ *
+ * The backup bucket must stay private: uploads/ holds files people sent
+ * through forms, which aren't public on the site.
  */
 
 export interface Manifest {
@@ -19,8 +24,20 @@ export interface Manifest {
 	gitSha?: string;
 	tables?: number;
 	rows?: number;
-	media?: { copied: number; preserved: number; total: number; pending?: number };
+	media?: MirrorResult;
+	/** Private form uploads, when the site has an uploads bucket. */
+	uploads?: MirrorResult;
 }
+
+export interface MirrorResult {
+	copied: number;
+	preserved: number;
+	total: number;
+	pending?: number;
+}
+
+/** Folder in the backup bucket for each mirrored bucket. */
+export type MirrorPrefix = "media" | "uploads";
 
 export interface BackupEntry extends Manifest {
 	createdAt: string;
@@ -107,7 +124,19 @@ export async function listBackups(bucket: R2Bucket): Promise<BackupEntry[]> {
  * the Workers subrequest limit; the rest are reported as `pending` and copied
  * on the next run.
  */
-export async function mirrorMedia(media: R2Bucket, backups: R2Bucket, stamp: string, maxChanges = 300) {
+export async function mirrorMedia(media: R2Bucket, backups: R2Bucket, stamp: string, maxChanges = 300): Promise<MirrorResult> {
+	return mirrorBucket(media, backups, stamp, "media", maxChanges);
+}
+
+/** mirrorMedia for any bucket, into <prefix>/current/ and <prefix>/changed/<stamp>/. */
+export async function mirrorBucket(
+	media: R2Bucket,
+	backups: R2Bucket,
+	stamp: string,
+	prefix: MirrorPrefix,
+	maxChanges = 300,
+): Promise<MirrorResult> {
+	const current = `${prefix}/current/`;
 	const source = new Map<string, string>();
 	let cursor: string | undefined;
 	do {
@@ -118,17 +147,17 @@ export async function mirrorMedia(media: R2Bucket, backups: R2Bucket, stamp: str
 
 	const mirror = new Map<string, string>();
 	do {
-		const page = await backups.list({ prefix: "media/current/", cursor });
-		for (const object of page.objects) mirror.set(object.key.slice("media/current/".length), object.etag);
+		const page = await backups.list({ prefix: current, cursor });
+		for (const object of page.objects) mirror.set(object.key.slice(current.length), object.etag);
 		cursor = page.truncated ? page.cursor : undefined;
 	} while (cursor);
 
 	let copied = 0;
 	let preserved = 0;
 	const keep = async (key: string) => {
-		const old = await backups.get(`media/current/${key}`);
+		const old = await backups.get(`${current}${key}`);
 		if (!old) return;
-		await backups.put(`media/changed/${stamp}/${key}`, old.body, { httpMetadata: old.httpMetadata });
+		await backups.put(`${prefix}/changed/${stamp}/${key}`, old.body, { httpMetadata: old.httpMetadata });
 		preserved++;
 	};
 
@@ -144,7 +173,7 @@ export async function mirrorMedia(media: R2Bucket, backups: R2Bucket, stamp: str
 		if (mirror.has(key)) await keep(key);
 		const object = await media.get(key);
 		if (!object) continue;
-		await backups.put(`media/current/${key}`, object.body, { httpMetadata: object.httpMetadata });
+		await backups.put(`${current}${key}`, object.body, { httpMetadata: object.httpMetadata });
 		copied++;
 	}
 	for (const key of mirror.keys()) {
@@ -155,7 +184,7 @@ export async function mirrorMedia(media: R2Bucket, backups: R2Bucket, stamp: str
 		}
 		changes++;
 		await keep(key);
-		await backups.delete(`media/current/${key}`);
+		await backups.delete(`${current}${key}`);
 	}
 	return { copied, preserved, total: source.size, pending };
 }
@@ -171,7 +200,9 @@ export async function restoreMissingMedia(
 	media: R2Bucket,
 	backups: R2Bucket,
 	max = 200,
+	prefix: MirrorPrefix = "media",
 ): Promise<{ restored: number; checked: number; pending: number }> {
+	const current = `${prefix}/current/`;
 	const present = new Set<string>();
 	let cursor: string | undefined;
 	do {
@@ -184,10 +215,10 @@ export async function restoreMissingMedia(
 	let checked = 0;
 	let pending = 0;
 	do {
-		const page = await backups.list({ prefix: "media/current/", cursor });
+		const page = await backups.list({ prefix: current, cursor });
 		for (const o of page.objects) {
 			checked++;
-			const key = o.key.slice("media/current/".length);
+			const key = o.key.slice(current.length);
 			if (present.has(key)) continue;
 			if (restored >= max) {
 				pending++;
@@ -203,11 +234,11 @@ export async function restoreMissingMedia(
 	return { restored, checked, pending };
 }
 
-/** Delete database backups and replaced-media copies older than `days`. Returns the number of stamps pruned. */
+/** Delete database backups and replaced media and upload copies older than `days`. Returns the number of stamps pruned. */
 export async function pruneBackups(bucket: R2Bucket, days: number): Promise<number> {
 	const cutoff = makeStamp(new Date(Date.now() - days * 86_400_000));
 	let pruned = 0;
-	for (const prefix of ["d1/", "media/changed/"]) {
+	for (const prefix of ["d1/", "media/changed/", "uploads/changed/"]) {
 		let cursor: string | undefined;
 		do {
 			const page = await bucket.list({ prefix, delimiter: "/", cursor });

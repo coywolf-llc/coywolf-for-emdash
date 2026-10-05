@@ -17,15 +17,21 @@ import {
 	rewind,
 	undoRewind,
 } from "./restore.js";
-import { FILE, type Manifest, STAMP, gzip, listBackups, makeStamp, mirrorMedia, pruneBackups, writeDump } from "./store.js";
+import { FILE, type Manifest, STAMP, gzip, listBackups, makeStamp, mirrorBucket, mirrorMedia, pruneBackups, writeDump } from "./store.js";
 
 export interface BackupsOptions {
 	/** D1 binding of the site database. Default "DB". */
 	database?: string;
 	/** R2 binding of the media bucket. Default "MEDIA". */
 	media?: string;
-	/** R2 binding of the backup bucket (use a separate bucket). Default "BACKUPS". */
+	/** R2 binding of the backup bucket (use a separate, private bucket). Default "BACKUPS". */
 	backups?: string;
+	/**
+	 * R2 binding of the private form uploads bucket (Coywolf Pack → Private form
+	 * uploads), mirrored to uploads/ in the backup bucket. Default "FORM_UPLOADS";
+	 * skipped when the site has no such binding. false leaves uploads out.
+	 */
+	uploads?: string | false;
 	/** Dump file name prefix (e.g. "mysite" -> mysite.sql.gz). Default "database". */
 	name?: string;
 	/**
@@ -72,6 +78,7 @@ export function backupsModule(options: BackupsOptions) {
 		const db = env[options.database ?? "DB"] as D1Database | undefined;
 		const media = env[options.media ?? "MEDIA"] as R2Bucket | undefined;
 		const backups = env[options.backups ?? "BACKUPS"] as R2Bucket | undefined;
+		const uploads = options.uploads === false ? undefined : (env[options.uploads ?? "FORM_UPLOADS"] as R2Bucket | undefined);
 		const missing = [!db && "database", !media && "media", !backups && "backups"].filter(Boolean);
 		if (missing.length) throw PluginRouteError.badRequest(`Backups: missing ${missing.join(", ")} binding (see README).`);
 		const tokenName = options.restore?.tokenSecret ?? "BACKUPS_API_TOKEN";
@@ -86,7 +93,7 @@ export function backupsModule(options: BackupsOptions) {
 						? `Set the ${tokenName} Worker secret to an API token with D1 Edit permission.`
 						: "Add the backups.restore option (accountId, databaseId) in astro.config.mjs.",
 				};
-		return { db: db!, media: media!, backups: backups!, restore, restoreStatus };
+		return { db: db!, media: media!, backups: backups!, uploads, restore, restoreStatus };
 	}
 
 	async function readDump(backups: R2Bucket, stamp: string): Promise<{ manifest: Manifest; sql: string }> {
@@ -99,7 +106,7 @@ export function backupsModule(options: BackupsOptions) {
 	}
 
 	async function runBackup(source: "admin" | "scheduled") {
-		const { db, media, backups, restore } = await bindings();
+		const { db, media, backups, uploads, restore } = await bindings();
 		const stamp = makeStamp();
 		const timeTravelBookmark = restore ? await currentBookmark(restore).catch(() => undefined) : undefined;
 		const dump = await dumpDatabase(db);
@@ -107,13 +114,22 @@ export function backupsModule(options: BackupsOptions) {
 		const extra = { database: name, source, timeTravelBookmark, tables: dump.tables, rows: dump.rows };
 		// Save the database first so a media problem can't cost the dump.
 		const manifest = await writeDump(backups, stamp, `${name}.sql.gz`, body, extra);
+		let result = manifest;
 		try {
 			const mediaResult = await mirrorMedia(media, backups, stamp);
-			return await writeDump(backups, stamp, `${name}.sql.gz`, body, { ...extra, media: mediaResult });
+			result = await writeDump(backups, stamp, `${name}.sql.gz`, body, { ...extra, media: mediaResult });
 		} catch (error) {
 			console.error("coywolf backups: media mirror failed; the database backup was saved", error);
-			return manifest;
 		}
+		if (uploads) {
+			try {
+				const uploadsResult = await mirrorBucket(uploads, backups, stamp, "uploads");
+				result = await writeDump(backups, stamp, `${name}.sql.gz`, body, { ...result, uploads: uploadsResult });
+			} catch (error) {
+				console.error("coywolf backups: form uploads mirror failed; the database backup was saved", error);
+			}
+		}
+		return result;
 	}
 
 	async function daily(ctx: SettingsReader & { log: { info(msg: string, data?: unknown): void } }) {
@@ -217,10 +233,21 @@ export function backupsModule(options: BackupsOptions) {
 			methods: ["POST"],
 			request: { body: "none" },
 			handler: async (ctx) => {
-				const { media, backups } = await bindings();
+				// Media first, then private form uploads, in batches; the admin calls again while anything is pending.
+				const { media, backups, uploads } = await bindings();
 				const result = await restoreMissingMedia(media, backups);
-				ctx.log.info("Missing media restored", result);
-				return result;
+				const fromUploads =
+					uploads && !result.pending ? await restoreMissingMedia(uploads, backups, 200, "uploads") : { restored: 0, checked: 0, pending: 0 };
+				const combined = {
+					restored: result.restored + fromUploads.restored,
+					checked: result.checked + fromUploads.checked,
+					// Uploads aren't looked at until media is done, so count them as pending meanwhile.
+					pending: result.pending + (uploads && result.pending ? 1 : fromUploads.pending),
+					media: result,
+					uploads: uploads ? fromUploads : undefined,
+				};
+				ctx.log.info("Missing media restored", combined);
+				return combined;
 			},
 		}),
 

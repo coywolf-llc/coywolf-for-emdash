@@ -30,6 +30,7 @@ interface Backup {
 	tables?: number;
 	rows?: number;
 	media?: { copied: number; preserved: number; total: number; pending?: number };
+	uploads?: { copied: number; preserved: number; total: number; pending?: number };
 }
 
 interface UndoPoint {
@@ -239,7 +240,7 @@ function ScheduleSettings(props: { data: ListResponse; onSaved: () => Promise<vo
 							min={1}
 							max={365}
 							label="Keep backups for (days)"
-							description="Older database backups and replaced media copies are deleted daily. The media mirror itself is kept."
+							description="Older database backups and replaced media and upload copies are deleted daily. The mirrors themselves are kept."
 							value={draft.retentionDays}
 							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft((d) => ({ ...d, retentionDays: e.target.value }))}
 						/>
@@ -301,11 +302,11 @@ export function BackupsPage() {
 				const result = await post<{ restored: number; checked: number; pending?: number }>("restore-media");
 				restored += result.restored;
 				if (!result.pending || !result.restored) break;
-				setNotice({ variant: "default", title: `Restoring media: ${restored} copied, ${result.pending} to go…` });
+				setNotice({ variant: "default", title: `Restoring files: ${restored} copied so far…` });
 			}
 			setNotice({
 				variant: "default",
-				title: restored ? `Restored ${restored} missing media ${restored === 1 ? "file" : "files"}.` : "No media files were missing.",
+				title: restored ? `Restored ${restored} missing ${restored === 1 ? "file" : "files"}.` : "No files were missing.",
 			});
 		} catch (cause) {
 			setNotice({ variant: "error", title: "Media restore failed", description: errorText(cause, "") });
@@ -375,7 +376,7 @@ export function BackupsPage() {
 					</div>
 					<p className="col-span-2 text-sm leading-5 text-pretty text-kumo-subtle">
 						Each backup is a full copy of the database (content, users, settings, menus, redirects) plus a mirror of the
-						media library{data ? `, kept for ${data.retentionDays} days` : ""}. Theme code lives in your Git repository. Download
+						media library and of private form uploads{data ? `, kept for ${data.retentionDays} days` : ""}. Theme code lives in your Git repository. Download
 						any backup to keep your own copy: it's a standard SQL file that restores into any D1 database.
 					</p>
 				</div>
@@ -456,6 +457,7 @@ export function BackupsPage() {
 							<div className="hidden min-w-0 flex-1 truncate text-kumo-subtle md:block">
 								{backup.rows !== undefined ? `${backup.rows.toLocaleString()} rows, ${backup.tables} tables` : "Full database"}
 								{backup.media ? ` · ${backup.media.total} media files${backup.media.pending ? ` (${backup.media.pending} still copying)` : ""}` : ""}
+								{backup.uploads ? ` · ${backup.uploads.total} form uploads${backup.uploads.pending ? ` (${backup.uploads.pending} still copying)` : ""}` : ""}
 							</div>
 							<div className="flex w-10 justify-end">
 								<DropdownMenu>
@@ -518,7 +520,7 @@ export function BackupsPage() {
 					<div>
 						<h2 className="text-base font-semibold">Media library</h2>
 						<p className="text-sm text-kumo-subtle">
-							Copy back any media files that are missing from the library. Existing files are never overwritten.
+							Copy back any media files and private form uploads that are missing. Existing files are never overwritten.
 						</p>
 					</div>
 					<Button variant="secondary" icon={<ImagesSquare />} disabled={mediaPending} onClick={() => void restoreMedia()}>
