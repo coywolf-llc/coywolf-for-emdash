@@ -17,7 +17,7 @@ import { siteFeatures, siteSetting, isOn } from "./core/features.js";
 import { injectAdminEnhancements } from "./core/settings-enhance.js";
 import type { PackMiddleware } from "./core/module.js";
 import { MIDDLEWARE } from "./modules.js";
-import { LIFETIME_DEFAULTS, LIFETIME_SETTINGS, PAGE_CACHE_FEATURE } from "./pageCache/pack.js";
+import { ALWAYS, LIFETIME_DEFAULTS, LIFETIME_SETTINGS } from "./pageCache/pack.js";
 import { applyPageLifetime, purgePageCache, purgesAfter } from "./pageCache/lib.js";
 
 export interface CoywolfPackMiddlewareOptions {
@@ -43,13 +43,13 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 		const waitUntil = (p: Promise<unknown>) => (workers.waitUntil ? workers.waitUntil(p) : void p);
 		const features = await siteFeatures(options.database);
 		// Page cache: a successful pack admin write (settings, redirects, imports…) can change any page.
-		if (isOn(features, PAGE_CACHE_FEATURE) && purgesAfter(context.request.method, context.url.pathname)) {
+		if (purgesAfter(context.request.method, context.url.pathname)) {
 			const response = await next();
 			if (response.status < 400) waitUntil(purgePageCache());
 			return response;
 		}
-		// Page cache lifetimes from Plugins → Coywolf Pack → Performance, on routes the site made cacheable.
-		if (isOn(features, PAGE_CACHE_FEATURE) && context.request.method === "GET") {
+		// Page cache lifetimes from Plugins → Performance, on routes the site made cacheable.
+		if (context.request.method === "GET") {
 			const [maxAgeDays, refreshDays] = await Promise.all([
 				siteSetting<number>(LIFETIME_SETTINGS.maxAgeDays, options.database),
 				siteSetting<number>(LIFETIME_SETTINGS.refreshDays, options.database),
@@ -61,7 +61,7 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 			);
 		}
 		for (const handler of handlers) {
-			if (!isOn(features, handler.feature)) continue;
+			if (handler.feature !== ALWAYS && !isOn(features, handler.feature)) continue;
 			try {
 				const response = await handler.handle(context, env, waitUntil);
 				if (response) return response;

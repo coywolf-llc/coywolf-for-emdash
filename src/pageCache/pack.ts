@@ -1,25 +1,19 @@
 import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
-import { registerFeatures, registerSiteSetting, rememberSiteSetting, requireFeature, siteFeatureOn } from "../core/features.js";
+import { registerSiteSetting, rememberSiteSetting, siteFeatureOn } from "../core/features.js";
 import { parseInput } from "../shared.js";
 import { CLOUDFLARE_API_HOST, CloudflareApiError, applyMediaCacheRule, readMediaCacheRule } from "../images/cloudflare.js";
 import { mediaApiAccess, purgeMediaHost } from "../images/module.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { purgeIfNewVersion, purgePageCache, versionId } from "./lib.js";
 
-export const PAGE_CACHE_FEATURE = "pageCache";
-
-const FEATURES = [
-	{
-		id: PAGE_CACHE_FEATURE,
-		label: "Page cache",
-		description:
-			"For sites using Cloudflare Workers Cache (Astro's cacheCloudflare()): clear cached pages after each deploy and whenever Coywolf Pack settings change. EmDash clears pages itself when content changes.",
-		default: false,
-	},
-];
-registerFeatures(FEATURES);
+/**
+ * Performance is always on (its page sits right below Coywolf Pack). On a site
+ * without Workers Cache its purges do nothing and its lifetimes apply to no
+ * route, so there's nothing to switch off.
+ */
+export const ALWAYS = "*";
 
 /** How long the edge keeps a page, and how long after that it may serve it while refreshing. */
 export const LIFETIME_SETTINGS = { maxAgeDays: "pageCacheMaxAgeDays", refreshDays: "pageCacheRefreshDays" } as const;
@@ -41,13 +35,12 @@ export function pageCachePack(): PackModule {
 	return {
 		id: "pageCache",
 		label: "Page cache",
-		features: FEATURES,
+		features: [],
 		routes: {
 			/** The Performance section: page lifetimes and whether the site has Workers Cache. */
 			"cache/settings": {
 				permission: "plugins:manage" as const,
-				handler: async (ctx: Parameters<typeof requireFeature>[0]) => {
-					await requireFeature(ctx, PAGE_CACHE_FEATURE);
+				handler: async (ctx: Parameters<typeof mediaApiAccess>[0]) => {
 					const [maxAgeDays, refreshDays] = await Promise.all([
 						ctx.settings.get<number>(LIFETIME_SETTINGS.maxAgeDays),
 						ctx.settings.get<number>(LIFETIME_SETTINGS.refreshDays),
@@ -65,7 +58,6 @@ export function pageCachePack(): PackModule {
 				methods: ["POST"],
 				request: { body: "json" },
 				handler: async (ctx) => {
-					await requireFeature(ctx, PAGE_CACHE_FEATURE);
 					const input = parseInput(lifetimeInput, ctx.input);
 					await ctx.settings.set(LIFETIME_SETTINGS.maxAgeDays, input.maxAgeDays);
 					await ctx.settings.set(LIFETIME_SETTINGS.refreshDays, input.refreshDays);
@@ -80,7 +72,6 @@ export function pageCachePack(): PackModule {
 			"cache/media": {
 				permission: "plugins:manage" as const,
 				handler: async (ctx: Parameters<typeof mediaApiAccess>[0]) => {
-					await requireFeature(ctx, PAGE_CACHE_FEATURE);
 					const access = await mediaApiAccess(ctx);
 					if (!("config" in access)) return { host: access.hostname, reason: access.reason, rule: null };
 					try {
@@ -97,7 +88,6 @@ export function pageCachePack(): PackModule {
 				methods: ["POST"],
 				request: { body: "none" },
 				handler: async (ctx) => {
-					await requireFeature(ctx, PAGE_CACHE_FEATURE);
 					const access = await mediaApiAccess(ctx);
 					if (!("config" in access)) throw PluginRouteError.badRequest(access.reason);
 					const zone = await applyMediaCacheRule(access.config, access.hostname).catch(apiError);
@@ -115,7 +105,6 @@ export function pageCachePack(): PackModule {
 				methods: ["POST"],
 				request: { body: "none" },
 				handler: async (ctx) => {
-					await requireFeature(ctx, PAGE_CACHE_FEATURE);
 					const pages = await purgePageCache();
 					const images = (await siteFeatureOn("images")) ? await purgeMediaHost(ctx) : { purged: false, host: null };
 					if (!pages && !images.purged) {
@@ -126,7 +115,7 @@ export function pageCachePack(): PackModule {
 				},
 			}),
 		},
-		// The Clear button lives in the Actions section of the Coywolf Pack page.
+		// Its page (/performance) is listed by index.ts, always, right below Coywolf Pack.
 		adminPages: [],
 		// Clearing the media host's images goes through the Cloudflare API.
 		capabilities: ["network:request"],
@@ -139,7 +128,7 @@ let checkedVersion = false;
 /** Once per isolate: if this is a new deploy, clear the cache (never answers a request). */
 export const pageCacheMiddleware: PackMiddleware = {
 	module: "pageCache",
-	feature: PAGE_CACHE_FEATURE,
+	feature: ALWAYS,
 	handle: (_context, env, waitUntil) => {
 		if (checkedVersion) return undefined;
 		checkedVersion = true;
