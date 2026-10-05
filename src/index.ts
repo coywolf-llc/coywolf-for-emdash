@@ -35,6 +35,8 @@ const VERSION = "0.17.0";
 const PACKAGE = "@coywolf/emdash";
 
 const FEATURES_PAGE = { path: "/features", label: "Coywolf Pack", icon: "toggle-right" };
+/** Always on (not a feature), listed right below Coywolf Pack. */
+const PERFORMANCE_PAGE = { path: "/performance", label: "Performance", icon: "lightning" };
 
 function buildModules(options: CoywolfOptions): PackModule[] {
 	// Module-level, like the search rate limit: createPlugin() runs when the Worker isolate
@@ -45,7 +47,7 @@ function buildModules(options: CoywolfOptions): PackModule[] {
 
 function surfaces(modules: PackModule[]) {
 	return {
-		pages: [FEATURES_PAGE, ...modules.flatMap((m) => m.adminPages ?? [])],
+		pages: [FEATURES_PAGE, PERFORMANCE_PAGE, ...modules.flatMap((m) => m.adminPages ?? [])],
 		widgets: modules.flatMap((m) => m.widgets ?? []),
 		blocks: modules.flatMap((m) => m.portableTextBlocks ?? []),
 		settingsSchema: secretSettingsSchema(modules.map((m) => m.settingsSchema)),
@@ -76,7 +78,7 @@ export function coywolfPlugin(options: CoywolfOptions = {}): PluginDescriptor<Co
  * The admin definition, with `pages` and `widgets` computed on read: EmDash
  * builds the admin manifest (sidebar, dashboard) from them on every admin
  * request, so a module whose main feature is off drops out of the sidebar.
- * The Features page always stays. Before the switches have been read in this
+ * The Features and Performance pages always stay. Before the switches have been read in this
  * isolate, everything is listed.
  */
 function liveAdmin<T extends object>(modules: PackModule[], base: T) {
@@ -87,7 +89,7 @@ function liveAdmin<T extends object>(modules: PackModule[], base: T) {
 	return Object.defineProperties(base, {
 		pages: {
 			enumerable: true,
-			get: () => [FEATURES_PAGE, ...modules.filter(on).flatMap((m) => m.adminPages ?? [])],
+			get: () => [FEATURES_PAGE, PERFORMANCE_PAGE, ...modules.filter(on).flatMap((m) => m.adminPages ?? [])],
 		},
 		widgets: {
 			enumerable: true,

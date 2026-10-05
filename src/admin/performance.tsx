@@ -1,7 +1,7 @@
 /**
- * Performance section of the Coywolf Pack page (shown while Page cache is on):
- * how long Cloudflare's edge keeps pages (Workers Cache), the media host's
- * Cache Rule, and a button that clears every cached page plus the media host's
+ * Performance page (always on, right below Coywolf Pack in the sidebar): how
+ * long Cloudflare's edge keeps pages (Workers Cache), the media host's Cache
+ * Rule, and a button that clears every cached page plus the media host's
  * images. Cloudflare's zone "Purge Everything" doesn't reach the pages (the
  * cache belongs to the Worker, not the zone).
  */
@@ -39,7 +39,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 
 const days = (seconds?: number) => (seconds ? Math.round(seconds / 86400) : 0);
 
-export function PerformanceSection() {
+export function PerformancePage() {
 	const [lifetimes, setLifetimes] = React.useState<Lifetimes | null>(null);
 	const [draft, setDraft] = React.useState({ maxAgeDays: "", refreshDays: "" });
 	const [media, setMedia] = React.useState<MediaCache | null>(null);
@@ -102,18 +102,18 @@ export function PerformanceSection() {
 	const dirty = lifetimes && (String(lifetimes.maxAgeDays) !== draft.maxAgeDays || String(lifetimes.refreshDays) !== draft.refreshDays);
 
 	return (
-		<section className="rounded-lg border border-kumo-line" aria-labelledby="cw-performance-title">
-			<div className="border-b border-kumo-line p-4">
-				<h2 id="cw-performance-title" className="text-base font-semibold">
-					Performance
-				</h2>
+		<div className="space-y-6">
+			<header className="grid min-w-0 gap-4 border-b border-kumo-line pb-4">
+				<h1 className="flex min-h-9 min-w-0 items-center text-2xl font-semibold leading-tight">Performance</h1>
 				<p className="text-sm leading-5 text-pretty text-kumo-subtle">
 					Cloudflare keeps copies of your public pages at its edge (Workers Cache), so visitors get them without waiting for the
 					site to build them. EmDash clears the pages that change when you publish or edit content, menus or settings; Coywolf
-					Pack clears everything after each deploy and whenever its settings change.
+					Pack clears everything after each deploy and whenever its settings change. These settings take effect on sites that
+					turn on Workers Cache (Astro's cacheCloudflare(); see the Coywolf Pack README).
 				</p>
-			</div>
+			</header>
 
+			<section className="rounded-lg border border-kumo-line" aria-label="Performance settings">
 			<div className="divide-y divide-kumo-line">
 				{notice && (
 					<div className="p-4">
@@ -122,7 +122,7 @@ export function PerformanceSection() {
 				)}
 
 				<div className="grid gap-4 p-4">
-					<h3 className="text-sm font-semibold">Page cache</h3>
+					<h2 className="text-base font-semibold">Page cache</h2>
 					<div className="grid gap-4 sm:grid-cols-2">
 						<Input
 							type="number"
@@ -153,7 +153,7 @@ export function PerformanceSection() {
 				{lifetimes?.images && media && (
 					<div className="flex flex-wrap items-center justify-between gap-4 p-4">
 						<div className="min-w-0 max-w-2xl">
-							<h3 className="text-sm font-semibold">Media cache</h3>
+							<h2 className="text-base font-semibold">Media cache</h2>
 							<p className="text-sm leading-5 text-pretty text-kumo-subtle">
 								{!media.host
 									? media.reason
@@ -174,7 +174,7 @@ export function PerformanceSection() {
 
 				<div className="flex flex-wrap items-center justify-between gap-4 p-4">
 					<div className="min-w-0 max-w-2xl">
-						<h3 className="text-sm font-semibold">Clear the cache</h3>
+						<h2 className="text-base font-semibold">Clear the cache</h2>
 						<p className="text-sm leading-5 text-pretty text-kumo-subtle">
 							Removes every cached page and the images on your media host, for example after replacing an image or changing
 							theme files outside a deploy. Cloudflare's “Purge Everything” for the zone doesn't clear these pages; use this
@@ -187,6 +187,7 @@ export function PerformanceSection() {
 					</Button>
 				</div>
 			</div>
-		</section>
+			</section>
+		</div>
 	);
 }

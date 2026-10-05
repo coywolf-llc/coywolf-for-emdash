@@ -214,7 +214,7 @@ export default defineConfig({
 
 and add `"version_metadata": { "binding": "CF_VERSION_METADATA" }` to `wrangler.jsonc`.
 
-EmDash clears the pages it tagged when content, menus or site settings change. The **Page cache** feature (default off) covers the rest, and adds a **Performance** section at the top of **Plugins → Coywolf Pack**:
+EmDash clears the pages it tagged when content, menus or site settings change. **Plugins → Performance** (always on, right below Coywolf Pack; on a site without Workers Cache it does nothing) covers the rest:
 
 - **After a deploy**: the first request a new Worker version handles clears every cached page, so theme and code changes show up right away.
 - **After Coywolf Pack settings change**: any successful admin save to a pack route (schema, redirects, blocks, videos, robots…) clears every cached page.

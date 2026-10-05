@@ -8,6 +8,7 @@ import { DiscoveryPage } from "./discovery.js";
 import { FeaturesPage } from "./features.js";
 import { HeadingsPage } from "./headings.js";
 import { ImagesPage } from "./images.js";
+import { PerformancePage } from "./performance.js";
 import { BreadcrumbsPage } from "./breadcrumbs.js";
 import { FilesPage } from "./files.js";
 import { FormUploadsPage } from "./formUploads.js";
@@ -22,6 +23,7 @@ import { ReviewsPage } from "./reviews.js";
 
 export const pages: PluginAdminExports["pages"] = {
 	"/features": FeaturesPage,
+	"/performance": PerformancePage,
 	"/backups": BackupsPage,
 	"/redirects": RedirectsPage,
 	"/headings": HeadingsPage,
