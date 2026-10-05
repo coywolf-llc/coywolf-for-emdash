@@ -57,6 +57,28 @@ export function mirrorPoster(bucket: Bucket, key: string, source: string, fetche
 	return pending;
 }
 
+/** Request each URL as AVIF and as WebP so the media host resizes and caches them. */
+export function warmSizes(urls: string[], fetcher: typeof fetch = fetch): Promise<unknown> {
+	return Promise.allSettled(
+		urls.flatMap((url) =>
+			["image/avif", "image/webp"].map((accept) =>
+				fetcher(url, { headers: { accept }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }).then((r) => r.body?.cancel()),
+			),
+		),
+	);
+}
+
+/** Run `promise` after the response (waitUntil), or just let it run outside Workers. */
+async function afterResponse(promise: Promise<unknown>): Promise<void> {
+	try {
+		const workers = (await import("cloudflare:workers")) as unknown as { waitUntil?: (p: Promise<unknown>) => void };
+		if (workers.waitUntil) return workers.waitUntil(promise);
+	} catch {
+		// Not in a Worker.
+	}
+	void promise;
+}
+
 /** Forget what this isolate has copied (tests). */
 export function resetMirroredPosters(): void {
 	mirrored.clear();
@@ -85,8 +107,12 @@ export async function hostedPosterImage(
 		const bucket = (await workerEnv())[MEDIA_BINDING] as Bucket | undefined;
 		if (!cdn || !bucket) return { ...stream, full: source };
 		const key = await posterKey(uid, source);
+		const fresh = !mirrored.has(key);
 		if (!(await mirrorPoster(bucket, key, source))) return { ...stream, full: source };
 		const at = (w: number) => `${cdn}/s/${w}/${key}`;
+		// First sight in this isolate: have the media host make each size now (AVIF and WebP),
+		// so the first visitor doesn't wait for the resize. Already-cached sizes cost a cache hit.
+		if (fresh) await afterResponse(warmSizes([...POSTER_WIDTHS.map(at)]));
 		return { src: at(800), srcset: POSTER_WIDTHS.map((w) => `${at(w)} ${w}w`).join(", "), full: at(1200) };
 	} catch {
 		return { ...stream, full: source };
