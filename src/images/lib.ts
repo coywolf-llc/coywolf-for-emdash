@@ -28,6 +28,8 @@ export const FORMATS: Record<string, string> = { webp: "image/webp", avif: "imag
 
 /** MIME types of original files by extension (for og:image:type on media-host URLs). */
 export const EXT_MIME: Record<string, string> = { ...FORMATS, gif: "image/gif", svg: "image/svg+xml" };
+/** Originals the media host (Cloudflare Image Transformations) can resize. */
+const CDN_RESIZABLE = new Set(["jpg", "jpeg", "png", "gif", "webp", "svg", "heic"]);
 
 /** The MIME type of a file extension, or undefined when unknown. */
 export function mimeForExt(ext: string | null | undefined): string | undefined {
@@ -109,7 +111,11 @@ export function cleanImagePath(src: string | null | undefined, options: { width:
 	const height = options.height === undefined ? undefined : Math.round(options.height);
 	if (!(width >= 1 && width <= MAX_DIMENSION) || (height !== undefined && !(height >= 1 && height <= MAX_DIMENSION))) return null;
 	const cdn = imageCdn();
-	if (cdn) return `${cdn}/s/${height === undefined ? width : `${width}x${height}`}/${file.id}.${file.ext}`;
+	if (cdn) {
+		// Cloudflare's resizer reads JPEG, PNG, GIF, WebP, SVG and HEIC, not AVIF (it answers 415).
+		if (!CDN_RESIZABLE.has(file.ext)) return null;
+		return `${cdn}/s/${height === undefined ? width : `${width}x${height}`}/${file.id}.${file.ext}`;
+	}
 	const format = (options.format ?? "webp").toLowerCase();
 	if (!FORMATS[format]) return null;
 	return `${IMAGE_PATH}${file.id}-${height === undefined ? `${width}w` : `${width}x${height}`}.${format}`;

@@ -13,12 +13,12 @@
  */
 import type { MiddlewareHandler } from "astro";
 
-import { siteFeatures, isOn } from "./core/features.js";
+import { siteFeatures, siteSetting, isOn } from "./core/features.js";
 import { injectAdminEnhancements } from "./core/settings-enhance.js";
 import type { PackMiddleware } from "./core/module.js";
 import { MIDDLEWARE } from "./modules.js";
-import { PAGE_CACHE_FEATURE } from "./pageCache/pack.js";
-import { purgePageCache, purgesAfter } from "./pageCache/lib.js";
+import { LIFETIME_DEFAULTS, LIFETIME_SETTINGS, PAGE_CACHE_FEATURE } from "./pageCache/pack.js";
+import { applyPageLifetime, purgePageCache, purgesAfter } from "./pageCache/lib.js";
 
 export interface CoywolfPackMiddlewareOptions {
 	/** D1 binding of the site database. Default "DB". */
@@ -47,6 +47,18 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 			const response = await next();
 			if (response.status < 400) waitUntil(purgePageCache());
 			return response;
+		}
+		// Page cache lifetimes from Plugins → Coywolf Pack → Performance, on routes the site made cacheable.
+		if (isOn(features, PAGE_CACHE_FEATURE) && context.request.method === "GET") {
+			const [maxAgeDays, refreshDays] = await Promise.all([
+				siteSetting<number>(LIFETIME_SETTINGS.maxAgeDays, options.database),
+				siteSetting<number>(LIFETIME_SETTINGS.refreshDays, options.database),
+			]);
+			applyPageLifetime(
+				(context as unknown as { cache?: Parameters<typeof applyPageLifetime>[0] }).cache,
+				maxAgeDays ?? LIFETIME_DEFAULTS.maxAgeDays,
+				refreshDays ?? LIFETIME_DEFAULTS.refreshDays,
+			);
 		}
 		for (const handler of handlers) {
 			if (!isOn(features, handler.feature)) continue;

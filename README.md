@@ -195,7 +195,7 @@ const full = await originalImageUrl(src);
 <a href={full}>Full size</a>
 ```
 
-- `cleanImageUrl(src, { width, height?, format? })`: the resized URL (on the media host when set, else `/media/…`; `format` applies to the Worker route only, as the media host picks it). `null` when the feature is off or `src` isn't a media-library file, so fall back to your usual image code.
+- `cleanImageUrl(src, { width, height?, format? })`: the resized URL (on the media host when set, else `/media/…`; `format` applies to the Worker route only, as the media host picks it). `null` when the feature is off, `src` isn't a media-library file, or it's an AVIF original on a media host (Cloudflare's resizer can't read AVIF), so fall back to your usual image code.
 - `originalImageUrl(src)` (also exported as `mediaUrl`): the original file on the media host; returns `src` unchanged when the feature is off, no media host is set, or `src` isn't a media-library file.
 - `imageDimensions(srcs)`: a `Map` of `src` → `{ width, height }` from the media library, for images whose Portable Text block has no size (WordPress imports don't record one). One query for a whole page, remembered per isolate; works whether or not the feature is on. Use it to build `srcset` and set `width`/`height` on content images.
 
@@ -214,11 +214,13 @@ export default defineConfig({
 
 and add `"version_metadata": { "binding": "CF_VERSION_METADATA" }` to `wrangler.jsonc`.
 
-EmDash clears the pages it tagged when content, menus or site settings change. The **Page cache** feature (default off) covers the rest:
+EmDash clears the pages it tagged when content, menus or site settings change. The **Page cache** feature (default off) covers the rest, and adds a **Performance** section at the top of **Plugins → Coywolf Pack**:
 
 - **After a deploy**: the first request a new Worker version handles clears every cached page, so theme and code changes show up right away.
 - **After Coywolf Pack settings change**: any successful admin save to a pack route (schema, redirects, blocks, videos, robots…) clears every cached page.
-- **Plugins → Coywolf Pack → Actions → Clear pages and images** (shown while the feature is on): clears every cached page now, plus the media host's images (originals and resized copies) from the zone cache. Cloudflare's zone **Purge Everything** doesn't reach Workers Cache, which belongs to the Worker. Clearing images uses the Clean Image URLs API token, which needs **Zone → Cache Purge → Purge**.
+- **Page cache lifetimes**: how many days the edge keeps a page (default 7) and how many more days it may serve it while fetching a fresh copy in the background (default 1). They replace the `routeRules` lifetimes on the routes the site made cacheable, at runtime, so no deploy is needed. Routes without a route rule are never cached by this.
+- **Media cache**: shows whether the media host (Clean Image URLs) has a Cloudflare Cache Rule, and **Cache media for a year** adds one (edge and browser TTL one year; media file names never change). Needs the Clean Image URLs token with **Zone → Cache Rules → Edit**. Other cache rules on the zone are kept.
+- **Clear pages and images**: clears every cached page now, plus the media host's images (originals and resized copies) from the zone cache. Cloudflare's zone **Purge Everything** doesn't reach Workers Cache, which belongs to the Worker. Clearing images uses the Clean Image URLs token, which needs **Zone → Cache Purge → Purge**.
 
 Pack redirects send `Cloudflare-CDN-Cache-Control: no-store`, so the edge never caches them and hit counts stay accurate; browsers still keep them for an hour.
 

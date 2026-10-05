@@ -31,6 +31,7 @@ const PERMISSION_HINT: Record<string, string> = {
 	domain: "Account → Workers R2 Storage → Edit and Zone → DNS → Edit",
 	rules: "Zone → Transform Rules → Edit (and Account → Account Rulesets → Read)",
 	purge: "Zone → Cache Purge → Purge",
+	cacheRules: "Zone → Cache Rules → Edit",
 };
 
 async function cf<T>(config: CloudflareConfig, path: string, init: RequestInit = {}, step?: string): Promise<{ status: number; result: T | null }> {
@@ -55,6 +56,77 @@ async function cf<T>(config: CloudflareConfig, path: string, init: RequestInit =
 export async function purgeHost(config: CloudflareConfig, hostname: string): Promise<void> {
 	const zone = await findZone(config, hostname);
 	await cf(config, `/zones/${zone.id}/purge_cache`, { method: "POST", body: JSON.stringify({ hosts: [hostname] }) }, "purge");
+}
+
+/** Description that marks the media host's cache rule as the pack's own. */
+export const MEDIA_CACHE_RULE = "Coywolf Pack: media host";
+const YEAR = 31536000;
+
+interface CacheRule {
+	id?: string;
+	description?: string;
+	expression?: string;
+	action?: string;
+	action_parameters?: { cache?: boolean; edge_ttl?: { default?: number }; browser_ttl?: { default?: number } };
+	enabled?: boolean;
+}
+
+function mediaCacheRule(hostname: string): CacheRule {
+	return {
+		description: `${MEDIA_CACHE_RULE} (file names never change)`,
+		expression: `(http.host eq "${hostname}")`,
+		action: "set_cache_settings",
+		action_parameters: { cache: true, edge_ttl: { mode: "override_origin", default: YEAR }, browser_ttl: { mode: "override_origin", default: YEAR } } as CacheRule["action_parameters"],
+		enabled: true,
+	};
+}
+
+/**
+ * The media host's Cache Rule, if any: a zone cache rule for exactly this host
+ * name that caches it (made by the pack or by hand).
+ */
+export async function readMediaCacheRule(config: CloudflareConfig, hostname: string): Promise<{ zone: string; rule: { edgeTtl?: number; browserTtl?: number; enabled: boolean } | null }> {
+	const zone = await findZone(config, hostname);
+	let rules: CacheRule[] = [];
+	try {
+		const { result } = await cf<{ rules?: CacheRule[] }>(config, `/zones/${zone.id}/rulesets/phases/http_request_cache_settings/entrypoint`, {}, "cacheRules");
+		rules = result?.rules ?? [];
+	} catch (error) {
+		if (!(error instanceof CloudflareApiError && error.status === 404)) throw error;
+	}
+	const rule = rules.find((r) => r.action === "set_cache_settings" && r.action_parameters?.cache === true && r.expression?.includes(`"${hostname}"`));
+	return {
+		zone: zone.name,
+		rule: rule ? { edgeTtl: rule.action_parameters?.edge_ttl?.default, browserTtl: rule.action_parameters?.browser_ttl?.default, enabled: rule.enabled !== false } : null,
+	};
+}
+
+/**
+ * Cache the media host at the edge and in browsers for a year (its file names
+ * are unique, so a changed file always has a new name). Adds the rule to the
+ * zone's cache rules, or updates the pack's earlier one; other rules are kept.
+ */
+export async function applyMediaCacheRule(config: CloudflareConfig, hostname: string): Promise<string> {
+	const zone = await findZone(config, hostname);
+	const phase = `/zones/${zone.id}/rulesets/phases/http_request_cache_settings/entrypoint`;
+	let ruleset: { id: string; rules?: CacheRule[] } | null = null;
+	try {
+		ruleset = (await cf<{ id: string; rules?: CacheRule[] }>(config, phase, {}, "cacheRules")).result;
+	} catch (error) {
+		if (!(error instanceof CloudflareApiError && error.status === 404)) throw error;
+	}
+	const rule = mediaCacheRule(hostname);
+	if (!ruleset) {
+		await cf(config, phase, { method: "PUT", body: JSON.stringify({ rules: [rule] }) }, "cacheRules");
+		return zone.name;
+	}
+	const existing = ruleset.rules?.find((r) => r.description?.startsWith(MEDIA_CACHE_RULE) && r.expression?.includes(`"${hostname}"`));
+	if (existing?.id) {
+		await cf(config, `/zones/${zone.id}/rulesets/${ruleset.id}/rules/${existing.id}`, { method: "PATCH", body: JSON.stringify(rule) }, "cacheRules");
+	} else {
+		await cf(config, `/zones/${zone.id}/rulesets/${ruleset.id}/rules`, { method: "POST", body: JSON.stringify(rule) }, "cacheRules");
+	}
+	return zone.name;
 }
 
 /** The zone that holds a host name, looked up in the account (most specific name first). */
