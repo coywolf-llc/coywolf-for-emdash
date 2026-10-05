@@ -61,6 +61,19 @@ const BLOCKS = [
 					{ label: "Hide (collapsible tables keep it as the toggle)", value: "hide" },
 				],
 			},
+			{
+				type: "select",
+				action_id: "titleTag",
+				label: "Title heading level (always-open tables)",
+				options: [
+					{ label: "Heading 2", value: "h2" },
+					{ label: "Heading 3", value: "h3" },
+					{ label: "Heading 4", value: "h4" },
+					{ label: "Heading 5", value: "h5" },
+					{ label: "Heading 6", value: "h6" },
+				],
+				initial_value: "h2",
+			},
 			{ type: "checkbox", action_id: "levels", label: "Heading levels (none checked: site default)", options: LEVEL_OPTIONS },
 			{
 				type: "select",

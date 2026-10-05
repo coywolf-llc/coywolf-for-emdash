@@ -1091,6 +1091,24 @@ const FEATURE_LABELS: Record<string, string> = {
 	"schema.authors": "Author profiles",
 };
 
+/**
+ * Kumo's Tabs has no panel part, so each tab gets our own id and points at the
+ * one panel below, which is labeled by the selected tab (not the raw value).
+ */
+const SCHEMA_PANEL_ID = "cw-schema-panel";
+const schemaTabId = (value: string) => `cw-schema-tab-${value}`;
+const SCHEMA_TABS = [
+	{ value: "site", label: "Site details" },
+	{ value: "types", label: "Types" },
+	{ value: "authors", label: "Authors" },
+	{ value: "overrides", label: "Overrides" },
+	{ value: "settings", label: "Robots & social" },
+	{ value: "preview", label: "Preview" },
+].map((t) => ({
+	...t,
+	render: (props: React.ComponentPropsWithRef<"button">) => <button {...props} id={schemaTabId(t.value)} aria-controls={SCHEMA_PANEL_ID} />,
+}));
+
 export function SchemaPage() {
 	const [config, setConfig] = React.useState<Config>();
 	const [bylines, setBylines] = React.useState<Byline[]>();
@@ -1148,19 +1166,8 @@ export function SchemaPage() {
 				</div>
 			) : config ? (
 				<>
-					<Tabs
-						value={tab}
-						onValueChange={setTab}
-						tabs={[
-							{ value: "site", label: "Site details" },
-							{ value: "types", label: "Types" },
-							{ value: "authors", label: "Authors" },
-							{ value: "overrides", label: "Overrides" },
-							{ value: "settings", label: "Robots & social" },
-							{ value: "preview", label: "Preview" },
-						]}
-					/>
-					<div role="tabpanel" aria-label={tab}>
+					<Tabs value={tab} onValueChange={setTab} tabs={SCHEMA_TABS} />
+					<div role="tabpanel" id={SCHEMA_PANEL_ID} aria-labelledby={schemaTabId(tab)}>
 						{tab === "site" && <SiteTab config={config} bylines={bylines} onSaved={(site) => setConfig({ ...config, site })} />}
 						{tab === "types" && <TypesTab config={config} onSaved={(types) => setConfig({ ...config, types })} />}
 						{tab === "authors" && <AuthorsTab config={config} bylines={bylines} authorsOn={authorsOn} reload={() => void loadAuthors()} />}

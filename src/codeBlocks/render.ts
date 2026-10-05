@@ -289,7 +289,7 @@ export const CHROME_CSS = [
 	".cw-code pre:focus-visible{outline:2px solid currentColor;outline-offset:-2px}",
 	".cw-code code{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace;font-size:inherit;background:none;padding:0;color:inherit;white-space:pre}",
 	".cw-code--lines code{counter-reset:cw-line}",
-	".cw-code--lines .cw-line::before{counter-increment:cw-line;content:counter(cw-line);display:inline-block;width:2.5ch;margin-right:1.25ch;text-align:right;opacity:.5;user-select:none}",
+	".cw-code--lines .cw-line::before{counter-increment:cw-line;content:counter(cw-line);display:inline-block;width:2.5ch;margin-right:1.25ch;text-align:right;color:var(--cw-line,currentColor);user-select:none}",
 	".cw-code-copy{position:absolute;top:.375rem;right:.375rem;display:inline-flex;align-items:center;justify-content:center;width:2rem;height:2rem;padding:0;color:inherit;background:transparent;border:1px solid color-mix(in srgb,currentColor 25%,transparent);border-radius:.5rem;cursor:pointer;opacity:.75;transition:opacity .15s ease,background-color .15s ease}",
 	".cw-code-copy:hover{opacity:1;background:color-mix(in srgb,currentColor 10%,transparent)}",
 	".cw-code-copy:focus-visible{opacity:1;outline:2px solid currentColor;outline-offset:2px}",

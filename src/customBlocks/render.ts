@@ -355,13 +355,13 @@ export const CUSTOM_BLOCKS_CSS = `.cw-note,.cw-details,.cw-disclosure,.cw-quote,
 .cw-details .cw-details__body{padding-bottom:.75em}
 .cw-details .cw-details__body>:first-child{margin-top:0}
 .cw-details--transcript .cw-details__body{padding:.75em 1em;margin-bottom:.75em;border-radius:.375em;background:color-mix(in srgb,currentColor 5%,transparent)}
-.cw-disclosure .cw-disclosure__text{margin:0;font-size:.875em;line-height:1.5;color:color-mix(in srgb,currentColor 68%,transparent)}
+.cw-disclosure .cw-disclosure__text{margin:0;font-size:.875em;line-height:1.5;color:color-mix(in srgb,currentColor 82%,transparent)}
 .cw-disclosure a{color:inherit;text-decoration-thickness:1px;text-underline-offset:.15em}
 .cw-quote{margin-inline:0}
 .cw-quote .cw-quote__text{margin:0;padding:.25em 0 .25em 1.25em;border-inline-start:4px solid color-mix(in srgb,currentColor 30%,transparent);font-size:1.05em}
 .cw-quote .cw-quote__text>:first-child{margin-top:0}
 .cw-quote .cw-quote__text>:last-child{margin-bottom:0}
-.cw-quote .cw-quote__caption{margin:.6em 0 0 1.5em;font-size:.9em;color:color-mix(in srgb,currentColor 72%,transparent)}
+.cw-quote .cw-quote__caption{margin:.6em 0 0 1.5em;font-size:.9em;color:color-mix(in srgb,currentColor 82%,transparent)}
 .cw-quote .cw-quote__caption::before{content:"— "}
 .cw-quote .cw-quote__caption cite{font-style:normal}
 .cw-testimonial{margin-inline:0;text-align:start}
@@ -374,7 +374,7 @@ export const CUSTOM_BLOCKS_CSS = `.cw-note,.cw-details,.cw-disclosure,.cw-quote,
 .cw-testimonial .cw-testimonial__person{display:flex;align-items:center;gap:.75em;margin:0 0 0 1em;font-size:.9em;line-height:1.35}
 .cw-testimonial .cw-testimonial__photo{flex:none;width:3.5em;height:3.5em;margin:0;border-radius:50%;object-fit:cover;background:color-mix(in srgb,currentColor 12%,transparent)}
 .cw-testimonial .cw-testimonial__name{display:block;font-weight:700;text-transform:uppercase;letter-spacing:.02em}
-.cw-testimonial .cw-testimonial__title{display:block;color:color-mix(in srgb,currentColor 72%,transparent)}
+.cw-testimonial .cw-testimonial__title{display:block;color:color-mix(in srgb,currentColor 82%,transparent)}
 .cw-testimonial .cw-testimonial__person a{color:inherit;text-decoration-thickness:1px;text-underline-offset:.15em}
 .cw-podcast .cw-podcast__title{margin:0 0 .6em;font-weight:700}
 .cw-podcast p.cw-podcast__title{font-size:1em}

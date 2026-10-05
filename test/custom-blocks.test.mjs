@@ -406,3 +406,9 @@ test("0.10/0.11 testimonial and podcast markers (WordPress's markup only) conver
 	assert.equal(testimonialBlock({}, "<p>other</p>"), null);
 	assert.equal(testimonialBlock({ quote: " " }), null);
 });
+
+test("muted text in the blocks keeps at least 80% of the text color (contrast)", () => {
+	const textMixes = [...R.CUSTOM_BLOCKS_CSS.matchAll(/(?:^|[;{])color:color-mix\(in srgb,currentColor (\d+)%,transparent\)/g)].map((m) => Number(m[1]));
+	assert.ok(textMixes.length >= 3);
+	for (const pct of textMixes) assert.ok(pct >= 80, `${pct}%`);
+});

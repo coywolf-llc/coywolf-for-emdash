@@ -8,8 +8,9 @@ import type { PageMetadataContribution, PageMetadataEvent } from "emdash";
 import { z } from "zod";
 
 import { absoluteUrl, entryUrl } from "../core/content-url.js";
-import { ctxFeatures, isOn, requireFeature, cachedCtxFeatures } from "../core/features.js";
+import { ctxFeatures, isOn, requireCachedFeature, requireFeature, cachedCtxFeatures } from "../core/features.js";
 import { parseInput } from "../shared.js";
+import { ENGAGEMENT_HEADER, ENGAGEMENT_LIMITS, EngagementLimiter, LIKES_BY_PREFIX, hasEngagementHeader, likeAction, likesByKey, staleLikesByKey } from "./engagement.js";
 import {
 	type SitemapEntry,
 	type VideoRef,
@@ -236,7 +237,7 @@ async function videoContributions(ctx: Ctx, page: PageMetadataEvent["page"]): Pr
 	// Legacy WordPress markers are rendered (with their own schema) by the theme.
 	const refs = (entry?.videos ?? []).filter((v) => !v.legacy);
 	if (!refs.length) return null;
-	const features = await ctxFeatures(ctx);
+	const features = await cachedCtxFeatures(ctx);
 	const engagement = isOn(features, F.engagement);
 	const uids = refs.map((r) => r.uid);
 	const [meta, counts, cfg] = await Promise.all([metaFor(ctx, uids), engagement ? countsFor(ctx, uids) : Promise.resolve(new Map<string, Counts>()), publicConfig(ctx)]);
@@ -315,10 +316,27 @@ async function dailySalt(ctx: Ctx): Promise<{ day: string; salt: string }> {
 	return stored;
 }
 
-/** A per-day pseudonymous visitor id: the IP and user agent never leave this function. */
-async function visitorHash(ctx: Ctx & { requestMeta: { ip: string | null; userAgent: string | null } }): Promise<{ hash: string; day: string }> {
+/**
+ * A per-day pseudonymous visitor id from the IP address alone (it never leaves
+ * this function). Not the user agent: visitors choose it, so each new one was
+ * a new visitor and could add another play or like.
+ */
+async function visitorHash(ctx: Ctx & { requestMeta: { ip: string | null } }): Promise<{ hash: string; day: string }> {
 	const { day, salt } = await dailySalt(ctx);
-	return { hash: await sha256Hex(`${ctx.requestMeta.ip ?? ""}|${ctx.requestMeta.userAgent ?? ""}|${salt}`), day };
+	return { hash: await sha256Hex(`${ctx.requestMeta.ip ?? ""}|${salt}`), day };
+}
+
+const limiter = new EngagementLimiter();
+const rateLimited = () => new PluginRouteError("RATE_LIMITED", "Too many requests. Try again in a minute.", 429);
+
+/** Videos embedded in published entries: the only ones public routes answer for (drafts stay private). */
+let publishedMemo: { items: EmbedEntry[]; uids: Set<string> } | null = null;
+async function publishedUids(ctx: Ctx): Promise<Set<string>> {
+	const items = await allEmbeds(ctx);
+	if (publishedMemo?.items !== items) {
+		publishedMemo = { items, uids: new Set(items.filter((e) => e.status === "published").flatMap((e) => e.uids)) };
+	}
+	return publishedMemo.uids;
 }
 
 /** Plays already counted by this isolate (visitor+video → time), so reloads don't inflate counts. */
@@ -695,13 +713,17 @@ export function videosModule(options: VideosOptions) {
 			methods: ["POST"],
 			request: { body: "json", maxBytes: 1024 },
 			handler: async (ctx) => {
-				await requireFeature(ctx, F.main);
+				// Called once per video block on every render: the switches, the embed index and
+				// the player settings come from per-isolate caches, and the two reads run together.
+				await requireCachedFeature(ctx, F.main);
 				const { uid } = parseInput(z.object({ uid: uidSchema }), ctx.input);
-				// Only videos embedded in indexed content get metadata (no probing the library by ID).
-				const embedded = (await allEmbeds(ctx)).some((e) => e.uids.includes(uid));
-				const [features, cfg, meta] = await Promise.all([ctxFeatures(ctx), publicConfig(ctx), embedded ? metaStore(ctx).get(uid) : Promise.resolve(null)]);
-				const engagement = isOn(features, F.engagement);
-				const counts = engagement ? ((await statsStore(ctx).get(uid)) ?? { plays: 0, likes: 0 }) : null;
+				const [published, features, cfg] = await Promise.all([publishedUids(ctx), cachedCtxFeatures(ctx), publicConfig(ctx)]);
+				// Only videos embedded in published content get metadata (no probing the library
+				// by ID, and nothing about videos that are only in drafts).
+				const embedded = published.has(uid);
+				const engagement = embedded && isOn(features, F.engagement);
+				const [meta, stats] = await Promise.all([embedded ? metaStore(ctx).get(uid) : Promise.resolve(null), engagement ? statsStore(ctx).get(uid) : Promise.resolve(null)]);
+				const counts = engagement ? (stats ?? { plays: 0, likes: 0 }) : null;
 				return {
 					...cfg,
 					engagement,
@@ -749,12 +771,17 @@ export function videosModule(options: VideosOptions) {
 		"videos/play": definePluginRoute({
 			public: true,
 			methods: ["POST"],
-			request: { body: "json", maxBytes: 512 },
+			request: { body: "json", maxBytes: 512, headers: [ENGAGEMENT_HEADER] },
 			handler: async (ctx) => {
-				await requireFeature(ctx, F.engagement);
+				await requireCachedFeature(ctx, F.engagement);
 				const { uid } = parseInput(z.object({ uid: uidSchema }), ctx.input);
-				if (!(await metaStore(ctx).exists(uid))) throw PluginRouteError.notFound("Unknown video.");
+				if (!(await publishedUids(ctx)).has(uid)) throw PluginRouteError.notFound("Unknown video.");
+				// The header isn't required here: pages cached before it was added (for days, at the
+				// edge) still send plays without it. A play only bumps a counter, and every address
+				// is rate limited and counted once per half hour per isolate, header or not.
+				// Likes (a stored row per visitor) do require it.
 				const { hash } = await visitorHash(ctx);
+				if (!limiter.play(hash)) throw rateLimited();
 				if (seenRecently(`${uid}:${hash}`)) return { plays: ((await statsStore(ctx).get(uid)) ?? { plays: 0 }).plays, counted: false };
 				const counts = await bump(ctx, uid, "plays", 1);
 				return { plays: counts.plays, counted: true };
@@ -764,20 +791,33 @@ export function videosModule(options: VideosOptions) {
 		"videos/like": definePluginRoute({
 			public: true,
 			methods: ["POST"],
-			request: { body: "json", maxBytes: 512 },
+			request: { body: "json", maxBytes: 512, headers: [ENGAGEMENT_HEADER] },
 			handler: async (ctx) => {
-				await requireFeature(ctx, F.engagement);
-				const { uid } = parseInput(z.object({ uid: uidSchema }), ctx.input);
-				if (!(await metaStore(ctx).exists(uid))) throw PluginRouteError.notFound("Unknown video.");
+				await requireCachedFeature(ctx, F.engagement);
+				// Only the Coywolf Video script sends this header, so another site can't like (or
+				// unlike) on a visitor's behalf.
+				if (!hasEngagementHeader(ctx.request.headers)) throw PluginRouteError.forbidden("Missing the X-Coywolf-Video header.");
+				const { uid, liked } = parseInput(z.object({ uid: uidSchema, liked: z.boolean().optional() }), ctx.input);
+				if (!(await publishedUids(ctx)).has(uid)) throw PluginRouteError.notFound("Unknown video.");
 				const { hash, day } = await visitorHash(ctx);
+				if (!limiter.like(hash)) throw rateLimited();
 				const id = await sha256Hex(`${uid}|${hash}`);
 				const likes = (ctx.storage as Record<string, import("emdash").StorageCollection<{ uid: string; day: string }>>)[COLLECTIONS.likes];
-				if (await likes.delete(id)) {
+				const current = async (isLiked: boolean) => ({ likes: ((await statsStore(ctx).get(uid)) ?? { likes: 0 }).likes, liked: isLiked });
+				const action = likeAction(liked, await likes.exists(id));
+				if (action === "keep") return current(Boolean(liked));
+				if (action === "remove") {
+					if (!(await likes.delete(id))) return current(false);
 					const counts = await bump(ctx, uid, "likes", -1);
 					return { likes: counts.likes, liked: false };
 				}
+				// A daily cap on new likes per address: counted in KV (across isolates) and per isolate.
+				const capKey = likesByKey(day, hash);
+				const given = (await ctx.kv.get<number>(capKey)) ?? 0;
+				if (given >= ENGAGEMENT_LIMITS.likesPerDay || !limiter.newLike(hash)) throw rateLimited();
 				const created = await likes.compareAndSet(id, null, { uid, day });
-				if (!created.applied) return { likes: ((await statsStore(ctx).get(uid)) ?? { likes: 0 }).likes, liked: true };
+				if (!created.applied) return current(true);
+				await ctx.kv.set(capKey, given + 1);
 				const counts = await bump(ctx, uid, "likes", 1);
 				return { likes: counts.likes, liked: true };
 			},
@@ -876,6 +916,8 @@ export function videosModule(options: VideosOptions) {
 					if (!old.items.length) break;
 					await likes.deleteMany(old.items.map((x) => x.id));
 				}
+				// And the per-address daily like counts from before then.
+				for (const { key } of await ctx.kv.list(LIKES_BY_PREFIX)) if (staleLikesByKey(key, cutoff)) await ctx.kv.delete(key);
 			},
 		},
 	];

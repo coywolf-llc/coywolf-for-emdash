@@ -739,6 +739,12 @@ export function FilesPage() {
 							{data.countsEnabled && (
 								<div role="cell" className="hidden w-24 text-end tabular-nums md:block" title={file.lastDownload ? `Last download ${formatDate(file.lastDownload)}` : undefined}>
 									{file.downloads.toLocaleString()}
+									{file.lastDownload && (
+										<span className="block text-xs text-kumo-subtle">
+											<span className="sr-only">Last download </span>
+											{formatDate(file.lastDownload)}
+										</span>
+									)}
 								</div>
 							)}
 							<div role="cell" className="w-20 text-end">

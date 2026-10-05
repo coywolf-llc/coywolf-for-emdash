@@ -8,7 +8,7 @@
  */
 import { siteFeatureOn } from "../../core/features.js";
 import { type TocDisplay, type TocListStyle, parseLevels, siteHeadingsSettings } from "../../headings/settings.js";
-import { TOC_CSS, renderTocHtml } from "../../headings/render.js";
+import { TOC_CSS, renderTocHtml, tocTitleTag } from "../../headings/render.js";
 import { buildTocTree, countToc, storedHeadings } from "../../headings/toc.js";
 
 const { node } = Astro.props as { node: Record<string, unknown> };
@@ -26,6 +26,7 @@ if (await siteFeatureOn("headings.toc")) {
 		html = renderTocHtml(tree, {
 			title: (typeof node.title === "string" && node.title.trim()) || defaults.title,
 			showTitle: node.showTitle === "show" ? true : node.showTitle === "hide" ? false : defaults.showTitle,
+			titleTag: tocTitleTag(node.titleTag),
 			listStyle,
 			display,
 			smooth: defaults.smoothScroll,
