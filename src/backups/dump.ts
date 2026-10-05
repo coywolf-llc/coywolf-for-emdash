@@ -11,6 +11,11 @@
  *   4. indexes and the remaining triggers
  *
  * FTS5 shadow tables are skipped: SQLite recreates them with the virtual table.
+ *
+ * D1 rejects any statement over 100 KB (SQLITE_TOOBIG), but the site writes
+ * rows with bound parameters, so a long post can be bigger than that. A row
+ * whose INSERT would be too long is written with its long text values cut
+ * short, followed by UPDATEs that append the rest in pieces under the limit.
  */
 
 interface MasterRow {
@@ -22,6 +27,20 @@ interface MasterRow {
 
 const PAGE_SIZE = 500;
 const SEARCH_PREFIX = "_emdash_fts_";
+/** Longest statement written, in UTF-8 bytes; D1's limit is 100,000. */
+export const MAX_STATEMENT_BYTES = 90_000;
+/** Most UTF-8 bytes of escaped text per piece of a split value. */
+const PIECE_BYTES = 60_000;
+/** In a row too long for one INSERT, text values longer than this are appended separately. */
+const SHORT_BYTES = 2_000;
+/**
+ * Line breaks are written as '||char(10)||', two operators each, and SQLite
+ * refuses expressions deeper than 1,000: at most this many per statement.
+ */
+const MAX_BREAKS = 400;
+const breaks = (s: string) => s.match(/[\r\n]/g)?.length ?? 0;
+/** Option rows that the plugin rebuilds on demand; not worth backing up. */
+const SKIP_OPTION = /^plugin:coywolf-pack:cache:/;
 
 function isInternal(name: string): boolean {
 	return name.startsWith("sqlite_") || name.startsWith("_cf_");
@@ -49,11 +68,76 @@ export function sqlLiteral(value: unknown): string {
 		return `X'${hex}'`;
 	}
 	// Newlines become ||char(10)|| so each INSERT stays on one line.
-	return `'${String(value)
-		.replace(/'/g, "''")
-		.replace(/\r/g, "'||char(13)||'")
-		.replace(/\n/g, "'||char(10)||'")}'`;
+	return `'${escapeText(String(value))}'`;
 }
+
+function escapeText(text: string): string {
+	return text.replace(/'/g, "''").replace(/\r/g, "'||char(13)||'").replace(/\n/g, "'||char(10)||'");
+}
+
+const utf8 = new TextEncoder();
+const bytes = (s: string) => utf8.encode(s).length;
+
+/** Split text into pieces whose escaped form stays under PIECE_BYTES (never inside a surrogate pair). */
+export function splitText(text: string): string[] {
+	const pieces: string[] = [];
+	let start = 0;
+	let size = 0;
+	let lines = 0;
+	for (let i = 0; i < text.length; i++) {
+		const code = text.charCodeAt(i);
+		const pair = code >= 0xd800 && code <= 0xdbff && i + 1 < text.length;
+		const char = pair ? text.slice(i, i + 2) : text[i];
+		const cost = bytes(escapeText(char));
+		const isBreak = char === "\n" || char === "\r";
+		if ((size + cost > PIECE_BYTES || (isBreak && lines >= MAX_BREAKS)) && i > start) {
+			pieces.push(text.slice(start, i));
+			start = i;
+			size = 0;
+			lines = 0;
+		}
+		size += cost;
+		if (isBreak) lines++;
+		if (pair) i++;
+	}
+	pieces.push(text.slice(start));
+	return pieces;
+}
+
+/**
+ * One row as statements: a single INSERT when it fits, otherwise an INSERT
+ * with each long text value's first piece, then UPDATEs appending the rest.
+ * `key` names the columns that identify the row (primary key, or rowid).
+ */
+export function rowStatements(table: string, row: Record<string, unknown>, key: Record<string, unknown>): string[] {
+	const columns = Object.keys(row).filter((c) => c !== ROWID);
+	const insert = (values: Record<string, unknown>) =>
+		`INSERT INTO ${table} (${columns.map(quoteIdent).join(",")}) VALUES(${columns.map((c) => sqlLiteral(values[c])).join(",")});`;
+	const whole = insert(row);
+	const lineCount = columns.reduce((n, c) => n + (typeof row[c] === "string" ? breaks(row[c] as string) : 0), 0);
+	if (bytes(whole) <= MAX_STATEMENT_BYTES && lineCount <= MAX_BREAKS) return [whole];
+
+	// Long text values start empty and are appended piece by piece, so the
+	// INSERT holds only short values however many long columns the row has.
+	const first: Record<string, unknown> = { ...row };
+	const rest: Array<[string, string]> = [];
+	for (const c of columns) {
+		const value = row[c];
+		if (typeof value !== "string" || (bytes(sqlLiteral(value)) <= SHORT_BYTES && breaks(value) <= 20)) continue;
+		first[c] = "";
+		for (const piece of splitText(value)) rest.push([c, piece]);
+	}
+	const where = Object.entries(key)
+		.map(([c, v]) => `${c === ROWID ? "rowid" : quoteIdent(c)}=${sqlLiteral(v)}`)
+		.join(" AND ");
+	return [
+		insert(first),
+		...rest.map(([c, piece]) => `UPDATE ${table} SET ${quoteIdent(c)}=${quoteIdent(c)}||${sqlLiteral(piece)} WHERE ${where};`),
+	];
+}
+
+/** Alias for rowid in dump queries of tables without a primary key. */
+const ROWID = "__coywolf_rowid";
 
 /**
  * Parents before children. D1 may apply a large import in several batches, so
@@ -116,19 +200,24 @@ export async function dumpDatabase(db: D1Database): Promise<DumpResult> {
 	let rows = 0;
 	for (const t of ordered) {
 		const table = quoteIdent(t.name);
-		const order = /WITHOUT\s+ROWID/i.test(t.sql ?? "") ? "" : " ORDER BY rowid";
+		const withRowid = !/WITHOUT\s+ROWID/i.test(t.sql ?? "");
+		const { results: info } = await db.prepare(`PRAGMA table_info(${table})`).all<{ name: string; pk: number }>();
+		const pk = info.filter((c) => c.pk > 0).map((c) => c.name);
+		// Rows are identified by primary key for split values; tables without one by rowid.
+		const select = pk.length || !withRowid ? "*" : `rowid AS ${ROWID}, *`;
+		const keyColumns = pk.length || !withRowid ? pk : [ROWID];
+		const order = withRowid ? " ORDER BY rowid" : "";
 		for (let offset = 0; ; offset += PAGE_SIZE) {
 			const { results } = await db
-				.prepare(`SELECT * FROM ${table}${order} LIMIT ? OFFSET ?`)
+				.prepare(`SELECT ${select} FROM ${table}${order} LIMIT ? OFFSET ?`)
 				.bind(PAGE_SIZE, offset)
 				.all<Record<string, unknown>>();
 			for (const row of results) {
-				const columns = Object.keys(row);
-				out.push(
-					`INSERT INTO ${table} (${columns.map(quoteIdent).join(",")}) VALUES(${columns.map((c) => sqlLiteral(row[c])).join(",")});`,
-				);
+				if (t.name === "options" && typeof row.name === "string" && SKIP_OPTION.test(row.name)) continue;
+				const key = Object.fromEntries(keyColumns.map((c) => [c, row[c]]));
+				out.push(...rowStatements(table, row, key));
+				rows++;
 			}
-			rows += results.length;
 			if (results.length < PAGE_SIZE) break;
 		}
 	}
