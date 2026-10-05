@@ -1,20 +1,28 @@
 /**
- * Guest authors from the Coywolf Guest Author WordPress plugin. It stores one
- * guest per post in post meta (no users, no taxonomy):
+ * Bylines WordPress showed that EmDash's importer doesn't carry over. The
+ * importer credits each post to its WordPress user (`dc:creator`) only, so it
+ * misses:
  *
- *   _guest_author            name (an empty name means "no guest")
- *   _guest_author_url        website (optional)
- *   _guest_author_bio        biographical info (optional, may hold HTML)
- *   _guest_author_avatar_id  attachment id of the avatar (optional)
+ * - co-authors and guest authors from Co-Authors Plus and PublishPress
+ *   Authors. Both attach `author` taxonomy terms to the post
+ *   (`<category domain="author" nicename="…">`). Co-Authors Plus keeps guest
+ *   profiles as `guest-author` posts (meta cap-display_name, cap-user_login,
+ *   cap-website, cap-description, _thumbnail_id) and names a user's term
+ *   after their login (slug `cap-<login>`); PublishPress Authors keeps
+ *   profiles in term meta (user_url, description, avatar);
+ * - guests from the Coywolf Guest Author plugin, which stores one guest per
+ *   post in post meta (no users, no taxonomy) and overrides the byline:
+ *     _guest_author            name (an empty name means "no guest")
+ *     _guest_author_url        website (optional)
+ *     _guest_author_bio        biographical info (optional, may hold HTML)
+ *     _guest_author_avatar_id  attachment id of the avatar (optional)
  *
- * and overrides the post's byline with it. EmDash's importer credits the post
- * to its WordPress user instead, so the WordPress import page reads the guests
- * from the export (wxrGuestAuthors), groups them into bylines (groupGuests),
- * and credits each post to its guest's byline through EmDash's own admin API
- * (bylines are EmDash core data that plugins can only read).
+ * The WordPress import page reads them from the export (wxrGuestAuthors),
+ * groups them into bylines (groupGuests) and posts (postCredits), and credits
+ * each post through EmDash's own admin API (bylines are EmDash core data that
+ * plugins can only read).
  *
- * Pure, no imports beyond siblings: runs in the admin (browser), a Node script
- * and tests.
+ * Pure, no imports: runs in the admin (browser), a Node script and tests.
  */
 
 export interface GuestAuthor {
@@ -30,6 +38,10 @@ export interface GuestAuthor {
 	bio: string;
 	avatarId: number | null;
 	avatarUrl: string;
+	/** Order among the post's authors (0 = first). */
+	position?: number;
+	/** Where it came from: the Coywolf Guest Author plugin, or author terms (Co-Authors Plus, PublishPress Authors). */
+	source?: "guest-author" | "co-authors";
 }
 
 const CDATA = /<!\[CDATA\[([\s\S]*?)\]\]>/g;
@@ -59,7 +71,7 @@ export function itemMeta(item: string): Map<string, string> {
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", rsquo: "’", lsquo: "‘", rdquo: "”", ldquo: "“", ndash: "–", mdash: "—", hellip: "…" };
 
-/** The plugin's schema helper strips tags from the bio (wp_strip_all_tags); EmDash bylines hold plain text too. */
+/** Bios as plain text (EmDash bylines hold plain text; the Coywolf plugin's schema helper strips tags too). */
 export function bioText(html: string): string {
 	return html
 		.replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, "")
@@ -75,27 +87,151 @@ export function bioText(html: string): string {
 		.trim();
 }
 
-/** Every post with a guest author in a WXR export. `attachments` maps attachment ids to URLs (for avatars). */
-export function wxrGuestAuthors(xml: string, attachments?: Map<number, string>): GuestAuthor[] {
-	const out: GuestAuthor[] = [];
+interface AuthorProfile {
+	name: string;
+	url: string;
+	bio: string;
+	avatarId: number | null;
+	/** The WordPress user's login, when the author is a user. */
+	login: string;
+}
+
+const validUrl = (url: string) => (/^https?:\/\/\S+$/i.test(url.trim()) ? url.trim() : "");
+const attachmentId = (v: string | undefined) => {
+	const n = Number(v);
+	return Number.isInteger(n) && n > 0 ? n : null;
+};
+
+function decodeSlug(text: string): string {
+	try {
+		return decodeURIComponent(text);
+	} catch {
+		return text;
+	}
+}
+
+/** WordPress users in the export: login → display name. */
+function wxrUsers(xml: string): Map<string, string> {
+	const users = new Map<string, string>();
+	for (const m of xml.matchAll(/<wp:author>([\s\S]*?)<\/wp:author>/g)) {
+		const login = (tag(m[1] as string, "wp:author_login") ?? "").trim();
+		if (login) users.set(login, (tag(m[1] as string, "wp:author_display_name") ?? "").trim() || login);
+	}
+	return users;
+}
+
+/** Author profiles by term slug: Co-Authors Plus guest-author posts and PublishPress Authors terms. */
+function authorProfiles(xml: string, users: Map<string, string>): Map<string, AuthorProfile> {
+	const profiles = new Map<string, AuthorProfile>();
 	for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
 		const item = m[1] as string;
-		if (!item.includes("_guest_author")) continue;
+		if ((tag(item, "wp:post_type") ?? "").trim() !== "guest-author") continue;
 		const meta = itemMeta(item);
-		const name = (meta.get("_guest_author") ?? "").trim();
-		if (!name) continue;
-		const avatarId = Number(meta.get("_guest_author_avatar_id"));
-		const url = (meta.get("_guest_author_url") ?? "").trim();
-		out.push({
+		const login = (meta.get("cap-user_login") ?? "").trim();
+		const profile: AuthorProfile = {
+			name: (meta.get("cap-display_name") ?? "").trim() || (tag(item, "title") ?? "").trim() || login,
+			url: validUrl(meta.get("cap-website") ?? ""),
+			bio: bioText(meta.get("cap-description") ?? ""),
+			avatarId: attachmentId(meta.get("_thumbnail_id")),
+			login: "",
+		};
+		if (!profile.name) continue;
+		const slug = decodeSlug((tag(item, "wp:post_name") ?? "").trim());
+		if (slug) profiles.set(slug, profile);
+		if (login) profiles.set(`cap-${login.toLowerCase()}`, profile);
+	}
+	for (const m of xml.matchAll(/<wp:term>([\s\S]*?)<\/wp:term>/g)) {
+		const term = m[1] as string;
+		if ((tag(term, "wp:term_taxonomy") ?? "").trim() !== "author") continue;
+		const slug = decodeSlug((tag(term, "wp:term_slug") ?? "").trim());
+		if (!slug || profiles.has(slug)) continue;
+		const meta = new Map<string, string>();
+		for (const tm of term.matchAll(/<wp:termmeta>([\s\S]*?)<\/wp:termmeta>/g)) {
+			const key = tag(tm[1] as string, "wp:meta_key");
+			const value = tag(tm[1] as string, "wp:meta_value");
+			if (key !== null && value !== null && !meta.has(key)) meta.set(key, value);
+		}
+		const name = (tag(term, "wp:term_name") ?? "").trim();
+		// Co-Authors Plus names a user's term after their login: show the user's display name.
+		const login = slug.startsWith("cap-") && users.has(name) ? name : "";
+		profiles.set(slug, {
+			name: login ? (users.get(login) as string) : name,
+			url: validUrl(meta.get("user_url") ?? ""),
+			bio: bioText(meta.get("description") ?? ""),
+			avatarId: attachmentId(meta.get("avatar")),
+			login,
+		});
+	}
+	return profiles;
+}
+
+const SKIP_TYPES = new Set(["attachment", "nav_menu_item", "revision", "guest-author", "wp_block"]);
+
+/**
+ * Every post whose byline isn't (only) its WordPress user, one record per
+ * post and author: the Coywolf Guest Author plugin's guest, or the post's
+ * author terms (Co-Authors Plus, PublishPress Authors) in export order. A post
+ * whose only author term is its own WordPress user is left out (the importer
+ * already credits it). `attachments` maps attachment ids to URLs (for avatars).
+ */
+export function wxrGuestAuthors(xml: string, attachments?: Map<number, string>): GuestAuthor[] {
+	const out: GuestAuthor[] = [];
+	const hasTerms = xml.includes('domain="author"');
+	const users = hasTerms ? wxrUsers(xml) : new Map<string, string>();
+	const profiles = hasTerms ? authorProfiles(xml, users) : new Map<string, AuthorProfile>();
+	const avatar = (id: number | null) => (id ? (attachments?.get(id) ?? "") : "");
+	for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
+		const item = m[1] as string;
+		const hasGuest = item.includes("_guest_author");
+		if (!hasGuest && !(hasTerms && item.includes('domain="author"'))) continue;
+		const postType = (tag(item, "wp:post_type") ?? "post").trim();
+		const status = (tag(item, "wp:status") ?? "").trim();
+		if (SKIP_TYPES.has(postType) || status === "trash" || status === "auto-draft") continue;
+		const post = {
 			postId: Number(tag(item, "wp:post_id")) || null,
-			postType: (tag(item, "wp:post_type") ?? "post").trim(),
+			postType,
 			slug: (tag(item, "wp:post_name") ?? "").trim(),
 			title: (tag(item, "title") ?? "").trim(),
-			name,
-			url: /^https?:\/\/\S+$/i.test(url) ? url : "",
-			bio: bioText(meta.get("_guest_author_bio") ?? ""),
-			avatarId: Number.isInteger(avatarId) && avatarId > 0 ? avatarId : null,
-			avatarUrl: Number.isInteger(avatarId) && avatarId > 0 ? (attachments?.get(avatarId) ?? "") : "",
+		};
+		if (hasGuest) {
+			const meta = itemMeta(item);
+			const name = (meta.get("_guest_author") ?? "").trim();
+			if (name) {
+				const avatarId = attachmentId(meta.get("_guest_author_avatar_id"));
+				out.push({
+					...post,
+					name,
+					url: validUrl(meta.get("_guest_author_url") ?? ""),
+					bio: bioText(meta.get("_guest_author_bio") ?? ""),
+					avatarId,
+					avatarUrl: avatar(avatarId),
+					position: 0,
+					source: "guest-author",
+				});
+				// The plugin replaced the byline, so author terms don't apply.
+				continue;
+			}
+		}
+		if (!hasTerms) continue;
+		const authors: AuthorProfile[] = [];
+		const seen = new Set<string>();
+		for (const t of item.matchAll(/<category\s+domain="author"\s+nicename="([^"]*)"\s*>([\s\S]*?)<\/category>/g)) {
+			const slug = decodeSlug(t[1] as string);
+			const text = cdataText(t[2] as string).trim();
+			const known = profiles.get(slug);
+			const login = known?.login || (slug.startsWith("cap-") && users.has(text) ? text : "");
+			const profile: AuthorProfile = known ?? { name: login ? (users.get(login) as string) : text, url: "", bio: "", avatarId: null, login };
+			const key = nameKey(profile.name);
+			if (!key || seen.has(key)) continue;
+			seen.add(key);
+			authors.push({ ...profile, login });
+		}
+		if (!authors.length) continue;
+		const creator = (tag(item, "dc:creator") ?? "").trim();
+		const only = authors.length === 1 ? authors[0] : undefined;
+		if (only && creator && (only.login === creator || (users.has(creator) && sameName(only.name, users.get(creator) as string)))) continue;
+		authors.forEach((a, position) => {
+			out.push({ ...post, name: a.name, url: a.url, bio: a.bio, avatarId: a.avatarId, avatarUrl: avatar(a.avatarId), position, source: "co-authors" });
 		});
 	}
 	return out;
@@ -119,7 +255,7 @@ export function bylineSlug(name: string): string {
 	return slug || "guest";
 }
 
-/** One guest byline to create (or find), with the posts it's credited on. */
+/** One byline to create (or find), with the posts it's credited on. */
 export interface GuestByline {
 	name: string;
 	slug: string;
@@ -134,8 +270,8 @@ export interface GuestByline {
 const nameKey = (name: string) => name.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
 
 /**
- * Group posts by guest (same name, case-insensitive). Each byline takes the
- * first non-empty URL, bio and avatar among its posts.
+ * Group records by author (same name, case-insensitive). Each byline takes
+ * the first non-empty URL, bio and avatar among its records.
  */
 export function groupGuests(guests: GuestAuthor[]): GuestByline[] {
 	const groups = new Map<string, GuestByline>();
@@ -155,6 +291,36 @@ export function groupGuests(guests: GuestAuthor[]): GuestByline[] {
 		group.posts.push(g);
 	}
 	return [...groups.values()];
+}
+
+/** Each post with its authors' names in order, for crediting. */
+export interface PostCredit {
+	collection: string;
+	slug: string;
+	title: string;
+	names: string[];
+}
+
+/** One entry per post (by collection and slug), its authors in order and without repeats. */
+export function postCredits(guests: GuestAuthor[]): PostCredit[] {
+	const posts = new Map<string, { credit: PostCredit; records: GuestAuthor[] }>();
+	for (const g of guests) {
+		const collection = collectionFor(g.postType);
+		const key = `${collection}/${g.slug}`;
+		let post = posts.get(key);
+		if (!post) {
+			post = { credit: { collection, slug: g.slug, title: g.title, names: [] }, records: [] };
+			posts.set(key, post);
+		}
+		post.records.push(g);
+	}
+	return [...posts.values()].map(({ credit, records }) => {
+		for (const g of records.sort((a, b) => (a.position ?? 0) - (b.position ?? 0))) {
+			const name = g.name.trim().replace(/\s+/g, " ");
+			if (!credit.names.some((n) => sameName(n, name))) credit.names.push(name);
+		}
+		return credit;
+	});
 }
 
 /** Does an existing byline's name match a guest? */

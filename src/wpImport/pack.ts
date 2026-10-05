@@ -1,19 +1,24 @@
 /**
- * WordPress import module: converts what Coywolf's WordPress plugins left in
- * imported content into Coywolf Pack blocks.
+ * WordPress import module: finishes a WordPress → EmDash move. EmDash's own
+ * importer has no plugin hook, so this works around what it drops or misses.
  *
  * - While on, every save (including each entry EmDash's WordPress importer
  *   creates) runs the converter (./convert.ts), so a prepared export
- *   (./prepare.ts) imports straight into native blocks. It runs before
+ *   (./prepare.ts) imports straight into native blocks: heading ids, core
+ *   Details, and blocks from Coywolf's WordPress plugins. It runs before
  *   Headings & TOC, so imported heading ids become the headings' anchors.
  * - "Convert imported content" scans every entry (dry run first) and converts
  *   what's already in the database, draft-aware, never overwriting an entry
- *   that changed while it ran.
+ *   that changed while it ran. Given a URL map (./urls.ts), the same scan
+ *   rewrites old `/wp-content/` URLs to media library files.
+ * - "Find old-site URLs" lists every `/wp-content/` URL of the old site left
+ *   in content, for the WordPress import page to map, import and redirect.
  * - Video facts from WordPress (name, length, upload date, size) fill the
  *   Videos module's per-video data where it has none, so players size
  *   correctly and VideoObject schema has a duration without a Stream token.
- * - Coywolf Files records and Video Manager library data (descriptions,
- *   posters, MP4 links) can be imported from WordPress's database.
+ * - Coywolf plugins: Coywolf Files records and Video Manager library data
+ *   (descriptions, posters, MP4 links) can be imported from WordPress's
+ *   database.
  */
 import type { PluginContext, StorageCollection } from "emdash";
 import { PluginRouteError, definePluginRoute } from "emdash";
@@ -28,6 +33,7 @@ import { parseInput } from "../shared.js";
 import { type VideoMeta, invalidatePublicConfig, metaStore, SETTINGS as VIDEO_SETTINGS } from "../videos/store.js";
 import { type ConvertOptions, type VideoFact, convertEntryData, mightNeedConversion } from "./convert.js";
 import { type ImportDefaults, defaultsFromWordPress, parseFileRows } from "./sources.js";
+import { findSiteUrls, rewriteSiteUrls, siteUrlPattern } from "./urls.js";
 
 export const F = { main: "wpImport" } as const;
 
@@ -36,7 +42,7 @@ const FEATURES = [
 		id: F.main,
 		label: "WordPress import",
 		description:
-			"Turn Coywolf's WordPress blocks (Stream and Video Manager videos, reviews, tables of contents, file downloads, heading ids) into Coywolf Pack blocks as content is imported or saved, plus tools to finish a WordPress move.",
+			"Tools to finish a move from WordPress: keep heading ids, reusable blocks and Details blocks, credit co-authors and guest authors, restore category and page parents, point old /wp-content/ URLs at the media library, and bring over redirects. Blocks from Coywolf's WordPress plugins become Coywolf Pack blocks as content is imported or saved.",
 		default: false,
 	},
 ];
@@ -140,10 +146,35 @@ export interface ScanEntry {
 	error?: string;
 }
 
+const stateInput = z.object({ collections: z.array(z.string().max(100)).max(200), index: z.number().int().min(0), cursor: z.string().max(2000).nullable() }).nullish();
+
 const scanInput = z.object({
 	apply: z.boolean(),
-	state: z.object({ collections: z.array(z.string().max(100)).max(200), index: z.number().int().min(0), cursor: z.string().max(2000).nullable() }).nullish(),
+	state: stateInput,
+	/** Old-site URL → media library URL, to rewrite in content (see ./urls.ts). */
+	urlMap: z.record(z.string().max(2000), z.string().max(2000)).optional(),
 });
+
+const findInput = z.object({
+	hosts: z.array(z.string().max(253)).max(50),
+	prefixes: z.array(z.string().max(200).regex(/^(?:\/[\w.~-]+){1,3}$/)).max(5).optional(),
+	state: stateInput,
+});
+
+/** Rewrite mapped URLs in an entry's Portable Text and text fields (media fields are left to EmDash). */
+function rewriteEntryUrls(data: Record<string, unknown>, urlMap: Record<string, string>): { value: Record<string, unknown>; count: number } {
+	let out: Record<string, unknown> | null = null;
+	let count = 0;
+	for (const [field, value] of Object.entries(data)) {
+		if (typeof value !== "string" && !Array.isArray(value)) continue;
+		const r = rewriteSiteUrls(value, urlMap);
+		if (!r.count) continue;
+		out ??= { ...data };
+		out[field] = r.value;
+		count += r.count;
+	}
+	return { value: out ?? data, count };
+}
 
 type Content = NonNullable<PluginContext["content"]>;
 type Writable = Content & Required<Pick<Content, "update">>;
@@ -153,7 +184,7 @@ const versionOf = (item: { version?: number; updatedAt?: string; draftRevisionId
 
 const PAGE_MS = 12_000;
 
-async function scan(ctx: PluginContext, apply: boolean, state: ScanState | null) {
+async function scan(ctx: PluginContext, apply: boolean, state: ScanState | null, urlMap: Record<string, string> | null = null) {
 	if (!ctx.content || !ctx.schema) throw PluginRouteError.internal("Content access is unavailable.");
 	if (apply && !ctx.content.update) throw PluginRouteError.internal("WordPress import needs the content:write capability.");
 	const content = ctx.content as Writable;
@@ -175,12 +206,17 @@ async function scan(ctx: PluginContext, apply: boolean, state: ScanState | null)
 		for (const item of page.items) {
 			scanned++;
 			const data = await latestData(ctx, collection, item as unknown as { id: string; data: Record<string, unknown>; draftRevisionId?: string | null });
-			if (!mightNeedConversion(data)) continue;
-			const result = convertEntryData(data, opts);
+			const convertible = mightNeedConversion(data);
+			const rewritable = urlMap !== null && JSON.stringify(data).includes("/wp-content/");
+			if (!convertible && !rewritable) continue;
+			const result = convertible ? convertEntryData(data, opts) : { value: data, changed: false, changes: [], videos: [], leftovers: {} };
 			for (const [k, v] of Object.entries(result.leftovers)) leftovers[k] = (leftovers[k] ?? 0) + v;
-			if (!result.changed) continue;
+			const urls = rewritable ? rewriteEntryUrls(result.value, urlMap) : { value: result.value, count: 0 };
+			if (!result.changed && !urls.count) continue;
+			result.value = urls.value;
 			const changes: Record<string, number> = {};
 			for (const c of result.changes) changes[c.to] = (changes[c.to] ?? 0) + 1;
+			if (urls.count) changes["media URL"] = urls.count;
 			const schema = info.get(collection);
 			const titleField = schema?.titleField ?? "title";
 			const title = String(data[titleField] ?? data.title ?? item.slug ?? item.id).slice(0, 200);
@@ -230,6 +266,41 @@ async function scan(ctx: PluginContext, apply: boolean, state: ScanState | null)
 		entries,
 		leftovers,
 		videosAdded,
+		state: done ? null : { collections, index, cursor },
+		progress: done ? "Done" : `Collection ${Math.min(index + 1, collections.length)} of ${collections.length}`,
+	};
+}
+
+/** Count the old site's `/wp-content/` URLs in every entry (latest draft included), a page at a time. */
+async function findUrls(ctx: PluginContext, hosts: string[], prefixes: string[], state: ScanState | null) {
+	if (!ctx.content || !ctx.schema) throw PluginRouteError.internal("Content access is unavailable.");
+	const schemas = await ctx.schema.listCollections();
+	const collections = state?.collections ?? schemas.map((c) => c.slug);
+	let index = state?.index ?? 0;
+	let cursor = state?.cursor ?? null;
+	const re = siteUrlPattern(hosts, prefixes);
+	const urls = new Map<string, number>();
+	let scanned = 0;
+	const started = Date.now();
+	while (index < collections.length && Date.now() - started < PAGE_MS) {
+		const collection = collections[index] as string;
+		const page = await ctx.content.list(collection, { limit: 25, ...(cursor ? { cursor } : {}) });
+		for (const item of page.items) {
+			scanned++;
+			const data = await latestData(ctx, collection, item as unknown as { id: string; data: Record<string, unknown>; draftRevisionId?: string | null });
+			if (JSON.stringify(data).includes("/wp-content/")) findSiteUrls(data, re, urls);
+		}
+		if (page.hasMore && page.cursor) cursor = page.cursor;
+		else {
+			index++;
+			cursor = null;
+		}
+	}
+	const done = index >= collections.length;
+	return {
+		done,
+		scanned,
+		urls: Object.fromEntries([...urls].slice(0, 20_000)),
 		state: done ? null : { collections, index, cursor },
 		progress: done ? "Done" : `Collection ${Math.min(index + 1, collections.length)} of ${collections.length}`,
 	};
@@ -294,11 +365,22 @@ export function wpImportPack(): PackModule {
 			"wpImport/scan": definePluginRoute({
 				permission: "plugins:manage",
 				methods: ["POST"],
-				request: { body: "json" },
+				request: { body: "json", maxBytes: 6 * 1024 * 1024 },
 				handler: async (ctx) => {
 					await requireFeature(ctx, F.main);
 					const input = parseInput(scanInput, ctx.input ?? {});
-					return scan(ctx, input.apply, input.state ?? null);
+					const urlMap = input.urlMap && Object.keys(input.urlMap).length ? input.urlMap : null;
+					return scan(ctx, input.apply, input.state ?? null, urlMap);
+				},
+			}),
+			"wpImport/urls": definePluginRoute({
+				permission: "plugins:manage",
+				methods: ["POST"],
+				request: { body: "json" },
+				handler: async (ctx) => {
+					await requireFeature(ctx, F.main);
+					const input = parseInput(findInput, ctx.input ?? {});
+					return findUrls(ctx, input.hosts, input.prefixes ?? [], input.state ?? null);
 				},
 			}),
 			"wpImport/files": definePluginRoute({
