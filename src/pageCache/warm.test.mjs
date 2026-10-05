@@ -3,7 +3,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { sitemapLocs, warmOrder, collectUrls, homeLinks, newWarmState, claimWork, warmStep, writeWarmState, readWarmState, startWarm } = await import("./warm.ts");
+const { sitemapLocs, warmOrder, collectUrls, homeLinks, newWarmState, claimWork, warmStep, writeWarmState, writeWarmQueue, readWarmState, startWarm, finishCollect, recordBatch, remainingUrls, WARM_STATE_OPTION, WARM_QUEUE_PREFIX, QUEUE_CHUNK } =
+	await import("./warm.ts");
 const { purgeScope } = await import("./lib.ts");
 
 const API = "/_emdash/api/plugins/coywolf-pack/";
@@ -68,11 +69,13 @@ test("home links are capped", () => {
 	assert.equal(homeLinks(html, "https://x.com").length, 200);
 });
 
-/** The slice of D1 the warm queue uses: one options table. */
+/** The slice of D1 the warm queue uses: one options table. Counts writes to the progress row and their size. */
 function fakeDb() {
 	const rows = new Map();
-	return {
+	const like = (pattern) => new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*")}$`);
+	const db = {
 		rows,
+		stateWrites: [],
 		prepare(sql) {
 			let args = [];
 			const stmt = {
@@ -83,21 +86,52 @@ function fakeDb() {
 				async first() {
 					return rows.has(args[0]) ? { value: rows.get(args[0]) } : null;
 				},
+				async all() {
+					// SELECT name, value FROM options WHERE name IN (…)
+					return { results: args.filter((n) => rows.has(n)).map((name) => ({ name, value: rows.get(name) })) };
+				},
 				async run() {
 					if (sql.startsWith("INSERT")) {
 						rows.set(args[0], args[1]);
+						if (args[0] === WARM_STATE_OPTION) db.stateWrites.push(args[1].length);
 						return { meta: { changes: 1 } };
+					}
+					if (sql.startsWith("DELETE")) {
+						const [include, exclude] = args.map(like);
+						let changes = 0;
+						for (const name of [...rows.keys()]) {
+							if (include.test(name) && !(exclude && exclude.test(name))) {
+								rows.delete(name);
+								changes++;
+							}
+						}
+						return { meta: { changes } };
 					}
 					// UPDATE options SET value = ? WHERE name = ? AND value = ?
 					const [value, name, before] = args;
 					if (rows.get(name) !== before) return { meta: { changes: 0 } };
 					rows.set(name, value);
+					db.stateWrites.push(value.length);
 					return { meta: { changes: 1 } };
 				},
 			};
 			return stmt;
 		},
+		async batch(statements) {
+			return Promise.all(statements.map((s) => s.run()));
+		},
 	};
+	return db;
+}
+
+const queueRows = (db) => [...db.rows.keys()].filter((name) => name.startsWith(WARM_QUEUE_PREFIX));
+
+/** A run in its warm phase with these URLs queued. */
+async function warmRun(db, urls) {
+	const state = { ...newWarmState("x"), phase: "warm", next: 0, total: urls.length };
+	await writeWarmState(db, state);
+	await writeWarmQueue(db, state.generation, urls);
+	return state;
 }
 
 const site = (paths) =>
@@ -117,11 +151,61 @@ test("a warm step reads the sitemap, then warms every page and finishes", async 
 	assert.equal(state.total, 5, "home page plus the sitemap's four");
 	assert.equal(state.warmed, 4);
 	assert.equal(state.failed, 1);
+	assert.deepEqual(queueRows(db), [], "a finished run's URL rows are removed");
+});
+
+test("claims only rewrite the small progress row, however long the queue", async () => {
+	const db = fakeDb();
+	const urls = Array.from({ length: 5000 }, (_, i) => `https://x.com/a-fairly-long-post-slug-number-${i}/`);
+	const state = await warmRun(db, urls);
+	assert.equal(queueRows(db).length, Math.ceil(5000 / QUEUE_CHUNK));
+	db.stateWrites.length = 0;
+	const claimed = [];
+	for (let i = 0; i < 300; i++) {
+		const claim = await claimWork(db, 4);
+		claimed.push(...claim.urls);
+		await recordBatch(db, state.generation, claim.urls.length, 0);
+	}
+	assert.deepEqual(claimed, urls.slice(0, 1200), "batches follow the queue order, across chunk rows");
+	assert.ok(Math.max(...db.stateWrites) < 1000, `progress writes stay small (largest ${Math.max(...db.stateWrites)} bytes)`);
+	const progress = await readWarmState(db);
+	assert.equal(progress.next, 1200);
+	assert.equal(remainingUrls(progress), 3800);
+});
+
+test("a batch spanning two queue rows gets URLs from both", async () => {
+	const db = fakeDb();
+	const urls = Array.from({ length: QUEUE_CHUNK + 3 }, (_, i) => `https://x.com/${i}/`);
+	const state = await warmRun(db, urls);
+	await writeWarmState(db, { ...state, next: QUEUE_CHUNK - 2 });
+	const claim = await claimWork(db, 4);
+	assert.deepEqual(claim.urls, urls.slice(QUEUE_CHUNK - 2, QUEUE_CHUNK + 2));
+});
+
+test("a new run clears older runs' URL rows; a superseded collect doesn't leave its URLs", async () => {
+	const db = fakeDb();
+	const old = await warmRun(db, ["https://x.com/1/", "https://x.com/2/"]);
+	assert.equal(queueRows(db).length, 1);
+	const fresh = await startWarm(db, "deploy");
+	assert.deepEqual(queueRows(db), []);
+	// The old run's collect finishing late (after the restart) stores nothing.
+	await finishCollect(db, old.generation, ["https://x.com/1/"], "https://x.com");
+	assert.deepEqual(queueRows(db), []);
+	assert.equal((await readWarmState(db)).generation, fresh.generation);
+});
+
+test("progress rows from before the queue rows are reported but not worked on", async () => {
+	const db = fakeDb();
+	db.rows.set(WARM_STATE_OPTION, JSON.stringify({ ...newWarmState("x"), next: undefined, phase: "warm", queue: ["https://x.com/3/"], total: 3, warmed: 2 }));
+	const state = await readWarmState(db);
+	assert.equal(remainingUrls(state), 1);
+	assert.equal(state.queue, undefined);
+	assert.equal(await claimWork(db, 4), null);
 });
 
 test("parallel claims never take the same pages", async () => {
 	const db = fakeDb();
-	await writeWarmState(db, { ...newWarmState("x"), phase: "warm", queue: ["https://x.com/1/", "https://x.com/2/", "https://x.com/3/", "https://x.com/4/"], total: 4 });
+	await warmRun(db, ["https://x.com/1/", "https://x.com/2/", "https://x.com/3/", "https://x.com/4/"]);
 	const [a, b] = await Promise.all([claimWork(db, 2), claimWork(db, 2)]);
 	const taken = [a, b].filter(Boolean).flatMap((c) => c.urls);
 	assert.equal(new Set(taken).size, taken.length, "no URL claimed twice");
@@ -132,10 +216,9 @@ test("parallel claims never take the same pages", async () => {
 
 test("a restarted run makes old batches stop counting", async () => {
 	const db = fakeDb();
-	await writeWarmState(db, { ...newWarmState("x"), phase: "warm", queue: ["https://x.com/1/"], total: 1 });
+	await warmRun(db, ["https://x.com/1/"]);
 	const claim = await claimWork(db, 5);
 	await startWarm(db, "settings");
-	const { recordBatch } = await import("./warm.ts");
 	await recordBatch(db, claim.state.generation, 1, 0);
 	const state = await readWarmState(db);
 	assert.equal(state.phase, "collect");
