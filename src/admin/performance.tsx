@@ -39,6 +39,8 @@ interface WarmStatus {
 		warmed: number;
 		failed: number;
 		remaining: number;
+		/** Pages to warm again once their video posters are copied. */
+		revisiting?: number;
 		error?: string;
 		reason: string;
 	} | null;
@@ -49,6 +51,9 @@ const REASON: Record<string, string> = { deploy: "after a deploy", settings: "af
 function warmText(state: NonNullable<WarmStatus["state"]>): string {
 	const when = REASON[state.reason] ?? "";
 	if (state.phase === "collect") return `Starting ${when}: reading the sitemap…`;
+	if (state.phase === "warm" && state.revisiting && state.remaining === 0) {
+		return `Re-warming ${state.revisiting} ${state.revisiting === 1 ? "page" : "pages"} after ${state.revisiting === 1 ? "its video posters were" : "their video posters were"} copied.`;
+	}
 	if (state.phase === "warm") return `Warming ${when}: ${state.warmed} of ${state.total} pages done.`;
 	if (state.phase === "failed") return state.error ?? "The last run failed.";
 	const at = state.finishedAt ? new Date(state.finishedAt).toLocaleString() : "";

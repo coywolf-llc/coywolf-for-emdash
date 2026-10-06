@@ -8,7 +8,7 @@ import { mediaApiAccess, purgeMediaHost } from "../images/module.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { workerEnv } from "../shared.js";
 import { purgeIfNewVersion, purgePageCache, versionId } from "./lib.js";
-import { WARM_SETTING, readWarmState, remainingUrls, startWarm } from "./warm.js";
+import { WARM_SETTING, pendingRevisits, readWarmState, remainingUrls, startWarm } from "./warm.js";
 
 /**
  * Performance is always on (its page sits right below Coywolf Pack). On a site
@@ -70,7 +70,8 @@ export function pageCachePack(): PackModule {
 					const state = db ? await readWarmState(db) : null;
 					return {
 						enabled: Boolean(await ctx.settings.get<boolean>(WARM_SETTING)),
-						state: state && { ...state, remaining: remainingUrls(state) },
+						// `revisiting`: pages warmed with a stopgap poster, to be warmed again once their posters are copied (the URLs stay out).
+						state: state && { ...state, revisit: undefined, remaining: remainingUrls(state), revisiting: pendingRevisits(state) },
 					};
 				},
 			},

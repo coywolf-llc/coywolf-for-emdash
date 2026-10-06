@@ -91,7 +91,7 @@ export async function purgeIfNewVersion(db: D1Database, id: string): Promise<boo
 interface RouteCache {
 	enabled?: boolean;
 	options?: { maxAge?: number };
-	set(options: { maxAge?: number; swr?: number }): void;
+	set(options: { maxAge?: number; swr?: number } | false): void;
 }
 
 /**
@@ -116,13 +116,25 @@ export const STOPGAP_LIFETIME = { maxAge: 300, swr: 60 } as const;
  * first, then `stopgap()` is asked, then the lifetime is set; Astro applies it
  * (handleCache) once the middleware chain has returned. Only cached HTML pages
  * are read this way; anything else is returned untouched.
+ *
+ * `markHeader` is for the cache warmer's own visits: such a page isn't cached
+ * at all, and the response carries `markHeader: 1` so the warmer visits it
+ * again once its posters are copied (see src/pageCache/warm.ts). Not caching it
+ * keeps the header out of the cache (visitors never see it) and makes sure the
+ * warmer's next visit renders the page instead of getting this copy back.
  */
-export async function shortenStopgapPage(cache: RouteCache | undefined, response: Response, stopgap: () => boolean): Promise<Response> {
+export async function shortenStopgapPage(cache: RouteCache | undefined, response: Response, stopgap: () => boolean, markHeader?: string): Promise<Response> {
 	const maxAge = cache?.options?.maxAge;
 	if (!cache?.enabled || maxAge === undefined || maxAge <= 0) return response;
 	if (response.status !== 200 || !response.body || !(response.headers.get("content-type") ?? "").startsWith("text/html")) return response;
 	const body = await response.arrayBuffer();
+	const headers = new Headers(response.headers);
 	// A component may have turned caching off while rendering: leave that alone.
-	if (stopgap() && cache.enabled && cache.options?.maxAge !== undefined) cache.set({ maxAge: Math.min(maxAge, STOPGAP_LIFETIME.maxAge), swr: STOPGAP_LIFETIME.swr });
-	return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+	if (stopgap() && cache.enabled && cache.options?.maxAge !== undefined) {
+		if (markHeader) {
+			cache.set(false);
+			headers.set(markHeader, "1");
+		} else cache.set({ maxAge: Math.min(maxAge, STOPGAP_LIFETIME.maxAge), swr: STOPGAP_LIFETIME.swr });
+	}
+	return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
