@@ -5,7 +5,7 @@
  * images. Cloudflare's zone "Purge Everything" doesn't reach the pages (the
  * cache belongs to the Worker, not the zone).
  */
-import { Banner, Button, Input, Switch } from "@cloudflare/kumo";
+import { Banner, Button, Checkbox, Input, Switch } from "@cloudflare/kumo";
 import { ArrowsClockwise, Fire, Lightning } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
@@ -31,6 +31,8 @@ type Notice = { variant: "default" | "error"; text: string } | null;
 
 interface WarmStatus {
 	enabled: boolean;
+	/** The daily refresh (on by default). */
+	daily: boolean;
 	state: {
 		phase: "collect" | "warm" | "done" | "failed";
 		startedAt: string;
@@ -170,6 +172,13 @@ export function PerformancePage() {
 			return enabled ? "Cache warming is on. It runs after each deploy and whenever the whole cache is cleared." : "Cache warming is off.";
 		});
 
+	const toggleDaily = (daily: boolean) =>
+		run("warm", async () => {
+			await post("warm/settings/save", { daily });
+			await loadWarm();
+			return daily ? "Daily refresh is on." : "Daily refresh is off.";
+		});
+
 	const warmNow = () =>
 		run("warm", async () => {
 			await post("warm/start");
@@ -251,8 +260,8 @@ export function PerformancePage() {
 					{warm?.enabled && (
 						<div className="flex flex-wrap items-center justify-between gap-4">
 							<p className="text-sm leading-5 text-kumo-subtle" aria-live="polite">
-								{warm.state ? warmText(warm.state) : "No run yet. It starts with the next page visit."}
-								{warm.state && dailyText(warm.state) && (
+								{warm.state ? warmText(warm.state) : warm.daily ? "No run yet. It starts with the next page visit." : "No run yet. It starts after the next deploy or full clear."}
+								{warm.daily && warm.state && dailyText(warm.state) && (
 									<>
 										<br />
 										{dailyText(warm.state)}
@@ -262,6 +271,14 @@ export function PerformancePage() {
 							<Button variant="secondary" icon={<Fire />} disabled={busy !== null || Boolean(running)} onClick={() => void warmNow()}>
 								{running ? "Warming…" : "Warm now"}
 							</Button>
+						</div>
+					)}
+					{warm?.enabled && (
+						<div className="max-w-2xl">
+							<Checkbox label="Refresh daily" checked={warm.daily} disabled={busy !== null} onCheckedChange={(checked: boolean) => void toggleDaily(checked)} />
+							<p className="text-sm leading-5 text-pretty text-kumo-subtle">
+								Once a day, check every page and rebuild the ones Cloudflare dropped from its cache, so search bots and visitors find them cached. Pages still cached cost almost nothing.
+							</p>
 						</div>
 					)}
 				</div>

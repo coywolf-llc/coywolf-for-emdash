@@ -636,3 +636,29 @@ test("daily refresh: with no run yet, the first warm step starts one (once)", as
 	assert.equal(started[0].state.reason, "daily");
 	assert.equal((await readWarmState(db)).generation, started[0].state.generation);
 });
+
+test("daily refresh off: no daily run (none with no row either), and requests don't wake for it; on by default", async () => {
+	const db = fakeDb();
+	assert.equal(warmMayHaveWork(null, Date.now(), false), false);
+	assert.equal(await claimWork(db, 4, Date.now(), false), null);
+	assert.equal(db.rows.has(WARM_STATE_OPTION), false, "no row written");
+	const t0 = Date.now();
+	await finishedRun(db, t0);
+	const raw = db.rows.get(WARM_STATE_OPTION);
+	const later = t0 + 3 * DAILY_REFRESH_MS;
+	assert.equal(warmMayHaveWork(raw, later, false), false);
+	assert.equal(await claimWork(db, 4, later, false), null);
+	assert.equal(db.rows.get(WARM_STATE_OPTION), raw, "nothing started");
+	const s = site(["/a/"]);
+	assert.equal(await warmStep(db, s, "https://x.com", { budgetMs: 1000, batchSize: 4, now: () => later, daily: false }), "idle");
+	assert.deepEqual(s.hits, []);
+	// Other triggers still work with it off.
+	await scheduleRewarm(db, later);
+	assert.equal((await claimWork(db, 4, later + REWARM_DELAY_MS, false)).state.reason, "edit");
+	// Default (no option): on.
+	const db2 = fakeDb();
+	await finishedRun(db2, t0);
+	assert.equal(warmMayHaveWork(db2.rows.get(WARM_STATE_OPTION), later), true);
+	assert.equal((await warmStep(db2, site(["/a/"]), "https://x.com", { budgetMs: 1000, batchSize: 4, now: () => later })), "warmed");
+	assert.equal((await readWarmState(db2)).reason, "daily");
+});
