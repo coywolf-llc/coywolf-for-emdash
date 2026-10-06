@@ -21,6 +21,13 @@
  * on the progress row (moving its `next` index), so isolates working in
  * parallel never take the same pages. A new purge restarts it (new
  * generation) and clears older runs' URL rows.
+ *
+ * A page whose render used a stopgap (a video's Stream poster while its copy
+ * on the media host is made, see src/videos/poster.ts) comes back with
+ * STOPGAP_HEADER and isn't cached. Such pages are listed in the progress row
+ * (`revisit`, at most MAX_REVISIT) and visited again once the main queue is
+ * done and REVISIT_DELAY_MS has passed, so they end up cached with the normal
+ * lifetime. Each gets at most MAX_REVISIT_ROUNDS more visits.
  */
 
 /** Option rows: the switch, and the job's progress (its URLs are in WARM_QUEUE_PREFIX rows). */
@@ -45,10 +52,32 @@ export interface WarmState {
 	reason: string;
 	/** Read from a row in the format before 0.26 (progress only; the next claim converts it, see migrateLegacy). */
 	legacy?: boolean;
+	/** Pages to visit again (their render used a stopgap): [url, revisits so far]. */
+	revisit?: Array<[string, number]>;
+	/** Not before then (ISO), so the posters' copies are made and listed first. */
+	revisitAfter?: string;
+	/** Revisits handed to batches and not yet recorded, and when the last were claimed. */
+	revisitBusy?: number;
+	revisitBusyAt?: string;
+	/** Pages visited again and cached with the normal lifetime; pages still on a stopgap after their last revisit (or past MAX_REVISIT). */
+	rewarmed?: number;
+	revisitGaveUp?: number;
 }
 
 /** Most URLs one job warms (a guard for huge sitemaps). */
 export const MAX_URLS = 5000;
+
+/** Response header the pack middleware adds to the warmer's visit of a page rendered with a stopgap (that render isn't cached). */
+export const STOPGAP_HEADER = "X-Coywolf-Stopgap";
+/** Most pages waiting for a revisit (keeps the progress row small); longer URLs aren't listed. */
+export const MAX_REVISIT = 200;
+const MAX_REVISIT_URL = 500;
+/** Wait before a revisit: the poster copy and its listing run in the background of the first visit. */
+export const REVISIT_DELAY_MS = 20_000;
+/** Revisits per page at most. */
+export const MAX_REVISIT_ROUNDS = 2;
+/** Revisits claimed this long ago and never recorded (the isolate stopped) no longer keep the run open. */
+const REVISIT_STALE_MS = 2 * 60_000;
 
 export function newWarmState(reason: string, now = new Date()): WarmState {
 	return { generation: `${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`, startedAt: now.toISOString(), phase: "collect", next: 0, total: 0, warmed: 0, failed: 0, reason };
@@ -217,6 +246,49 @@ export function remainingUrls(state: WarmState): number {
 	return state.phase === "warm" ? Math.max(0, state.total - state.next) : 0;
 }
 
+/** Pages of a run waiting for (or in) a revisit. */
+export function pendingRevisits(state: WarmState): number {
+	return state.phase === "warm" ? (state.revisit?.length ?? 0) + (state.revisitBusy ?? 0) : 0;
+}
+
+/** Add pages to visit again (deduplicated, capped; ones that don't fit are given up on), and push the wait back. */
+function addRevisits(state: WarmState, entries: Array<[string, number]>, now: number): WarmState {
+	if (!entries.length) return state;
+	const list = [...(state.revisit ?? [])];
+	const listed = new Set(list.map(([url]) => url));
+	let gaveUp = state.revisitGaveUp ?? 0;
+	for (const [url, round] of entries) {
+		if (listed.has(url)) continue;
+		if (list.length >= MAX_REVISIT || url.length > MAX_REVISIT_URL) {
+			gaveUp++;
+			continue;
+		}
+		listed.add(url);
+		list.push([url, round]);
+	}
+	return { ...state, revisit: list.length ? list : undefined, revisitAfter: new Date(now + REVISIT_DELAY_MS).toISOString(), revisitGaveUp: gaveUp || undefined };
+}
+
+/** Every URL visited and recorded, and no revisit waiting or (recently) under way. */
+function runFinished(state: WarmState, now: number): boolean {
+	if (state.phase !== "warm" || state.next < state.total || state.warmed + state.failed < state.total || state.revisit?.length) return false;
+	return !state.revisitBusy || !state.revisitBusyAt || now - Date.parse(state.revisitBusyAt) >= REVISIT_STALE_MS;
+}
+
+function finished(state: WarmState, now: number): WarmState {
+	const lost = state.revisitBusy ?? 0;
+	return {
+		...state,
+		phase: "done",
+		finishedAt: new Date(now).toISOString(),
+		revisit: undefined,
+		revisitAfter: undefined,
+		revisitBusy: undefined,
+		revisitBusyAt: undefined,
+		revisitGaveUp: (state.revisitGaveUp ?? 0) + lost || undefined,
+	};
+}
+
 export async function writeWarmState(db: D1Database, state: WarmState): Promise<void> {
 	await db
 		.prepare("INSERT INTO options (name, value) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value")
@@ -308,7 +380,12 @@ async function swap(db: D1Database, before: string, after: WarmState): Promise<b
 	return (result.meta?.changes ?? 0) > 0;
 }
 
-export type Claim = { kind: "collect"; state: WarmState } | { kind: "warm"; state: WarmState; urls: string[] } | null;
+export type Claim =
+	| { kind: "collect"; state: WarmState }
+	| { kind: "warm"; state: WarmState; urls: string[] }
+	| { kind: "revisit"; state: WarmState; pages: Array<[string, number]> }
+	| { kind: "wait"; state: WarmState; until: string }
+	| null;
 
 const COLLECT_STALE_MS = 2 * 60_000;
 
@@ -329,7 +406,8 @@ export async function claimWork(db: D1Database, batchSize: number, now = Date.no
 		const next = { ...state, collectingAt: new Date(now).toISOString() };
 		return (await swap(db, raw, next)) ? { kind: "collect", state: next } : null;
 	}
-	if (state.phase !== "warm" || state.next >= state.total) return null;
+	if (state.phase !== "warm") return null;
+	if (state.next >= state.total) return claimRevisit(db, raw, state, batchSize, now);
 	const end = Math.min(state.next + batchSize, state.total);
 	const next = { ...state, next: end };
 	if (!(await swap(db, raw, next))) return null;
@@ -337,6 +415,24 @@ export async function claimWork(db: D1Database, batchSize: number, now = Date.no
 	// URLs whose row is gone count as failed, so the run still finishes.
 	if (urls.length < end - state.next) await recordBatch(db, state.generation, 0, end - state.next - urls.length, now);
 	return { kind: "warm", state: next, urls };
+}
+
+/**
+ * Once the queue is handed out: pages to visit again, when their wait is over
+ * ("wait" until then, so steps don't spin). Also finishes a run kept open only
+ * by revisits that were claimed and never recorded.
+ */
+async function claimRevisit(db: D1Database, raw: string, state: WarmState, batchSize: number, now: number): Promise<Claim> {
+	const list = state.revisit ?? [];
+	if (!list.length) {
+		if (state.revisitBusy && runFinished(state, now) && (await swap(db, raw, finished(state, now)))) await deleteQueue(db, state.generation).catch(() => undefined);
+		return null;
+	}
+	if (state.revisitAfter && now < Date.parse(state.revisitAfter)) return { kind: "wait", state, until: state.revisitAfter };
+	const pages = list.slice(0, batchSize);
+	const rest = list.slice(batchSize);
+	const next: WarmState = { ...state, revisit: rest.length ? rest : undefined, revisitBusy: (state.revisitBusy ?? 0) + pages.length, revisitBusyAt: new Date(now).toISOString() };
+	return (await swap(db, raw, next)) ? { kind: "revisit", state: next, pages } : null;
 }
 
 /** Store the sitemap's URLs for the run that claimed the collect step. */
@@ -355,41 +451,89 @@ export async function finishCollect(db: D1Database, generation: string, urls: st
 	if (urls.length) await deleteQueue(db, generation).catch(() => undefined);
 }
 
-/** Count a finished batch; marks the run done (and drops its URL rows) when nothing is left. */
-export async function recordBatch(db: D1Database, generation: string, warmed: number, failed: number, now = Date.now()): Promise<void> {
+/**
+ * Count a finished batch, listing its `stopgap` pages for a revisit; marks the
+ * run done (and drops its URL rows) when nothing is left.
+ */
+export async function recordBatch(db: D1Database, generation: string, warmed: number, failed: number, now = Date.now(), stopgap: string[] = []): Promise<void> {
+	await recordProgress(db, generation, now, (state) =>
+		addRevisits({ ...state, warmed: state.warmed + warmed, failed: state.failed + failed }, stopgap.map((url): [string, number] => [url, 0]), now),
+	);
+}
+
+export interface Visited {
+	url: string;
+	ok: boolean;
+	/** The page was rendered with a stopgap (STOPGAP_HEADER), so it wasn't cached. */
+	stopgap: boolean;
+}
+
+/**
+ * Count a finished revisit batch: pages still on a stopgap go back on the list
+ * until they've had MAX_REVISIT_ROUNDS revisits, then are given up on.
+ */
+export async function recordRevisit(db: D1Database, generation: string, results: Array<Visited & { round: number }>, now = Date.now()): Promise<void> {
+	await recordProgress(db, generation, now, (state) => {
+		if (state.phase !== "warm") return null;
+		const again = results.filter((r) => r.stopgap && r.round + 1 < MAX_REVISIT_ROUNDS).map((r): [string, number] => [r.url, r.round + 1]);
+		const rewarmed = results.filter((r) => r.ok && !r.stopgap).length;
+		const gaveUp = results.length - rewarmed - again.length;
+		const busy = Math.max(0, (state.revisitBusy ?? 0) - results.length);
+		return addRevisits(
+			{
+				...state,
+				revisitBusy: busy || undefined,
+				revisitBusyAt: busy ? state.revisitBusyAt : undefined,
+				rewarmed: (state.rewarmed ?? 0) + rewarmed || undefined,
+				revisitGaveUp: (state.revisitGaveUp ?? 0) + gaveUp || undefined,
+			},
+			again,
+			now,
+		);
+	});
+}
+
+/** Apply `update` to the run's progress row (compare-and-swap, retried), then finish the run if nothing is left. */
+async function recordProgress(db: D1Database, generation: string, now: number, update: (state: WarmState) => WarmState | null): Promise<void> {
 	for (let attempt = 0; attempt < 5; attempt++) {
 		const raw = await readRaw(db);
 		if (!raw) return;
 		const state = parseState(raw);
 		if (!state || state.legacy || state.generation !== generation) return;
-		const next: WarmState = { ...state, warmed: state.warmed + warmed, failed: state.failed + failed };
-		const finished = next.phase === "warm" && next.next >= next.total && next.warmed + next.failed >= next.total;
-		if (finished) {
-			next.phase = "done";
-			next.finishedAt = new Date(now).toISOString();
-		}
+		let next = update(state);
+		if (!next) return;
+		const done = runFinished(next, now);
+		if (done) next = finished(next, now);
 		if (await swap(db, raw, next)) {
-			if (finished) await deleteQueue(db, generation).catch(() => undefined);
+			if (done) await deleteQueue(db, generation).catch(() => undefined);
 			return;
 		}
 	}
 }
 
 /** Visit URLs through the Worker's own service binding (which shares its cache). */
-export async function visit(self: Fetcher, urls: string[]): Promise<{ warmed: number; failed: number }> {
+export async function visit(self: Fetcher, urls: string[]): Promise<{ warmed: number; failed: number; results: Visited[] }> {
 	const results = await Promise.all(
-		urls.map(async (url) => {
+		urls.map(async (url): Promise<Visited> => {
 			try {
 				const res = await self.fetch(new Request(url, { headers: { "User-Agent": WARMER_AGENT } }));
 				await res.arrayBuffer();
-				return res.ok || (res.status >= 300 && res.status < 400);
+				return { url, ok: res.ok || (res.status >= 300 && res.status < 400), stopgap: res.headers.get(STOPGAP_HEADER) === "1" };
 			} catch {
-				return false;
+				return { url, ok: false, stopgap: false };
 			}
 		}),
 	);
-	return { warmed: results.filter(Boolean).length, failed: results.filter((ok) => !ok).length };
+	return { warmed: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length, results };
 }
+
+const sameOrigin = (url: string, origin: string) => {
+	try {
+		return new URL(url).origin === origin;
+	} catch {
+		return false;
+	}
+};
 
 export const WARMER_AGENT = "CoywolfPack-CacheWarmer";
 
@@ -410,8 +554,17 @@ export async function warmStep(db: D1Database, self: Fetcher, origin: string, op
 			did = "collected";
 			continue;
 		}
-		const { warmed, failed } = await visit(self, claim.urls);
-		await recordBatch(db, claim.state.generation, warmed, failed, now());
+		// Revisits wait for the posters' copies: later steps (driven by traffic) check again.
+		if (claim.kind === "wait") return did === "idle" ? "waiting" : did;
+		if (claim.kind === "revisit") {
+			const { results } = await visit(self, claim.pages.map(([url]) => url));
+			await recordRevisit(db, claim.state.generation, results.map((r, i) => ({ ...r, round: claim.pages[i][1] })), now());
+			did = "revisited";
+			continue;
+		}
+		const { warmed, failed, results } = await visit(self, claim.urls);
+		const stopgap = results.filter((r) => r.ok && r.stopgap && sameOrigin(r.url, origin)).map((r) => r.url);
+		await recordBatch(db, claim.state.generation, warmed, failed, now(), stopgap);
 		did = "warmed";
 	}
 	return did;

@@ -3,8 +3,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { sitemapLocs, warmOrder, collectUrls, homeLinks, newWarmState, claimWork, warmStep, writeWarmState, writeWarmQueue, readWarmState, startWarm, finishCollect, recordBatch, remainingUrls, WARM_STATE_OPTION, WARM_QUEUE_PREFIX, QUEUE_CHUNK } =
+const { sitemapLocs, warmOrder, collectUrls, homeLinks, newWarmState, claimWork, warmStep, writeWarmState, writeWarmQueue, readWarmState, startWarm, finishCollect, recordBatch, recordRevisit, remainingUrls, pendingRevisits, WARM_STATE_OPTION, WARM_QUEUE_PREFIX, QUEUE_CHUNK } =
 	await import("./warm.ts");
+const { STOPGAP_HEADER, MAX_REVISIT, REVISIT_DELAY_MS, MAX_REVISIT_ROUNDS } = await import("./warm.ts");
 const { purgeScope } = await import("./lib.ts");
 
 const API = "/_emdash/api/plugins/coywolf-pack/";
@@ -274,4 +275,147 @@ test("nothing to do when no run is queued or the collect step is already taken",
 	await startWarm(db, "deploy");
 	assert.equal((await claimWork(db, 4)).kind, "collect");
 	assert.equal(await claimWork(db, 4), null, "another isolate is reading the sitemap");
+});
+
+// ── Revisits: pages first rendered with a stopgap poster ──
+
+/** A site whose pages in `stopgapFor` come back marked (STOPGAP_HEADER) for their first n visits (Infinity: always). */
+function stopgapSite(paths, stopgapFor) {
+	const hits = [];
+	return {
+		hits,
+		async fetch(req) {
+			hits.push(req.url);
+			const path = new URL(req.url).pathname;
+			if (path === "/sitemap.xml") return new Response(`<urlset>${paths.map((p) => `<url><loc>https://x.com${p}</loc></url>`).join("")}</urlset>`);
+			const seen = hits.filter((u) => u === req.url).length;
+			const marked = seen <= (stopgapFor[path] ?? 0);
+			return new Response(path, { status: 200, headers: marked ? { [STOPGAP_HEADER]: "1" } : {} });
+		},
+	};
+}
+
+const clock = (start = 1_000_000) => {
+	const c = { t: start, now: () => c.t };
+	return c;
+};
+
+test("a page warmed with a stopgap is visited again once its posters have had time to copy, then the run finishes", async () => {
+	const db = fakeDb();
+	const c = clock();
+	const s = stopgapSite(["/a/", "/v/"], { "/v/": 1 });
+	await startWarm(db, "deploy");
+	const opts = { budgetMs: 10_000, batchSize: 2, now: c.now };
+	// The step's clock doesn't move, so it ends on the first "wait" rather than its budget.
+	assert.equal(await warmStep(db, s, "https://x.com", opts), "warmed");
+	let state = await readWarmState(db);
+	assert.equal(state.phase, "warm", "not done while a revisit waits");
+	assert.equal(state.warmed, 3);
+	assert.deepEqual(state.revisit, [["https://x.com/v/", 0]]);
+	assert.equal(pendingRevisits(state), 1);
+	assert.equal(remainingUrls(state), 0);
+
+	c.t += REVISIT_DELAY_MS - 1;
+	assert.equal(await warmStep(db, s, "https://x.com", opts), "waiting", "too early: nothing visited");
+	assert.equal(s.hits.filter((u) => u === "https://x.com/v/").length, 1);
+
+	c.t += 1;
+	await warmStep(db, s, "https://x.com", opts);
+	state = await readWarmState(db);
+	assert.equal(state.phase, "done");
+	assert.equal(state.rewarmed, 1);
+	assert.equal(state.revisitGaveUp, undefined);
+	assert.equal(state.revisit, undefined);
+	assert.equal(state.warmed, 3, "revisits don't count twice");
+	assert.equal(s.hits.filter((u) => u === "https://x.com/v/").length, 2);
+	assert.deepEqual(queueRows(db), []);
+});
+
+test("a page still on a stopgap after its last revisit is given up on without failing the run", async () => {
+	const db = fakeDb();
+	const c = clock();
+	const s = stopgapSite(["/v/"], { "/v/": Infinity });
+	await startWarm(db, "deploy");
+	const opts = { budgetMs: 10_000, batchSize: 4, now: c.now };
+	for (let i = 0; i < 6; i++) {
+		await warmStep(db, s, "https://x.com", opts);
+		c.t += REVISIT_DELAY_MS;
+	}
+	const state = await readWarmState(db);
+	assert.equal(state.phase, "done");
+	assert.equal(state.failed, 0);
+	assert.equal(state.revisitGaveUp, 1);
+	assert.equal(state.rewarmed, undefined);
+	assert.equal(s.hits.filter((u) => u === "https://x.com/v/").length, 1 + MAX_REVISIT_ROUNDS);
+});
+
+test("revisits are deduplicated, capped and same-origin, and keep the progress row small", async () => {
+	const db = fakeDb();
+	const state = await warmRun(db, ["https://x.com/1/"]);
+	db.stateWrites.length = 0;
+	const many = Array.from({ length: MAX_REVISIT + 20 }, (_, i) => `https://x.com/videos/a-fairly-long-video-post-slug-${i}/`);
+	await recordBatch(db, state.generation, 0, 0, 1000, many.slice(0, 50));
+	await recordBatch(db, state.generation, 0, 0, 1000, many);
+	const after = await readWarmState(db);
+	assert.equal(after.revisit.length, MAX_REVISIT);
+	assert.equal(new Set(after.revisit.map(([u]) => u)).size, MAX_REVISIT, "no duplicates");
+	assert.equal(after.revisitGaveUp, 20, "pages past the cap are counted, not kept");
+	assert.ok(Math.max(...db.stateWrites) < 20_000, `progress row stays small (largest ${Math.max(...db.stateWrites)} bytes)`);
+
+	// warmStep only lists same-origin pages.
+	const db2 = fakeDb();
+	const s2 = { async fetch(req) { return new Response("x", { headers: { [STOPGAP_HEADER]: "1" } }); } };
+	await warmRun(db2, ["https://other.com/v/", "https://x.com/v/"]);
+	await warmStep(db2, s2, "https://x.com", { budgetMs: 10_000, batchSize: 4, now: () => 0 });
+	assert.deepEqual((await readWarmState(db2)).revisit, [["https://x.com/v/", 0]]);
+});
+
+test("revisits belong to their run: a new run drops them and an old run's revisit batch doesn't count", async () => {
+	const db = fakeDb();
+	const state = await warmRun(db, ["https://x.com/v/"]);
+	await claimWork(db, 4, 0);
+	await recordBatch(db, state.generation, 1, 0, 0, ["https://x.com/v/"]);
+	const claim = await claimWork(db, 4, REVISIT_DELAY_MS);
+	assert.equal(claim.kind, "revisit");
+	assert.deepEqual(claim.pages, [["https://x.com/v/", 0]]);
+	const fresh = await startWarm(db, "settings");
+	await recordRevisit(db, state.generation, [{ url: "https://x.com/v/", ok: true, stopgap: true, round: 0 }], REVISIT_DELAY_MS);
+	const now = await readWarmState(db);
+	assert.equal(now.generation, fresh.generation);
+	assert.equal(now.revisit, undefined);
+	assert.equal(now.revisitBusy, undefined);
+	assert.equal(pendingRevisits(now), 0);
+});
+
+test("parallel revisit claims never take the same page; parallel batches all list their pages", async () => {
+	const db = fakeDb();
+	const urls = ["https://x.com/1/", "https://x.com/2/", "https://x.com/3/", "https://x.com/4/"];
+	const state = await warmRun(db, urls);
+	await claimWork(db, 4, 0);
+	await Promise.all(urls.map((u) => recordBatch(db, state.generation, 1, 0, 0, [u])));
+	let progress = await readWarmState(db);
+	assert.equal(progress.warmed, 4);
+	assert.deepEqual(progress.revisit.map(([u]) => u).sort(), urls);
+	const claims = await Promise.all([claimWork(db, 2, REVISIT_DELAY_MS), claimWork(db, 2, REVISIT_DELAY_MS), claimWork(db, 2, REVISIT_DELAY_MS)]);
+	const taken = claims.filter(Boolean).flatMap((c) => c.pages.map(([u]) => u));
+	assert.equal(new Set(taken).size, taken.length, "no page claimed twice");
+	progress = await readWarmState(db);
+	assert.equal(progress.revisitBusy, taken.length);
+	assert.equal((progress.revisit?.length ?? 0) + taken.length, 4);
+});
+
+test("revisits claimed by an isolate that stopped don't keep the run open forever", async () => {
+	const db = fakeDb();
+	const state = await warmRun(db, ["https://x.com/v/"]);
+	await claimWork(db, 4, 0);
+	await recordBatch(db, state.generation, 1, 0, 0, ["https://x.com/v/"]);
+	assert.equal((await claimWork(db, 4, REVISIT_DELAY_MS)).kind, "revisit");
+	// …and that batch is never recorded.
+	assert.equal(await claimWork(db, 4, REVISIT_DELAY_MS + 1000), null);
+	assert.equal((await readWarmState(db)).phase, "warm");
+	assert.equal(await claimWork(db, 4, REVISIT_DELAY_MS + 3 * 60_000), null);
+	const done = await readWarmState(db);
+	assert.equal(done.phase, "done");
+	assert.equal(done.revisitGaveUp, 1);
+	assert.deepEqual(queueRows(db), []);
 });

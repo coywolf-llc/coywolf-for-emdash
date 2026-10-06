@@ -19,7 +19,7 @@ import type { PackMiddleware } from "./core/module.js";
 import { MIDDLEWARE } from "./modules.js";
 import { ALWAYS, LIFETIME_DEFAULTS, LIFETIME_SETTINGS } from "./pageCache/pack.js";
 import { applyPageLifetime, purgePageCache, purgeScope, purgesAfter, shortenStopgapPage } from "./pageCache/lib.js";
-import { WARMER_AGENT, WARM_SETTING, startWarm, warmStep } from "./pageCache/warm.js";
+import { STOPGAP_HEADER, WARMER_AGENT, WARM_SETTING, startWarm, warmStep } from "./pageCache/warm.js";
 import { notePackMiddleware } from "./search/live-serve.js";
 import { pendingPosterRenders, renderedPendingPoster } from "./videos/poster.js";
 
@@ -119,6 +119,7 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 		}
 		// A page that showed a video's Stream poster while its media-host copy is made
 		// (src/videos/poster.ts) is cached for minutes, not days, so the next render uses the copy.
+		// The cache warmer's render of such a page isn't cached; it's told so (STOPGAP_HEADER) and visits again.
 		if (context.request.method === "GET" && isOn(features, "images")) {
 			const before = pendingPosterRenders();
 			const response = await next();
@@ -126,6 +127,7 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 				(context as unknown as { cache?: Parameters<typeof shortenStopgapPage>[0] }).cache,
 				response,
 				() => renderedPendingPoster(context.locals, before),
+				context.request.headers.get("user-agent") === WARMER_AGENT ? STOPGAP_HEADER : undefined,
 			);
 		}
 		return next();

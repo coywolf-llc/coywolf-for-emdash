@@ -87,3 +87,22 @@ test("pages without a stopgap, uncached routes and non-HTML responses keep their
 	await shortenStopgapPage(short, html(), () => true);
 	assert.deepEqual(short.sets, [{ maxAge: 120, swr: STOPGAP_LIFETIME.swr }], "never lengthens a shorter lifetime");
 });
+
+test("the cache warmer's stopgap render isn't cached and is marked for a revisit; visitors' renders aren't marked", async () => {
+	const warmer = routeCache(604800);
+	const marked = await shortenStopgapPage(warmer, html("<video>", { headers: { "content-type": "text/html", "x-keep": "1" } }), () => true, "X-Coywolf-Stopgap");
+	assert.deepEqual(warmer.sets, [false], "not cached, so the mark never reaches visitors and the revisit renders afresh");
+	assert.equal(marked.headers.get("x-coywolf-stopgap"), "1");
+	assert.equal(marked.headers.get("x-keep"), "1");
+	assert.equal(await marked.text(), "<video>");
+
+	const visitor = routeCache(604800);
+	const plain = await shortenStopgapPage(visitor, html(), () => true);
+	assert.equal(plain.headers.get("x-coywolf-stopgap"), null);
+	assert.deepEqual(visitor.sets, [{ maxAge: STOPGAP_LIFETIME.maxAge, swr: STOPGAP_LIFETIME.swr }]);
+
+	const fine = routeCache(604800);
+	const clean = await shortenStopgapPage(fine, html(), () => false, "X-Coywolf-Stopgap");
+	assert.equal(clean.headers.get("x-coywolf-stopgap"), null, "the warmer's normal renders aren't marked");
+	assert.deepEqual(fine.sets, []);
+});
