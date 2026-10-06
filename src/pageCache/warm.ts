@@ -34,10 +34,22 @@
  * (`revisit`, at most MAX_REVISIT) and visited again once the main queue is
  * done and REVISIT_DELAY_MS has passed, so they end up cached with the normal
  * lifetime. Each gets at most MAX_REVISIT_ROUNDS more visits.
+ *
+ * Daily refresh: Cloudflare drops pages from its cache when they aren't
+ * requested often (well before their lifetime ends), so search bots and
+ * visitors reaching older pages would wait for them to be built. A day after
+ * the last run finished (any reason), the next warm step starts a new run
+ * ("daily"). Pages still cached come back as cache hits; only the dropped ones
+ * are built again. The due time is derived from `finishedAt` (nextDailyAt),
+ * which the isolate's copy of the progress row already has, so requests in
+ * between still skip the warm step without a query. WARM_DAILY_SETTING turns
+ * it off (`daily: false`).
  */
 
 /** Option rows: the switch, and the job's progress (its URLs are in WARM_QUEUE_PREFIX rows). */
 export const WARM_SETTING = "pageCacheWarm";
+/** The daily refresh (on unless set to false). */
+export const WARM_DAILY_SETTING = "pageCacheWarmDaily";
 export const WARM_STATE_OPTION = "plugin:coywolf-pack:pageCache:warmState";
 
 export interface WarmState {
@@ -96,6 +108,15 @@ export const BATCH_STALE_MS = 2 * 60_000;
 export const REWARM_DELAY_MS = 60_000;
 /** …and at most this long after the first edit of a burst, however long it goes on. */
 export const REWARM_MAX_DELAY_MS = 5 * 60_000;
+/** A new run starts this long after the last one finished (the daily refresh). */
+export const DAILY_REFRESH_MS = 24 * 60 * 60_000;
+
+/** When the daily refresh is due (ms): a day after a finished run. Null while a run is going (or none finished). */
+export function nextDailyAt(state: Pick<WarmState, "phase" | "finishedAt">): number | null {
+	if (state.phase !== "done" || typeof state.finishedAt !== "string") return null;
+	const at = Date.parse(state.finishedAt);
+	return Number.isNaN(at) ? null : at + DAILY_REFRESH_MS;
+}
 
 export function newWarmState(reason: string, now = new Date()): WarmState {
 	return { generation: `${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`, startedAt: now.toISOString(), phase: "collect", next: 0, total: 0, warmed: 0, failed: 0, reason };
@@ -443,15 +464,19 @@ export async function scheduleRewarm(db: D1Database, now = Date.now()): Promise<
 
 /**
  * Whether a progress row (as last read with the feature switches) may have
- * work for a warm step: a run under way, or a rewarm that's due. True when
- * unknown (undefined) or unreadable; false when there's no row.
+ * work for a warm step: a run under way, a rewarm or the daily refresh
+ * that's due, or no row yet (the first run starts). True when unknown
+ * (undefined) or unreadable. Without the daily refresh (`daily` false), no
+ * row means nothing to do and no daily run is due.
  */
-export function warmMayHaveWork(raw: string | null | undefined, now = Date.now()): boolean {
+export function warmMayHaveWork(raw: string | null | undefined, now = Date.now(), daily = true): boolean {
 	if (raw === undefined) return true;
-	if (raw === null) return false;
+	if (raw === null) return daily;
 	try {
-		const state = JSON.parse(raw) as { phase?: unknown; rewarmAfter?: unknown };
+		const state = JSON.parse(raw) as WarmState;
 		if (state.phase !== "done" && state.phase !== "failed") return true;
+		const dailyAt = daily ? nextDailyAt(state) : null;
+		if (dailyAt !== null && now >= dailyAt) return true;
 		return typeof state.rewarmAfter === "string" && now >= Date.parse(state.rewarmAfter);
 	} catch {
 		return true;
@@ -480,10 +505,17 @@ export type Claim =
 
 const COLLECT_STALE_MS = 2 * 60_000;
 
-/** Take the next piece of work, if any: reading the sitemap, or a batch of URLs. */
-export async function claimWork(db: D1Database, batchSize: number, now = Date.now()): Promise<Claim> {
+/** Take the next piece of work, if any: reading the sitemap, or a batch of URLs. `daily`: the daily refresh is on. */
+export async function claimWork(db: D1Database, batchSize: number, now = Date.now(), daily = true): Promise<Claim> {
 	let raw = await readRaw(db);
-	if (!raw) return null;
+	if (!raw) {
+		if (!daily) return null;
+		// Warming is on but nothing ran yet: start the first run (one isolate's insert wins).
+		const fresh = newWarmState("daily", new Date(now));
+		const inserted = await db.prepare("INSERT INTO options (name, value) VALUES (?, ?) ON CONFLICT(name) DO NOTHING").bind(WARM_STATE_OPTION, JSON.stringify(fresh)).run();
+		if (!((inserted.meta?.changes ?? 0) > 0)) return null;
+		raw = JSON.stringify(fresh);
+	}
 	let state = parseState(raw);
 	if (state?.legacy) {
 		// Written by an isolate still running the older version (during a deploy): convert it, then claim.
@@ -492,10 +524,13 @@ export async function claimWork(db: D1Database, batchSize: number, now = Date.no
 		state = raw ? parseState(raw) : null;
 	}
 	if (!raw || !state || state.legacy) return null;
-	if (state.rewarmAfter && now >= Date.parse(state.rewarmAfter)) {
+	const dailyAt = daily ? nextDailyAt(state) : null;
+	const due = state.rewarmAfter && now >= Date.parse(state.rewarmAfter) ? "edit" : dailyAt !== null && now >= dailyAt ? "daily" : null;
+	if (due) {
 		// Content changed a minute ago: a new run (it supersedes one in progress; pages that
 		// one already warmed and nothing invalidated since are cache hits, so they cost little).
-		const fresh = newWarmState("edit", new Date(now));
+		// Or a day passed since the last run: pages Cloudflare dropped from its cache are built again.
+		const fresh = newWarmState(due, new Date(now));
 		if (!(await swap(db, raw, fresh))) return null;
 		await deleteQueue(db, { keep: fresh.generation }).catch((error) => console.error("coywolf-pack: could not clear old warm queues", error));
 		raw = JSON.stringify(fresh);
@@ -651,12 +686,12 @@ export const WARMER_AGENT = "CoywolfPack-CacheWarmer";
  * One step of warming, run in the background of a page request: claim a piece
  * of work and do it, within a time budget. Returns what it did (for tests/logs).
  */
-export async function warmStep(db: D1Database, self: Fetcher, origin: string, options: { budgetMs: number; batchSize: number; now?: () => number }): Promise<string> {
+export async function warmStep(db: D1Database, self: Fetcher, origin: string, options: { budgetMs: number; batchSize: number; now?: () => number; daily?: boolean }): Promise<string> {
 	const now = options.now ?? Date.now;
 	const deadline = now() + options.budgetMs;
 	let did = "idle";
 	while (now() < deadline) {
-		const claim = await claimWork(db, options.batchSize, now());
+		const claim = await claimWork(db, options.batchSize, now(), options.daily ?? true);
 		if (!claim) return did;
 		if (claim.kind === "collect") {
 			const urls = await collectUrls(self, origin).catch(() => []);

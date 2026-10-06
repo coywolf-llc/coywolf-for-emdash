@@ -6,7 +6,7 @@ import { test } from "node:test";
 const { sitemapLocs, warmOrder, collectUrls, homeLinks, newWarmState, claimWork, warmStep, writeWarmState, writeWarmQueue, readWarmState, startWarm, finishCollect, recordBatch, recordRevisit, remainingUrls, pendingRevisits, WARM_STATE_OPTION, WARM_QUEUE_PREFIX, QUEUE_CHUNK } =
 	await import("./warm.ts");
 const { STOPGAP_HEADER, MAX_REVISIT, REVISIT_DELAY_MS, MAX_REVISIT_ROUNDS } = await import("./warm.ts");
-const { scheduleRewarm, warmMayHaveWork, REWARM_DELAY_MS, REWARM_MAX_DELAY_MS, BATCH_STALE_MS } = await import("./warm.ts");
+const { scheduleRewarm, warmMayHaveWork, REWARM_DELAY_MS, REWARM_MAX_DELAY_MS, BATCH_STALE_MS, DAILY_REFRESH_MS, nextDailyAt } = await import("./warm.ts");
 const { purgeScope } = await import("./lib.ts");
 
 const API = "/_emdash/api/plugins/coywolf-pack/";
@@ -279,9 +279,8 @@ test("a restarted run makes old batches stop counting", async () => {
 	assert.equal(state.warmed, 0, "the old run's batch isn't added to the new one");
 });
 
-test("nothing to do when no run is queued or the collect step is already taken", async () => {
+test("nothing to do when the collect step is already taken", async () => {
 	const db = fakeDb();
-	assert.equal(await claimWork(db, 4), null);
 	await startWarm(db, "deploy");
 	assert.equal((await claimWork(db, 4)).kind, "collect");
 	assert.equal(await claimWork(db, 4), null, "another isolate is reading the sitemap");
@@ -551,4 +550,115 @@ test("a batch claimed by an isolate that stopped doesn't keep the run open forev
 	// Its isolate recording late changes nothing.
 	await recordBatch(db, run.generation, 2, 0, t0 + 1000 + BATCH_STALE_MS + 1);
 	assert.deepEqual([(await readWarmState(db)).warmed, (await readWarmState(db)).failed], [4, 2]);
+});
+
+// ── Daily refresh ──
+
+/** A finished run whose last batch was recorded at `finishedAt`. */
+async function finishedRun(db, finishedAt) {
+	const state = { ...newWarmState("deploy", new Date(finishedAt - 60_000)), phase: "done", total: 3, next: 3, warmed: 3, finishedAt: new Date(finishedAt).toISOString() };
+	await writeWarmState(db, state);
+	return state;
+}
+
+test("daily refresh: a new run starts a day after the last one finished, not before", async () => {
+	const db = fakeDb();
+	const t0 = Date.now();
+	const done = await finishedRun(db, t0);
+	assert.equal(nextDailyAt(done), t0 + DAILY_REFRESH_MS);
+	const raw = db.rows.get(WARM_STATE_OPTION);
+	assert.equal(warmMayHaveWork(raw, t0 + DAILY_REFRESH_MS - 1), false, "requests skip the warm step (no query) until it's due");
+	assert.equal(await claimWork(db, 4, t0 + DAILY_REFRESH_MS - 1), null);
+	assert.equal(db.rows.get(WARM_STATE_OPTION), raw, "nothing written before it's due");
+	assert.equal(warmMayHaveWork(raw, t0 + DAILY_REFRESH_MS), true);
+	const claim = await claimWork(db, 4, t0 + DAILY_REFRESH_MS);
+	assert.equal(claim.kind, "collect");
+	assert.equal(claim.state.reason, "daily");
+	assert.notEqual(claim.state.generation, done.generation);
+	assert.equal(nextDailyAt(claim.state), null, "no refresh due while the run goes on");
+});
+
+test("daily refresh: same pages, same order; it finishes and pushes the next one a day later", async () => {
+	const db = fakeDb();
+	const c = clock();
+	await finishedRun(db, c.t);
+	c.t += DAILY_REFRESH_MS;
+	const s = site(["/new/", "/old/"]);
+	assert.equal(await warmStep(db, s, "https://x.com", { budgetMs: 1000, batchSize: 4, now: c.now }), "warmed");
+	assert.deepEqual(s.hits, ["https://x.com/", "https://x.com/sitemap.xml", "https://x.com/", "https://x.com/new/", "https://x.com/old/"]);
+	const state = await readWarmState(db);
+	assert.equal(state.phase, "done");
+	assert.equal(state.reason, "daily");
+	assert.equal(nextDailyAt(state), c.t + DAILY_REFRESH_MS);
+	assert.equal(await claimWork(db, 4, c.t + 1000), null, "it doesn't loop");
+});
+
+test("daily refresh: parallel claims start it once", async () => {
+	const db = fakeDb();
+	const t0 = Date.now();
+	await finishedRun(db, t0);
+	const claims = await Promise.all(Array.from({ length: 8 }, () => claimWork(db, 4, t0 + DAILY_REFRESH_MS)));
+	const started = claims.filter(Boolean);
+	assert.equal(started.length, 1);
+	assert.equal(started[0].kind, "collect");
+	assert.equal((await claimWork(db, 4, t0 + DAILY_REFRESH_MS + 1)), null, "the collect step is taken once");
+});
+
+test("daily refresh: a run started for another reason resets the clock", async () => {
+	const db = fakeDb();
+	const t0 = Date.now();
+	await finishedRun(db, t0);
+	const later = t0 + 20 * 60 * 60_000;
+	const deploy = await startWarm(db, "deploy");
+	assert.equal(warmMayHaveWork(db.rows.get(WARM_STATE_OPTION), t0 + DAILY_REFRESH_MS), true, "a run under way has work");
+	await writeWarmState(db, { ...deploy, phase: "done", finishedAt: new Date(later).toISOString() });
+	const raw = db.rows.get(WARM_STATE_OPTION);
+	assert.equal(warmMayHaveWork(raw, t0 + DAILY_REFRESH_MS), false);
+	assert.equal(await claimWork(db, 4, t0 + DAILY_REFRESH_MS), null, "not due a day after the older run");
+	assert.equal((await claimWork(db, 4, later + DAILY_REFRESH_MS)).state.reason, "daily");
+});
+
+test("daily refresh: content edits due at the same time win (reason edit)", async () => {
+	const db = fakeDb();
+	const t0 = Date.now();
+	await finishedRun(db, t0);
+	await scheduleRewarm(db, t0 + DAILY_REFRESH_MS - REWARM_DELAY_MS);
+	assert.equal((await claimWork(db, 4, t0 + DAILY_REFRESH_MS)).state.reason, "edit");
+});
+
+test("daily refresh: with no run yet, the first warm step starts one (once)", async () => {
+	const db = fakeDb();
+	assert.equal(warmMayHaveWork(null), true, "no row: the warm step runs");
+	const claims = await Promise.all([claimWork(db, 4), claimWork(db, 4), claimWork(db, 4)]);
+	const started = claims.filter(Boolean);
+	assert.equal(started.length, 1);
+	assert.equal(started[0].kind, "collect");
+	assert.equal(started[0].state.reason, "daily");
+	assert.equal((await readWarmState(db)).generation, started[0].state.generation);
+});
+
+test("daily refresh off: no daily run (none with no row either), and requests don't wake for it; on by default", async () => {
+	const db = fakeDb();
+	assert.equal(warmMayHaveWork(null, Date.now(), false), false);
+	assert.equal(await claimWork(db, 4, Date.now(), false), null);
+	assert.equal(db.rows.has(WARM_STATE_OPTION), false, "no row written");
+	const t0 = Date.now();
+	await finishedRun(db, t0);
+	const raw = db.rows.get(WARM_STATE_OPTION);
+	const later = t0 + 3 * DAILY_REFRESH_MS;
+	assert.equal(warmMayHaveWork(raw, later, false), false);
+	assert.equal(await claimWork(db, 4, later, false), null);
+	assert.equal(db.rows.get(WARM_STATE_OPTION), raw, "nothing started");
+	const s = site(["/a/"]);
+	assert.equal(await warmStep(db, s, "https://x.com", { budgetMs: 1000, batchSize: 4, now: () => later, daily: false }), "idle");
+	assert.deepEqual(s.hits, []);
+	// Other triggers still work with it off.
+	await scheduleRewarm(db, later);
+	assert.equal((await claimWork(db, 4, later + REWARM_DELAY_MS, false)).state.reason, "edit");
+	// Default (no option): on.
+	const db2 = fakeDb();
+	await finishedRun(db2, t0);
+	assert.equal(warmMayHaveWork(db2.rows.get(WARM_STATE_OPTION), later), true);
+	assert.equal((await warmStep(db2, site(["/a/"]), "https://x.com", { budgetMs: 1000, batchSize: 4, now: () => later })), "warmed");
+	assert.equal((await readWarmState(db2)).reason, "daily");
 });

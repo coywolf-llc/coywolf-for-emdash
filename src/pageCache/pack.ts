@@ -8,7 +8,7 @@ import { mediaApiAccess, purgeMediaHost } from "../images/module.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { workerEnv } from "../shared.js";
 import { VERSION_OPTION, purgeIfNewVersion, purgePageCache, versionId } from "./lib.js";
-import { WARM_SETTING, WARM_STATE_OPTION, pendingRevisits, readWarmState, remainingUrls, startWarm } from "./warm.js";
+import { WARM_DAILY_SETTING, WARM_SETTING, WARM_STATE_OPTION, nextDailyAt, pendingRevisits, readWarmState, remainingUrls, startWarm } from "./warm.js";
 
 /**
  * Performance is always on (its page sits right below Coywolf Pack). On a site
@@ -23,6 +23,7 @@ export const LIFETIME_DEFAULTS = { maxAgeDays: 7, refreshDays: 1 } as const;
 registerSiteSetting(LIFETIME_SETTINGS.maxAgeDays);
 registerSiteSetting(LIFETIME_SETTINGS.refreshDays);
 registerSiteSetting(WARM_SETTING);
+registerSiteSetting(WARM_DAILY_SETTING);
 // The deployed version whose pages are cached, read with the switches (no query of its own per isolate).
 registerSiteOption(VERSION_OPTION);
 
@@ -72,8 +73,11 @@ export function pageCachePack(): PackModule {
 					const state = db ? await readWarmState(db) : null;
 					return {
 						enabled: Boolean(await ctx.settings.get<boolean>(WARM_SETTING)),
+						// The daily refresh: on unless turned off.
+						daily: (await ctx.settings.get<boolean>(WARM_DAILY_SETTING)) !== false,
 						// `revisiting`: pages warmed with a stopgap poster, to be warmed again once their posters are copied (the URLs stay out).
-						state: state && { ...state, revisit: undefined, remaining: remainingUrls(state), revisiting: pendingRevisits(state) },
+						// `nextDailyAt`: when the daily refresh starts a new run (ms; only once a run has finished).
+						state: state && { ...state, revisit: undefined, remaining: remainingUrls(state), revisiting: pendingRevisits(state), nextDailyAt: nextDailyAt(state) ?? undefined },
 					};
 				},
 			},
@@ -83,10 +87,16 @@ export function pageCachePack(): PackModule {
 				methods: ["POST"],
 				request: { body: "json" },
 				handler: async (ctx) => {
-					const { enabled } = parseInput(z.object({ enabled: z.boolean() }), ctx.input);
-					await ctx.settings.set(WARM_SETTING, enabled);
-					rememberSiteSetting(WARM_SETTING, enabled);
-					return { enabled };
+					const { enabled, daily } = parseInput(z.object({ enabled: z.boolean().optional(), daily: z.boolean().optional() }), ctx.input);
+					if (enabled !== undefined) {
+						await ctx.settings.set(WARM_SETTING, enabled);
+						rememberSiteSetting(WARM_SETTING, enabled);
+					}
+					if (daily !== undefined) {
+						await ctx.settings.set(WARM_DAILY_SETTING, daily);
+						rememberSiteSetting(WARM_DAILY_SETTING, daily);
+					}
+					return { enabled, daily };
 				},
 			}),
 
