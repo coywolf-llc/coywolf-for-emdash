@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { purgesAfter } = await import("./lib.ts");
+const { purgesAfter, watchInvalidation } = await import("./lib.ts");
 const api = "/_emdash/api/plugins/coywolf-pack/";
 
 test("admin writes to pack routes purge the page cache", () => {
@@ -105,4 +105,23 @@ test("the cache warmer's stopgap render isn't cached and is marked for a revisit
 	const clean = await shortenStopgapPage(fine, html(), () => false, "X-Coywolf-Stopgap");
 	assert.equal(clean.headers.get("x-coywolf-stopgap"), null, "the warmer's normal renders aren't marked");
 	assert.deepEqual(fine.sets, []);
+});
+
+test("watchInvalidation notices EmDash clearing pages by tag, and only a successful clear", async () => {
+	const calls = [];
+	const cache = {
+		async invalidate(options) {
+			calls.push(options);
+			if (options.tags.includes("boom")) throw new Error("purge failed");
+		},
+	};
+	const invalidated = watchInvalidation(cache);
+	assert.equal(invalidated(), false, "a draft save that clears nothing");
+	await assert.rejects(cache.invalidate({ tags: ["boom"] }));
+	assert.equal(invalidated(), false);
+	await cache.invalidate({ tags: ["posts", "01ABC"] });
+	assert.equal(invalidated(), true);
+	assert.deepEqual(calls.at(-1), { tags: ["posts", "01ABC"] }, "the route's call still reaches the cache");
+	assert.equal(watchInvalidation(undefined)(), false, "no route cache");
+	assert.equal(watchInvalidation({})(), false);
 });

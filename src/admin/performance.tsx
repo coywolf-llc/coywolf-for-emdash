@@ -43,10 +43,12 @@ interface WarmStatus {
 		revisiting?: number;
 		error?: string;
 		reason: string;
+		/** Content changed: a new run starts after then. */
+		rewarmAfter?: string;
 	} | null;
 }
 
-const REASON: Record<string, string> = { deploy: "after a deploy", settings: "after a settings change", cleared: "after the cache was cleared", manual: "on request" };
+const REASON: Record<string, string> = { deploy: "after a deploy", settings: "after a settings change", cleared: "after the cache was cleared", manual: "on request", edit: "after content edits" };
 
 function warmText(state: NonNullable<WarmStatus["state"]>): string {
 	const when = REASON[state.reason] ?? "";
@@ -55,6 +57,9 @@ function warmText(state: NonNullable<WarmStatus["state"]>): string {
 		return `Re-warming ${state.revisiting} ${state.revisiting === 1 ? "page" : "pages"} after ${state.revisiting === 1 ? "its video posters were" : "their video posters were"} copied.`;
 	}
 	if (state.phase === "warm") return `Warming ${when}: ${state.warmed} of ${state.total} pages done.`;
+	if (state.rewarmAfter && (state.phase === "done" || state.phase === "failed")) {
+		return `Content changed: warming again at about ${new Date(Date.parse(state.rewarmAfter)).toLocaleTimeString()}.`;
+	}
 	if (state.phase === "failed") return state.error ?? "The last run failed.";
 	const at = state.finishedAt ? new Date(state.finishedAt).toLocaleString() : "";
 	return `Last run ${when}: ${state.warmed} of ${state.total} pages warmed${state.failed ? ` (${state.failed} didn't load)` : ""}${at ? `, finished ${at}` : ""}.`;
@@ -223,7 +228,8 @@ export function PerformancePage() {
 								After a deploy or a full clear, every page is cold until someone visits it. Warming visits every page in your
 								sitemap (home page first, then newest posts) a few at a time, in the background of the requests your site already
 								gets, so the next visitors and search engine crawlers get cached pages. It warms the region your traffic comes
-								from; it doesn't run while nobody is visiting.
+								from; it doesn't run while nobody is visiting. Warming also runs a minute after content edits (saving or
+								publishing an entry, menus, categories, site settings), which clear the home page, archives and related pages.
 							</p>
 						</div>
 						<Switch

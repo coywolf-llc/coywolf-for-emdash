@@ -6,6 +6,7 @@ import { test } from "node:test";
 const { sitemapLocs, warmOrder, collectUrls, homeLinks, newWarmState, claimWork, warmStep, writeWarmState, writeWarmQueue, readWarmState, startWarm, finishCollect, recordBatch, recordRevisit, remainingUrls, pendingRevisits, WARM_STATE_OPTION, WARM_QUEUE_PREFIX, QUEUE_CHUNK } =
 	await import("./warm.ts");
 const { STOPGAP_HEADER, MAX_REVISIT, REVISIT_DELAY_MS, MAX_REVISIT_ROUNDS } = await import("./warm.ts");
+const { scheduleRewarm, warmMayHaveWork, REWARM_DELAY_MS, REWARM_MAX_DELAY_MS, BATCH_STALE_MS } = await import("./warm.ts");
 const { purgeScope } = await import("./lib.ts");
 
 const API = "/_emdash/api/plugins/coywolf-pack/";
@@ -73,12 +74,17 @@ test("home links are capped", () => {
 /** The slice of D1 the warm queue uses: one options table. Counts writes to the progress row and their size. */
 function fakeDb() {
 	const rows = new Map();
-	const like = (pattern) => new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*")}$`);
 	const db = {
 		rows,
 		stateWrites: [],
 		prepare(sql) {
 			let args = [];
+			// D1 refuses LIKE/GLOB patterns over 50 bytes (SQLITE_MAX_LIKE_PATTERN_LENGTH); queue row names are longer.
+			const checkLike = () => {
+				if (/\bLIKE\b/.test(sql) && args.some((a) => typeof a === "string" && Buffer.byteLength(a) > 50)) {
+					throw new Error("LIKE or GLOB pattern too complex: SQLITE_ERROR [code: 7500]");
+				}
+			};
 			const stmt = {
 				bind(...a) {
 					args = a;
@@ -92,16 +98,20 @@ function fakeDb() {
 					return { results: args.filter((n) => rows.has(n)).map((name) => ({ name, value: rows.get(name) })) };
 				},
 				async run() {
+					checkLike();
 					if (sql.startsWith("INSERT")) {
+						if (sql.includes("DO NOTHING") && rows.has(args[0])) return { meta: { changes: 0 } };
 						rows.set(args[0], args[1]);
 						if (args[0] === WARM_STATE_OPTION) db.stateWrites.push(args[1].length);
 						return { meta: { changes: 1 } };
 					}
 					if (sql.startsWith("DELETE")) {
-						const [include, exclude] = args.map(like);
+						// name >= ? AND name < ? [AND NOT (name >= ? AND name < ?)]
+						assert.ok(!sql.includes("LIKE"), "queue rows are deleted by name range");
+						const [from, to, keepFrom, keepTo] = args;
 						let changes = 0;
 						for (const name of [...rows.keys()]) {
-							if (include.test(name) && !(exclude && exclude.test(name))) {
+							if (name >= from && name < to && !(keepFrom !== undefined && name >= keepFrom && name < keepTo)) {
 								rows.delete(name);
 								changes++;
 							}
@@ -418,4 +428,127 @@ test("revisits claimed by an isolate that stopped don't keep the run open foreve
 	assert.equal(done.phase, "done");
 	assert.equal(done.revisitGaveUp, 1);
 	assert.deepEqual(queueRows(db), []);
+});
+
+test("queue rows of every older run are cleared, even ones a failed cleanup left behind; a newer run's stay", async () => {
+	const db = fakeDb();
+	// Thirteen leftover runs (the LIKE-based cleanup never deleted anything on D1), then the current one.
+	for (let i = 0; i < 13; i++) await writeWarmQueue(db, `17912${String(i).padStart(8, "0")}-old${i}`, ["https://x.com/"]);
+	db.rows.set("plugin:coywolf-pack:pageCache:warmQueueish", "not ours");
+	db.rows.set("plugin:coywolf-pack:pageCache:warmState2", "not ours");
+	const fresh = await startWarm(db, "deploy");
+	assert.deepEqual(queueRows(db).filter((n) => !n.endsWith("ish")), [], "starting a run clears every other run's rows");
+	assert.ok(db.rows.has("plugin:coywolf-pack:pageCache:warmQueueish"), "rows outside the queue prefix stay");
+
+	// Finishing a run clears its rows and older ones, never a newer run's.
+	const s = site(["/a/"]);
+	await warmStep(db, s, "https://x.com", { budgetMs: 10_000, batchSize: 1, now: () => Date.now() });
+	assert.equal((await readWarmState(db)).generation, fresh.generation);
+	const newer = `${Date.now() + 60_000}-newer`;
+	const older = `${Date.now() - 60_000}-older`;
+	const current = await warmRun(db, ["https://x.com/a/"]);
+	await writeWarmQueue(db, newer, ["https://x.com/n/"]);
+	await writeWarmQueue(db, older, ["https://x.com/o/"]);
+	const claim = await claimWork(db, 4);
+	await recordBatch(db, current.generation, claim.urls.length, 0);
+	assert.equal((await readWarmState(db)).phase, "done");
+	assert.deepEqual(queueRows(db).filter((n) => !n.endsWith("ish")), [`${WARM_QUEUE_PREFIX}${newer}:0`]);
+});
+
+test("content edits schedule one run a minute after the last edit (debounced, capped)", async () => {
+	const db = fakeDb();
+	const t0 = Date.parse("2026-10-06T12:00:00Z");
+	const urls = ["https://x.com/a/"];
+	const done = { ...(await warmRun(db, urls)), phase: "done", next: 1, warmed: 1, finishedAt: new Date(t0 - 1000).toISOString() };
+	await writeWarmState(db, done);
+	const raw0 = JSON.stringify(done);
+	assert.equal(warmMayHaveWork(raw0, t0), false, "a finished run has nothing to do");
+
+	await scheduleRewarm(db, t0);
+	await scheduleRewarm(db, t0 + 30_000); // an autosave or another edit pushes it back
+	let state = await readWarmState(db);
+	assert.equal(state.rewarmAfter, new Date(t0 + 30_000 + REWARM_DELAY_MS).toISOString());
+	assert.equal(state.rewarmBy, new Date(t0 + REWARM_MAX_DELAY_MS).toISOString());
+	assert.equal(state.phase, "done", "the finished run is still reported meanwhile");
+	const raw = db.rows.get(WARM_STATE_OPTION);
+	assert.equal(warmMayHaveWork(raw, t0 + 60_000), false, "not due yet: requests skip the warm step");
+	assert.equal(warmMayHaveWork(raw, t0 + 90_000), true);
+	assert.equal(await claimWork(db, 4, t0 + 60_000), null, "nothing before it's due");
+
+	const claim = await claimWork(db, 4, t0 + 90_000);
+	assert.equal(claim.kind, "collect");
+	assert.equal(claim.state.reason, "edit");
+	assert.notEqual(claim.state.generation, done.generation);
+	assert.equal(claim.state.rewarmAfter, undefined, "the new run clears the schedule");
+	assert.deepEqual(queueRows(db), [], "the old run's rows go");
+	assert.equal(await claimWork(db, 4, t0 + 91_000), null, "the collect step is taken once");
+});
+
+test("edits that keep coming still get a run within the cap", async () => {
+	const db = fakeDb();
+	const t0 = Date.parse("2026-10-06T12:00:00Z");
+	for (let t = t0; t <= t0 + 10 * 60_000; t += 20_000) {
+		await scheduleRewarm(db, t);
+		assert.ok(Date.parse((await readWarmState(db)).rewarmAfter) <= t0 + REWARM_MAX_DELAY_MS);
+		// Steps run with the traffic; once due, the run starts and the next edit schedules afresh.
+		const claim = await claimWork(db, 4, t);
+		if (claim?.kind === "collect") {
+			assert.equal(t, t0 + REWARM_MAX_DELAY_MS, "the first run starts at the cap");
+			await finishCollect(db, claim.state.generation, [], "https://x.com");
+			return;
+		}
+	}
+	assert.fail("no run started");
+});
+
+test("an edit with no run yet stores a finished, empty row carrying the schedule", async () => {
+	const db = fakeDb();
+	const t0 = Date.now();
+	const state = await scheduleRewarm(db, t0);
+	assert.equal(state.phase, "done");
+	assert.equal(state.total, 0);
+	assert.equal(warmMayHaveWork(db.rows.get(WARM_STATE_OPTION), t0), false);
+	assert.equal((await claimWork(db, 4, t0 + REWARM_DELAY_MS)).kind, "collect");
+});
+
+test("an edit during a run lets it go on, then replaces it when due; the old run's batches stop counting", async () => {
+	const db = fakeDb();
+	const t0 = Date.now();
+	const urls = Array.from({ length: 10 }, (_, i) => `https://x.com/${i}/`);
+	const run = await warmRun(db, urls);
+	await scheduleRewarm(db, t0);
+	const first = await claimWork(db, 4, t0 + 1000);
+	assert.equal(first.kind, "warm", "the run goes on while the rewarm waits");
+	assert.equal(first.state.generation, run.generation);
+	assert.equal(warmMayHaveWork(db.rows.get(WARM_STATE_OPTION), t0 + 1000), true);
+	const replaced = await claimWork(db, 4, t0 + REWARM_DELAY_MS);
+	assert.equal(replaced.kind, "collect");
+	await recordBatch(db, run.generation, 4, 0, t0 + REWARM_DELAY_MS);
+	const state = await readWarmState(db);
+	assert.equal(state.generation, replaced.state.generation);
+	assert.equal(state.warmed, 0);
+	assert.deepEqual(queueRows(db), []);
+});
+
+test("a batch claimed by an isolate that stopped doesn't keep the run open forever", async () => {
+	const db = fakeDb();
+	const t0 = Date.now();
+	const urls = Array.from({ length: 6 }, (_, i) => `https://x.com/${i}/`);
+	const run = await warmRun(db, urls);
+	const a = await claimWork(db, 4, t0);
+	const b = await claimWork(db, 4, t0 + 1000); // never recorded
+	assert.equal(b.urls.length, 2);
+	await recordBatch(db, run.generation, a.urls.length, 0, t0 + 2000);
+	assert.equal(await claimWork(db, 4, t0 + 60_000), null);
+	assert.equal((await readWarmState(db)).phase, "warm", "a recent batch may still be under way");
+	assert.equal(warmMayHaveWork(db.rows.get(WARM_STATE_OPTION)), true);
+	await claimWork(db, 4, t0 + 1000 + BATCH_STALE_MS);
+	const state = await readWarmState(db);
+	assert.equal(state.phase, "done");
+	assert.equal(state.warmed, 4);
+	assert.equal(state.failed, 2, "the lost batch counts as failed");
+	assert.deepEqual(queueRows(db), []);
+	// Its isolate recording late changes nothing.
+	await recordBatch(db, run.generation, 2, 0, t0 + 1000 + BATCH_STALE_MS + 1);
+	assert.deepEqual([(await readWarmState(db)).warmed, (await readWarmState(db)).failed], [4, 2]);
 });
