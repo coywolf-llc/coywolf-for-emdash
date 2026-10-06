@@ -22,6 +22,19 @@ registerFeatures(FEATURES);
 
 const toggle = (action_id: string, label: string, initial_value: boolean) => ({ type: "toggle", action_id, label, initial_value });
 
+/** Left/center/right, with the site default (Videos → Settings → Appearance) as the empty choice. */
+const alignSelect = (action_id: string, label: string) => ({
+	type: "select",
+	action_id,
+	label,
+	options: [
+		{ value: "", label: "Site default" },
+		{ value: "left", label: "Left" },
+		{ value: "center", label: "Center" },
+		{ value: "right", label: "Right" },
+	],
+});
+
 /**
  * Show/hide with the site default (Videos → Settings) as the empty choice, so
  * new blocks follow the settings. No initial value: a block only keeps a
@@ -107,6 +120,12 @@ export function videosPack(options: VideosOptions): PackModule {
 					showSelect("showLikes", "Like button"),
 					showSelect("showLikeCount", "Number of likes"),
 					showSelect("showDate", "Upload date"),
+					alignSelect("contentAlign", "Name & description alignment"),
+					alignSelect("metaAlign", "Like / views / date row alignment"),
+					{ type: "number_input", action_id: "radius", label: "Corner radius (px; empty uses the site default)", min: 0, max: 48 },
+					showSelect("showBorder", "Border around the player"),
+					{ type: "number_input", action_id: "borderWidth", label: "Border width (px; empty uses the site default)", min: 0, max: 20 },
+					{ type: "text_input", action_id: "borderColor", label: "Border color (hex; empty uses the site default)", placeholder: "#eeeeee" },
 				],
 			},
 		],

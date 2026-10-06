@@ -37,7 +37,7 @@ import {
 	playerSrc,
 } from "../../videos/lib.js";
 import { hostedPosterImage } from "../../videos/poster.js";
-import { DISPLAY_DEFAULTS, VIDEO_CSS, type VideoDisplay, captionHtml, displayVars, metaHtml, schemeClass } from "../../videos/render.js";
+import { DISPLAY_DEFAULTS, VIDEO_CSS, blockDisplay, type VideoDisplay, captionHtml, displayVars, metaHtml, schemeClass } from "../../videos/render.js";
 
 interface Props {
 	node: VideoBlock;
@@ -130,7 +130,7 @@ const track = data?.engagement && !cfg.autoplay;
 // Autoplaying without controls: our own pause/play button is the only way to stop it.
 const pausable = cfg.autoplay && !cfg.controls;
 const fallbackHref = /^https?:\/\//i.test(str(node?.url) ?? "") ? str(node?.url) : undefined;
-const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px` : "", ...displayVars(display, data?.background)].filter(Boolean).join(";");
+const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px` : "", ...displayVars(blockDisplay(display, node as Record<string, unknown>), data?.background)].filter(Boolean).join(";");
 // The figure's CSS, once per page.
 const locals = (Astro.locals ?? {}) as Record<string, unknown>;
 const css = on && uid && !locals.__cwVideoCss ? VIDEO_CSS : "";

@@ -111,6 +111,29 @@ export function normalizeDisplay(raw: unknown): VideoDisplay {
 	};
 }
 
+/**
+ * The site's display settings with one block's own look applied: alignment,
+ * corner radius and border. Anything empty or invalid keeps the site's value
+ * (values are checked strictly, since they become CSS).
+ */
+export function blockDisplay(d: VideoDisplay, block: Record<string, unknown> | null | undefined): VideoDisplay {
+	if (!block) return d;
+	const out = { ...d };
+	const align = ["left", "center", "right"] as const;
+	if (align.includes(block.contentAlign as VideoAlign)) out.align = block.contentAlign as VideoAlign;
+	if (align.includes(block.metaAlign as VideoAlign)) out.metaAlign = block.metaAlign as VideoAlign;
+	const int = (v: unknown, min: number, max: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, Math.round(v))) : null);
+	const radius = int(block.radius, 0, 48);
+	if (radius !== null) out.radius = radius;
+	const border = block.showBorder;
+	if (border === "show" || border === true) out.border = true;
+	else if (border === "hide" || border === false) out.border = false;
+	const width = int(block.borderWidth, 0, 20);
+	if (width !== null) out.borderWidth = width;
+	if (isHex(block.borderColor)) out.borderColor = block.borderColor;
+	return out;
+}
+
 const JUSTIFY: Record<VideoAlign, string> = { left: "flex-start", center: "center", right: "flex-end" };
 
 /**

@@ -245,6 +245,15 @@ function managerVideo(a: Record<string, unknown>, d: VideoDefaults): { block: Bl
 		const show = showAttr(value, wpDefault);
 		if (show) block[key] = show;
 	}
+	// Per-video look, only where the WordPress block set it (else it followed the site settings).
+	for (const key of ["contentAlign", "metaAlign"]) if (a[key] === "left" || a[key] === "center" || a[key] === "right") block[key] = a[key];
+	const radius = num(a.radius);
+	if (radius !== undefined) block.radius = Math.max(0, Math.min(48, Math.round(radius)));
+	const border = bool(a.showBorder);
+	if (border !== undefined) block.showBorder = border ? "show" : "hide";
+	const borderWidth = num(a.borderWidth);
+	if (borderWidth !== undefined) block.borderWidth = Math.max(0, Math.min(20, Math.round(borderWidth)));
+	if (/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(str(a.borderColor))) block.borderColor = str(a.borderColor);
 	const posterTime = num(a.posterTime);
 	if (posterTime && posterTime > 0) block.posterTime = posterTime;
 	const startTime = num(a.startTime);

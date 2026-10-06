@@ -118,6 +118,9 @@ test("Video Manager blocks become Coywolf Video blocks with the plugin's default
 	// Set on the WordPress block: kept as an explicit choice.
 	assert.deepEqual([firmware.sizeMode, firmware.maxWidth, firmware.showName, firmware.showDate, firmware.aspect], ["maxwidth", 360, "hide", "hide", 178.03]);
 	assert.equal(playerConfig(firmware, { ...SHOW_DEFAULTS, followSiteDefaults: true }).showName, false, "explicit choices survive follow-site-defaults");
+	// Per-video alignment kept only where the WordPress block set it.
+	assert.deepEqual([firmware.contentAlign, firmware.metaAlign, firmware.radius, firmware.showBorder], ["center", "center", undefined, undefined]);
+	assert.equal(search.contentAlign, "center");
 	// HTML descriptions become plain text; the block's poster frame is kept.
 	assert.equal(talk.caption, "AI Agent, AI Spy presented by Meredith Whittaker and Udbhav Tiwari at 39C3 – CC BY 4.0");
 	assert.equal(talk.posterTime, 392);
@@ -131,6 +134,18 @@ test("Video Manager blocks become Coywolf Video blocks with the plugin's default
 	const first = ofType(custom.result.value, "coywolf-video")[0];
 	// Off on the WordPress site: hidden here too (the Videos default is on).
 	assert.deepEqual([first.showName, first.showLikes, first.showPlays], ["hide", "hide", undefined]);
+});
+
+test("Video Manager per-video radius and border map to the block, checked like the settings", () => {
+	const html = (attrs) =>
+		`<!-- wp:coywolf/video ${JSON.stringify({ videoId: "be5ad65bed8de8188f16df8f32388b8b", ...attrs })} -->\n<div class="wp-block-coywolf-video"></div>\n<!-- /wp:coywolf/video -->`;
+	const convert = (attrs) => ofType(convertPortableText(gutenbergToPortableText(prepareContent(html(attrs)).content), { key: keys() }).value, "coywolf-video")[0];
+	const set = convert({ radius: 12, showBorder: true, borderWidth: 3, borderColor: "#336699", metaAlign: "right" });
+	assert.deepEqual([set.radius, set.showBorder, set.borderWidth, set.borderColor, set.metaAlign], [12, "show", 3, "#336699", "right"]);
+	const bad = convert({ radius: 500, showBorder: false, borderWidth: -2, borderColor: "red", contentAlign: "justify" });
+	assert.deepEqual([bad.radius, bad.showBorder, bad.borderWidth, bad.borderColor, bad.contentAlign], [48, "hide", 0, undefined, undefined]);
+	const none = convert({});
+	assert.deepEqual([none.radius, none.showBorder, none.borderWidth, none.borderColor, none.contentAlign, none.metaAlign], [undefined, undefined, undefined, undefined, undefined, undefined]);
 });
 
 test("converted videos work with the Videos module: index, player options, schema without a Stream token", () => {

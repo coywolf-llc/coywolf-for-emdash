@@ -197,6 +197,14 @@ export interface VideoBlock {
 	showPlays?: BlockShow;
 	showLikes?: BlockShow;
 	showLikeCount?: BlockShow;
+	/** Per-video look (empty/missing: the site's Appearance settings). See render.ts blockDisplay. */
+	contentAlign?: string;
+	metaAlign?: string;
+	radius?: number;
+	/** "show"/"hide" (true/false from WordPress imports). */
+	showBorder?: BlockShow;
+	borderWidth?: number;
+	borderColor?: string;
 	showDate?: BlockShow;
 	/** Legacy WordPress cloudflare-stream marker attributes (wellbeing.io). */
 	id?: string;

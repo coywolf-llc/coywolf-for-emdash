@@ -215,3 +215,35 @@ test("parseTags: Video Manager's tag rules", () => {
 	assert.equal(parseTags(Array.from({ length: 40 }, (_, i) => `t${i}`)).length, 25);
 	assert.equal(parseTags("x".repeat(80))[0].length, 50);
 });
+
+// ── Per-video look ───────────────────────────────────────────────
+
+test("blockDisplay: a block's alignment, radius and border override the site's for that video only", async () => {
+	const { blockDisplay } = await import("../src/videos/render.ts");
+	const site = normalizeDisplay({ align: "center", radius: 12, border: true, borderWidth: 2, borderColor: "#111111" });
+	assert.deepEqual(blockDisplay(site, {}), site, "nothing set: the site's look");
+	assert.deepEqual(displayVars(blockDisplay(site, { contentAlign: "", radius: undefined, showBorder: "" })), displayVars(site));
+	const own = blockDisplay(site, { contentAlign: "left", metaAlign: "right", radius: 0, showBorder: "hide" });
+	assert.deepEqual(displayVars(own), ["--cw-video-radius:0px", "--cw-video-meta-justify:flex-end"], "left is the default, so the site's center is dropped");
+	assert.deepEqual(displayVars(blockDisplay(DISPLAY_DEFAULTS, { showBorder: "show", borderWidth: 4, borderColor: "#ABCDEF" })), ["--cw-video-border:4px solid #ABCDEF"]);
+	assert.deepEqual(displayVars(blockDisplay(DISPLAY_DEFAULTS, { showBorder: true })), ["--cw-video-border:1px solid #eeeeee"], "WordPress booleans work");
+});
+
+test("blockDisplay: invalid values are ignored or clamped (they become CSS)", async () => {
+	const { blockDisplay } = await import("../src/videos/render.ts");
+	const d = blockDisplay(DISPLAY_DEFAULTS, {
+		contentAlign: "center;color:red",
+		metaAlign: "justify",
+		radius: 999.7,
+		showBorder: "show",
+		borderWidth: -5,
+		borderColor: "red;}body{display:none",
+	});
+	assert.equal(d.align, "left");
+	assert.equal(d.metaAlign, "left");
+	assert.equal(d.radius, 48);
+	assert.equal(d.borderWidth, 0);
+	assert.equal(d.borderColor, "#eeeeee");
+	assert.equal(blockDisplay(DISPLAY_DEFAULTS, { radius: "12" }).radius, DISPLAY_DEFAULTS.radius, "numbers only");
+	assert.doesNotMatch(displayVars(d).join(";"), /red|display/);
+});
