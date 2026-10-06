@@ -111,10 +111,16 @@ export const REWARM_MAX_DELAY_MS = 5 * 60_000;
 /** A new run starts this long after the last one finished (the daily refresh). */
 export const DAILY_REFRESH_MS = 24 * 60 * 60_000;
 
-/** When the daily refresh is due (ms): a day after a finished run. Null while a run is going (or none finished). */
-export function nextDailyAt(state: Pick<WarmState, "phase" | "finishedAt">): number | null {
-	if (state.phase !== "done" || typeof state.finishedAt !== "string") return null;
-	const at = Date.parse(state.finishedAt);
+/**
+ * When the daily refresh is due (ms): a day after a run finished, or a day after
+ * a failed one started (a sitemap error once shouldn't stop the daily refresh for
+ * good). Null while a run is going.
+ */
+export function nextDailyAt(state: Pick<WarmState, "phase" | "finishedAt" | "startedAt">): number | null {
+	if (state.phase !== "done" && state.phase !== "failed") return null;
+	const from = state.phase === "done" ? state.finishedAt : (state.finishedAt ?? state.startedAt);
+	if (typeof from !== "string") return null;
+	const at = Date.parse(from);
 	return Number.isNaN(at) ? null : at + DAILY_REFRESH_MS;
 }
 

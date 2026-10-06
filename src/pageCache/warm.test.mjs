@@ -662,3 +662,9 @@ test("daily refresh off: no daily run (none with no row either), and requests do
 	assert.equal((await warmStep(db2, site(["/a/"]), "https://x.com", { budgetMs: 1000, batchSize: 4, now: () => later })), "warmed");
 	assert.equal((await readWarmState(db2)).reason, "daily");
 });
+
+test("a failed run is retried by the daily refresh a day after it started", () => {
+	const startedAt = "2026-10-01T00:00:00.000Z";
+	assert.equal(nextDailyAt({ phase: "failed", startedAt }), Date.parse(startedAt) + DAILY_REFRESH_MS);
+	assert.equal(nextDailyAt({ phase: "warm", startedAt }), null);
+});

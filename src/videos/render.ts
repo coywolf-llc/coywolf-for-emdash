@@ -298,7 +298,7 @@ const PLAY_ICON = '<svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="
 /**
  * A sample video with every part the settings can show: the frame (16:9),
  * name and description, like button (175), "23 views", an upload date seven
- * months back, . The preview frame runs no scripts, so a
+ * months back. The preview frame runs no scripts, so a
  * second like button shows the clicked state; hover works as on the site.
  */
 export function renderVideoPreviewHtml(d: VideoDisplay, background: string | null = null, now = Date.now()): string {
