@@ -23,6 +23,7 @@ import {
 	RecentKeys,
 	isUid,
 	normalizeCustomerHost,
+	parseTags,
 	posterUrl,
 	sha256Hex,
 	MAX_CAPTION_BYTES,
@@ -61,6 +62,7 @@ import {
 	refreshVideo,
 	statsStore,
 } from "./store.js";
+import { FONT_WEIGHTS, normalizeDisplay } from "./render.js";
 import { StreamError } from "./stream.js";
 
 export interface VideosOptions {
@@ -84,6 +86,39 @@ const hexColor = z
 	.trim()
 	.refine((v) => v === "" || /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(v), "Colors must be hex, such as #f6821f.");
 
+const align = z.enum(["left", "center", "right"]);
+const optionalHex = hexColor.optional();
+
+/** Views & likes and Appearance (stored normalized; see render.ts). */
+const displayInput = z.object({
+	showName: z.boolean(),
+	showDescription: z.boolean(),
+	showPlays: z.boolean(),
+	showLikes: z.boolean(),
+	showLikeCount: z.boolean(),
+	showDate: z.boolean(),
+	followSiteDefaults: z.boolean(),
+	dateStyle: z.enum(["absolute", "relative"]),
+	likeIcon: z.enum(["heart", "thumbs", "star"]),
+	scheme: z.enum(["auto", "light", "dark", "off"]),
+	align,
+	metaAlign: align,
+	radius: z.number().int("Use whole pixels for the corner radius.").min(0).max(48, "Corner radius is 48 px at most."),
+	border: z.boolean(),
+	borderWidth: z.number().int("Use whole pixels for the border width.").min(0).max(20, "Border width is 20 px at most."),
+	borderColor: optionalHex,
+	titleColor: optionalHex,
+	titleSize: z.number().min(0.5, "Font sizes are 0.5 to 4 em.").max(4, "Font sizes are 0.5 to 4 em."),
+	titleWeight: z.enum(["", ...FONT_WEIGHTS]),
+	descWeight: z.enum(["", ...FONT_WEIGHTS]),
+	likeColor: optionalHex,
+	likeBg: optionalHex,
+	likeActiveColor: optionalHex,
+	likeActiveBg: optionalHex,
+	metaColor: optionalHex,
+	metaSize: z.number().min(0.5, "Font sizes are 0.5 to 4 em.").max(4, "Font sizes are 0.5 to 4 em."),
+});
+
 const settingsInput = z.object({
 	accountId: z
 		.string()
@@ -102,6 +137,8 @@ const settingsInput = z.object({
 	accentColor: hexColor.optional(),
 	backgroundColor: hexColor.optional(),
 	lightEmbed: z.boolean().optional(),
+	display: displayInput.partial().optional(),
+	defaultTags: z.string().max(2000).optional(),
 });
 
 const uidSchema = z.string().regex(/^[0-9a-f]{32}$/, "Not a Stream video ID.");
@@ -209,6 +246,33 @@ function usage(entries: EmbedEntry[]): Map<string, Array<{ title: string | null;
 		}
 	}
 	return map;
+}
+
+/**
+ * Indexed videos no longer in the Stream library (deleted in Stream's
+ * dashboard), with where they're used. Only from a complete library listing:
+ * a truncated one would make videos look deleted.
+ */
+function orphans(libraryUids: Set<string>, complete: boolean, entries: EmbedEntry[]) {
+	if (!complete) return [];
+	return [...usage(entries)]
+		.filter(([uid]) => !libraryUids.has(uid))
+		.map(([uid, usedIn]) => ({ uid, usedIn }));
+}
+
+interface StorageUsage {
+	videos: number;
+	minutes: number;
+	limit: number;
+}
+const STORAGE_KEY = "cache:videos:storage";
+
+/** Forget a deleted video's details, counts and caption copies. */
+async function removeLocal(ctx: Ctx, uid: string): Promise<void> {
+	await Promise.all([metaStore(ctx).delete(uid), statsStore(ctx).delete(uid)]);
+	const captions = await captionStore(ctx).query({ where: { uid }, limit: 50 });
+	if (captions.items.length) await captionStore(ctx).deleteMany(captions.items.map((c) => c.id));
+	await Promise.all([invalidateLibrary(ctx), invalidateSitemap(ctx), ctx.kv.delete(STORAGE_KEY)]);
 }
 
 // ── Schema ───────────────────────────────────────────────────────
@@ -379,6 +443,9 @@ const updateInput = z.object({
 		.optional(),
 	allowedOrigins: z.array(z.string().max(253)).max(50).optional(),
 	downloads: z.boolean().optional(),
+	/** Comma-separated; kept in Stream's meta.tags like Video Manager. */
+	tags: z.string().max(2000).optional(),
+	creator: z.string().trim().max(64).optional(),
 });
 
 export function videosModule(options: VideosOptions) {
@@ -425,6 +492,11 @@ export function videosModule(options: VideosOptions) {
 				if (input.accentColor !== undefined) await ctx.settings.set(SETTINGS.accent, input.accentColor);
 				if (input.backgroundColor !== undefined) await ctx.settings.set(SETTINGS.background, input.backgroundColor);
 				if (input.lightEmbed !== undefined) await ctx.settings.set(SETTINGS.lightEmbed, input.lightEmbed);
+				if (input.display !== undefined) {
+					const current = normalizeDisplay(await ctx.settings.get<unknown>(SETTINGS.display));
+					await ctx.settings.set(SETTINGS.display, normalizeDisplay({ ...current, ...input.display }));
+				}
+				if (input.defaultTags !== undefined) await ctx.settings.set(SETTINGS.defaultTags, parseTags(input.defaultTags).join(", "));
 				if (input.clearToken) await ctx.settings.delete(SETTINGS.token);
 				else if (input.token) await ctx.settings.set(SETTINGS.token, input.token);
 				// The player settings are read with the feature switches: drop both caches.
@@ -463,6 +535,8 @@ export function videosModule(options: VideosOptions) {
 				const used = usage(entries);
 				return {
 					configured: true,
+					// Stream lists at most 1,000 videos per call (store.ts library()).
+					orphans: orphans(new Set(uids), items.length < 1000, entries),
 					items: items.map((v) => {
 						const m = meta.get(v.uid);
 						return {
@@ -524,10 +598,20 @@ export function videosModule(options: VideosOptions) {
 				const input = parseInput(updateInput, ctx.input);
 				const api = await requireClient(ctx);
 				const fields: Record<string, unknown> = {};
-				if (input.name !== undefined || input.allowedOrigins !== undefined) {
+				if (input.name !== undefined || input.allowedOrigins !== undefined || input.tags !== undefined || input.creator !== undefined) {
 					const current = await stream(() => api.get(input.uid));
-					if (input.name !== undefined) fields.meta = { ...(current.meta ?? {}), name: input.name.trim() || input.uid };
+					if (input.name !== undefined || input.tags !== undefined) {
+						const meta: Record<string, unknown> = { ...(current.meta ?? {}) };
+						if (input.name !== undefined) meta.name = input.name.trim() || input.uid;
+						if (input.tags !== undefined) {
+							const tags = parseTags(input.tags);
+							if (tags.length) meta.tags = tags.join(", ");
+							else delete meta.tags;
+						}
+						fields.meta = meta;
+					}
 					if (input.allowedOrigins !== undefined) fields.allowedOrigins = input.allowedOrigins.map((o) => o.trim()).filter(Boolean);
+					if (input.creator !== undefined) fields.creator = input.creator || null;
 					await stream(() => api.update(input.uid, fields));
 				}
 				const patch: Record<string, unknown> = {};
@@ -561,15 +645,74 @@ export function videosModule(options: VideosOptions) {
 			request: { body: "json" },
 			handler: async (ctx) => {
 				await requireFeature(ctx, F.main);
-				const { name, size } = parseInput(z.object({ name: z.string().min(1).max(200), size: z.number().int().positive() }), ctx.input);
+				const input = parseInput(
+					z.object({ name: z.string().min(1).max(200), size: z.number().int().positive(), tags: z.string().max(2000).optional() }),
+					ctx.input,
+				);
+				const { name, size } = input;
 				const api = await requireClient(ctx);
 				await invalidateLibrary(ctx);
+				// The upload dialog starts with the default tags (Settings → Uploads).
+				const tags = parseTags(input.tags ?? (await ctx.settings.get<string>(SETTINGS.defaultTags)) ?? "").join(", ");
+				const meta: Record<string, string> = tags ? { name, tags } : { name };
 				if (size <= 200 * 1024 * 1024) {
-					const r = await stream(() => api.directUpload({ maxDurationSeconds: maxDuration, name }));
+					const r = await stream(() => api.directUpload({ maxDurationSeconds: maxDuration, meta }));
 					return { method: "basic", uploadURL: r.uploadURL, uid: r.uid };
 				}
 				const r = await stream(() => api.tusUpload({ length: size, maxDurationSeconds: maxDuration, name }));
+				// tus uploads carry only the name; tags go on the waiting video record.
+				if (tags && r.uid) {
+					const uid = r.uid;
+					await api.update(uid, { meta }).catch((error: unknown) => ctx.log.warn("Videos: could not tag the upload", { uid, error: String(error) }));
+				}
 				return { method: "tus", uploadURL: r.uploadURL, uid: r.uid };
+			},
+		}),
+
+		/**
+		 * Delete a video from Stream and the site's copies of its details, counts and captions.
+		 * Refused while content embeds it, unless `force` (the admin confirms first).
+		 */
+		"videos/delete": definePluginRoute({
+			permission: "media:delete_any",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.main);
+				const { uid, force } = parseInput(z.object({ uid: uidSchema, force: z.boolean().optional() }), ctx.input);
+				const used = usage(await allEmbeds(ctx)).get(uid) ?? [];
+				if (used.length && !force) {
+					throw PluginRouteError.badRequest(`This video is used in ${used.length} ${used.length === 1 ? "entry" : "entries"}. Remove it from them first, or delete it anyway.`);
+				}
+				const api = await requireClient(ctx);
+				await stream(async () => {
+					try {
+						await api.remove(uid);
+					} catch (error) {
+						// Already gone from Stream (deleted in its dashboard): still clear the site's copies.
+						if (!(error instanceof StreamError && error.status === 404)) throw error;
+					}
+				});
+				await removeLocal(ctx, uid);
+				ctx.log.info("Video deleted", { uid, usedIn: used.length });
+				return { deleted: true, usedIn: used.length };
+			},
+		}),
+
+		/** Minutes stored in Stream and the account's limit (cached for five minutes). */
+		"videos/storage": definePluginRoute({
+			permission: "media:upload",
+			methods: ["POST"],
+			request: { body: "json" },
+			handler: async (ctx) => {
+				await requireFeature(ctx, F.main);
+				const cached = await ctx.kv.get<{ usage: StorageUsage; at: number }>(STORAGE_KEY);
+				if (cached && Date.now() - cached.at < 5 * 60_000) return cached.usage;
+				const api = await requireClient(ctx);
+				const r = await stream(() => api.storageUsage());
+				const usage: StorageUsage = { videos: r?.videoCount ?? 0, minutes: r?.totalStorageMinutes ?? 0, limit: r?.totalStorageMinutesLimit ?? 0 };
+				await ctx.kv.set(STORAGE_KEY, { usage, at: Date.now() });
+				return usage;
 			},
 		}),
 

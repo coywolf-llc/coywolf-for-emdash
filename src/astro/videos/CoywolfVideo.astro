@@ -19,6 +19,11 @@
  * Moving pictures can always be stopped (WCAG 2.2.2): autoplaying videos
  * without controls (the GIF preset) get a pause/play button, and visitors who
  * ask for reduced motion get the poster and a play button instead of autoplay.
+ *
+ * What shows under the video (name, description, views, likes, date) follows
+ * the site defaults on the Videos settings tab unless the block says Show or
+ * Hide; the look comes from the same tab as custom properties (render.ts).
+ * The CSS is printed once per page.
  */
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 
@@ -26,13 +31,13 @@ import { PLUGIN_ID, siteFeatureOn } from "../../core/features.js";
 import {
 	type VideoBlock,
 	aspectRatio,
-	clockDuration,
 	isUid,
 	normalizeCustomerHost,
 	playerConfig,
 	playerSrc,
 } from "../../videos/lib.js";
 import { hostedPosterImage } from "../../videos/poster.js";
+import { DISPLAY_DEFAULTS, VIDEO_CSS, type VideoDisplay, captionHtml, displayVars, metaHtml, schemeClass } from "../../videos/render.js";
 
 interface Props {
 	node: VideoBlock;
@@ -43,6 +48,7 @@ interface EmbedData {
 	accent: string | null;
 	background: string | null;
 	lightEmbed?: boolean;
+	display?: VideoDisplay;
 	engagement: boolean;
 	video: {
 		name: string | null;
@@ -85,7 +91,8 @@ if (on && uid) {
 
 const host = normalizeCustomerHost(node?.host) ?? data?.host ?? null;
 const video = data?.video ?? null;
-const cfg = playerConfig(node ?? {});
+const display = data?.display ?? DISPLAY_DEFAULTS;
+const cfg = playerConfig(node ?? {}, display);
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
 const name = str(node?.title) ?? str(node?.name) ?? video?.name ?? "Video";
@@ -107,23 +114,32 @@ const priority = Boolean(node?._key) && (Astro.locals as { coywolfPriorityKey?: 
 const ratio = aspectRatio(video?.width, video?.height, num(node?.aspect));
 const maxWidth = node?.sizeMode === "maxwidth" && num(node?.maxWidth) ? Math.max(100, Math.round(node.maxWidth as number)) : null;
 const counts = data?.engagement ? data.counts : null;
-const showPlays = cfg.showPlays && counts !== null && !cfg.autoplay;
-const showLikes = cfg.showLikes && counts !== null;
-const created = cfg.showDate && video?.created ? new Date(video.created) : null;
-const dateText = created && !Number.isNaN(created.getTime()) ? new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(created) : null;
-const length = clockDuration(video?.duration ?? num(node?.seconds));
-const caption = (cfg.showName && name !== "Video") || (cfg.showDescription && description);
+const captionMarkup = captionHtml(name, description, { name: cfg.showName, description: cfg.showDescription });
+const metaMarkup = uid
+	? metaHtml({
+			uid,
+			likes: cfg.showLikes && counts !== null ? counts.likes : null,
+			showLikeCount: cfg.showLikeCount,
+			likeIcon: display.likeIcon,
+			plays: cfg.showPlays && counts !== null && !cfg.autoplay ? counts.plays : null,
+			date: cfg.showDate ? (video?.created ?? null) : null,
+			dateStyle: display.dateStyle,
+		})
+	: "";
 const track = data?.engagement && !cfg.autoplay;
 // Autoplaying without controls: our own pause/play button is the only way to stop it.
 const pausable = cfg.autoplay && !cfg.controls;
 const fallbackHref = /^https?:\/\//i.test(str(node?.url) ?? "") ? str(node?.url) : undefined;
-const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px` : "", data?.background ? `--cw-video-bg:${data.background}` : ""]
-	.filter(Boolean)
-	.join(";");
+const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px` : "", ...displayVars(display, data?.background)].filter(Boolean).join(";");
+// The figure's CSS, once per page.
+const locals = (Astro.locals ?? {}) as Record<string, unknown>;
+const css = on && uid && !locals.__cwVideoCss ? VIDEO_CSS : "";
+if (css) locals.__cwVideoCss = true;
 ---
 
+{css && <style is:inline set:html={css} />}
 {on && uid ? (
-	<figure class:list={["cw-video", cfg.gif && "cw-video--gif"]} style={style} data-cw-video={uid} data-cw-track={track ? "" : undefined} data-cw-autoplay={cfg.autoplay ? "" : undefined}>
+	<figure class:list={["cw-video", cfg.gif && "cw-video--gif", schemeClass(display.scheme)]} style={style} data-cw-video={uid} data-cw-track={track ? "" : undefined} data-cw-autoplay={cfg.autoplay ? "" : undefined}>
 		{light && posterImg ? (
 			<div class="cw-video__frame" data-cw-player={playSrc} data-cw-title={name} data-cw-auto={cfg.autoplay ? "" : undefined}>
 				<img class="cw-video__poster" src={posterImg.src} srcset={posterImg.srcset} sizes="(min-width: 50rem) 768px, 100vw" alt="" loading={priority ? "eager" : "lazy"} fetchpriority={priority ? "high" : undefined} decoding="async" />
@@ -160,191 +176,19 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 				)}
 			</div>
 		)}
-		{caption && (
-			<figcaption class="cw-video__caption">
-				{cfg.showName && <strong class="cw-video__name">{name}</strong>}
-				{cfg.showName && cfg.showDescription && description && " — "}
-				{cfg.showDescription && description && <span class="cw-video__desc">{description}</span>}
-			</figcaption>
-		)}
-		{(showPlays || showLikes || dateText) && (
-			<div class="cw-video__meta">
-				{showLikes && (
-					<button type="button" class="cw-video__like" data-cw-like={uid} aria-pressed="false">
-						<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
-							<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.29 1.51 4.04 3 5.5l7 7Z" />
-						</svg>
-						<span class="cw-video__sr">Like this video</span>
-						<span class="cw-video__likes" data-cw-likes>{counts && counts.likes > 0 ? counts.likes.toLocaleString("en-US") : ""}</span>
-					</button>
-				)}
-				{showPlays && (
-					<span class="cw-video__plays" data-cw-plays>
-						{counts && counts.plays > 0 ? `${counts.plays.toLocaleString("en-US")} ${counts.plays === 1 ? "view" : "views"}` : ""}
-					</span>
-				)}
-				{dateText && <time class="cw-video__date" datetime={video?.created ?? undefined}>{dateText}</time>}
-				{length && cfg.showDate && <span class="cw-video__len">{length}</span>}
-			</div>
-		)}
+		{captionMarkup && <Fragment set:html={captionMarkup} />}
+		{metaMarkup && <Fragment set:html={metaMarkup} />}
 	</figure>
 ) : on && fallbackHref ? (
 	<p class="cw-video-link"><a href={fallbackHref}>{str(node?.title) ?? "Watch the video"}</a></p>
 ) : null}
-
-<style>
-	.cw-video {
-		--cw-video-bg: transparent;
-		--cw-video-muted: #57606a;
-		--cw-video-accent: #d1242f;
-		margin-inline: auto;
-		margin-block: 1.5em;
-	}
-	@media (prefers-color-scheme: dark) {
-		.cw-video {
-			--cw-video-muted: #9198a1;
-			--cw-video-accent: #ff7b72;
-		}
-	}
-	.cw-video__frame {
-		position: relative;
-		aspect-ratio: var(--cw-video-ratio, 16 / 9);
-		background: var(--cw-video-bg);
-		border-radius: 0.5rem;
-		overflow: hidden;
-	}
-	/* :global: the light embed creates this iframe in script, so it has no scoped-style attribute. */
-	.cw-video__frame :global(iframe) {
-		position: absolute;
-		inset: 0;
-		width: 100%;
-		height: 100%;
-		border: 0;
-	}
-	.cw-video__poster {
-		position: absolute;
-		inset: 0;
-		width: 100%;
-		height: 100%;
-		object-fit: cover;
-	}
-	.cw-video__play {
-		position: absolute;
-		inset: 50% auto auto 50%;
-		translate: -50% -50%;
-		display: grid;
-		place-items: center;
-		width: 4rem;
-		height: 4rem;
-		padding: 0;
-		padding-left: 0.2rem;
-		border: 0;
-		border-radius: 50%;
-		background: rgb(0 0 0 / 0.65);
-		color: #fff;
-		cursor: pointer;
-		transition: background 0.15s;
-	}
-	.cw-video__play:hover {
-		background: var(--cw-video-accent);
-	}
-	.cw-video__play:focus-visible {
-		outline: 3px solid #fff;
-		outline-offset: 2px;
-	}
-	.cw-video__play[hidden] {
-		display: none;
-	}
-	/* Pause/play for autoplaying videos without controls: 44 px, above the player. */
-	.cw-video__toggle {
-		position: absolute;
-		inset: auto auto 0.5rem 0.5rem;
-		z-index: 1;
-		display: grid;
-		place-items: center;
-		width: 2.75rem;
-		height: 2.75rem;
-		padding: 0;
-		border: 0;
-		border-radius: 50%;
-		background: rgb(0 0 0 / 0.65);
-		color: #fff;
-		cursor: pointer;
-		transition: background 0.15s;
-	}
-	.cw-video__toggle:hover {
-		background: var(--cw-video-accent);
-	}
-	.cw-video__toggle:focus-visible {
-		outline: 3px solid #fff;
-		outline-offset: 2px;
-		box-shadow: 0 0 0 5px #000;
-	}
-	.cw-video__toggle[data-paused] .cw-video__pause,
-	.cw-video__toggle:not([data-paused]) .cw-video__resume {
-		display: none;
-	}
-	.cw-video--gif .cw-video__frame {
-		border-radius: 0;
-	}
-	.cw-video__caption {
-		margin-top: 0.5em;
-		font-size: 0.95em;
-	}
-	.cw-video__meta {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.75em;
-		margin-top: 0.5em;
-		font-size: 0.875em;
-		color: var(--cw-video-muted);
-	}
-	.cw-video__plays:empty {
-		display: none;
-	}
-	.cw-video__like {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.35em;
-		min-height: 2rem;
-		padding: 0.25em 0.75em;
-		border: 1px solid currentColor;
-		border-radius: 999px;
-		background: transparent;
-		color: inherit;
-		font: inherit;
-		cursor: pointer;
-	}
-	/* No likes yet: drop the empty count so the gap doesn't push the heart off center. */
-	.cw-video__likes:empty {
-		display: none;
-	}
-	.cw-video__like[aria-pressed="true"] {
-		color: var(--cw-video-accent);
-	}
-	.cw-video__like[aria-pressed="true"] svg {
-		fill: currentColor;
-	}
-	.cw-video__like:focus-visible {
-		outline: 2px solid var(--cw-video-accent);
-		outline-offset: 2px;
-	}
-	.cw-video__sr {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		overflow: hidden;
-		clip-path: inset(50%);
-		white-space: nowrap;
-	}
-</style>
 
 <script>
 	// Light embed (poster first, player on demand), pause/play for autoplaying
 	// videos without controls, plays (once per session, after 2 seconds of
 	// playback) and likes. Stream's player SDK is loaded only to count plays or
 	// to pause and play, and only once a player exists.
+	import { relativeDate } from "../../videos/date.js";
 	import { playerControl } from "../../videos/pause.js";
 
 	const API = "/_emdash/api/plugins/coywolf-pack/videos/";
@@ -550,16 +394,32 @@ const style = [`--cw-video-ratio:${ratio}`, maxWidth ? `max-width:${maxWidth}px`
 		: null;
 	tracked.forEach((fig) => io?.observe(fig));
 
+	// Relative upload dates ("7 months ago"): pages can be served from a cache for days.
+	document.querySelectorAll<HTMLTimeElement>("time[data-cw-relative]").forEach((el) => {
+		const text = relativeDate(el.dateTime);
+		if (text) el.textContent = text;
+	});
+
 	document.querySelectorAll<HTMLButtonElement>("[data-cw-like]").forEach((btn) => {
 		const uid = btn.dataset.cwLike as string;
 		const key = `cw-video-liked-${uid}`;
 		if (store.get(key)) btn.setAttribute("aria-pressed", "true");
 		let busy = false;
+		// After a click the new state holds (no hover preview of the other state) until the pointer or focus leaves.
+		const release = () => btn.removeAttribute("data-held");
+		btn.addEventListener("mouseleave", release);
+		btn.addEventListener("blur", release);
+		btn.addEventListener("animationend", () => btn.removeAttribute("data-pop"));
 		btn.addEventListener("click", () => {
 			if (busy) return;
 			busy = true;
 			const next = btn.getAttribute("aria-pressed") !== "true";
 			btn.setAttribute("aria-pressed", String(next));
+			btn.setAttribute("data-held", "");
+			// Restart the pop (CSS skips it for reduced motion).
+			btn.removeAttribute("data-pop");
+			void btn.offsetWidth;
+			btn.setAttribute("data-pop", "");
 			// The wanted state, not a toggle: visitors sharing an address share a like.
 			void post("like", { uid, liked: next }).then((r) => {
 				busy = false;
