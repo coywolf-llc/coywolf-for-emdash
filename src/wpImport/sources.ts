@@ -27,6 +27,7 @@ export function defaultsFromWordPress(cvm: unknown, files: unknown): ImportDefau
 			["showDate", "show_date"],
 			["showPlays", "plays_enabled"],
 			["showLikes", "likes_enabled"],
+			["showLikeCount", "likes_show_count"],
 		];
 		for (const [to, from] of map) {
 			const v = bool(c[from]);

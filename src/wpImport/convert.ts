@@ -40,6 +40,7 @@ export interface VideoDefaults {
 	showDate: boolean;
 	showPlays: boolean;
 	showLikes: boolean;
+	showLikeCount: boolean;
 }
 
 /** The Video Manager plugin's own defaults, used when the site's settings weren't pasted on the import page. */
@@ -54,6 +55,7 @@ export const VIDEO_MANAGER_DEFAULTS: VideoDefaults = {
 	showDate: true,
 	showPlays: true,
 	showLikes: true,
+	showLikeCount: true,
 };
 
 /** Coywolf Files' card defaults (WordPress option coywolf_files_settings). */
@@ -201,6 +203,18 @@ function wellbeingVideo(a: Record<string, unknown>): { block: Block; fact: Video
 	return { block, fact };
 }
 
+/**
+ * A show/hide attribute: "show"/"hide" when the WordPress block set it.
+ * Unset, WordPress used its site setting, as the Videos module does: left
+ * unset (the Videos site default, on unless changed), or "hide" when the
+ * WordPress site had it off, so the page looks as it did.
+ */
+const showAttr = (value: unknown, wpDefault: boolean): "show" | "hide" | undefined => {
+	const v = bool(value);
+	if (v !== undefined) return v ? "show" : "hide";
+	return wpDefault ? undefined : "hide";
+};
+
 /** Video Manager's coywolf/video → coywolf-video, applying the site defaults where the block had no value. */
 function managerVideo(a: Record<string, unknown>, d: VideoDefaults): { block: Block; fact: VideoFact } | null {
 	const uid = str(a.videoId).toLowerCase();
@@ -218,12 +232,19 @@ function managerVideo(a: Record<string, unknown>, d: VideoDefaults): { block: Bl
 		loop: bool(a.loop) ?? d.loop,
 		muted: (bool(a.mute) ?? d.mute) || autoplay,
 		preload: preload === "auto" || preload === "none" || preload === "metadata" ? preload : d.preload,
-		showName: bool(a.showName) ?? d.showName,
-		showDescription: bool(a.showDescription) ?? d.showDescription,
-		showDate: bool(a.showDate) ?? d.showDate,
-		showPlays: bool(a.showPlays) ?? d.showPlays,
-		showLikes: bool(a.enableLikes) ?? d.showLikes,
 	};
+	const shows: Array<[string, unknown, boolean]> = [
+		["showName", a.showName, d.showName],
+		["showDescription", a.showDescription, d.showDescription],
+		["showDate", a.showDate, d.showDate],
+		["showPlays", a.showPlays, d.showPlays],
+		["showLikes", a.enableLikes, d.showLikes],
+		["showLikeCount", a.showLikeCount, d.showLikeCount],
+	];
+	for (const [key, value, wpDefault] of shows) {
+		const show = showAttr(value, wpDefault);
+		if (show) block[key] = show;
+	}
 	const posterTime = num(a.posterTime);
 	if (posterTime && posterTime > 0) block.posterTime = posterTime;
 	const startTime = num(a.startTime);
