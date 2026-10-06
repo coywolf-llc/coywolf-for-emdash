@@ -52,6 +52,8 @@ const SCHEMA = [
 		updated_at TEXT NOT NULL
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS ${TABLE}_source ON ${TABLE} (source, is_regex)`,
+	// The site middleware reads the (few) pattern rules without scanning the exact ones.
+	`CREATE INDEX IF NOT EXISTS ${TABLE}_patterns ON ${TABLE} (source) WHERE is_regex = 1`,
 ];
 
 export async function ensureTable(db: D1Database): Promise<void> {
@@ -160,19 +162,18 @@ export async function listRules(db: D1Database): Promise<RedirectRule[]> {
 
 const isMissingTable = (error: unknown) => /no such table/i.test(String((error as Error)?.message ?? error));
 
+type MatchRow = Pick<Row, "id" | "source" | "target" | "type" | "is_regex">;
+
 /**
- * The enabled rules, only the columns matching needs, for the site
- * middleware. Never writes: the table is created by admin writes (saveRule,
- * listRules); until then there are no rules.
+ * Enabled rules, only the columns matching needs, for the site middleware.
+ * Never writes: the table is created by admin writes (saveRule, listRules);
+ * until then there are no rules. Read with the pack's other reads of this
+ * tick, in one D1 batch.
  */
-export async function loadMatchRules(db: D1Database): Promise<RedirectRule[]> {
-	let results: Array<Pick<Row, "id" | "source" | "target" | "type" | "is_regex">>;
+async function readMatchRules(db: D1Database, statement: D1PreparedStatement): Promise<RedirectRule[]> {
+	let results: MatchRow[];
 	try {
-		// With the pack's other reads of this tick (on a cold isolate, the feature switches): one D1 batch.
-		results = await batchedAll<Pick<Row, "id" | "source" | "target" | "type" | "is_regex">>(
-			db,
-			db.prepare(`SELECT id, source, target, type, is_regex FROM ${TABLE} WHERE enabled = 1 ORDER BY is_regex, source`),
-		);
+		results = await batchedAll<MatchRow>(db, statement);
 	} catch (error) {
 		if (isMissingTable(error)) return [];
 		throw error;
@@ -190,6 +191,21 @@ export async function loadMatchRules(db: D1Database): Promise<RedirectRule[]> {
 		createdAt: "",
 		updatedAt: "",
 	}));
+}
+
+const MATCH_COLUMNS = "id, source, target, type, is_regex";
+
+/** The enabled exact rule for a request path, if any: one row through the (source, is_regex) index. */
+export async function findExactRule(db: D1Database, pathname: string): Promise<RedirectRule | null> {
+	const statement = db
+		.prepare(`SELECT ${MATCH_COLUMNS} FROM ${TABLE} WHERE source = ? AND is_regex = 0 AND enabled = 1`)
+		.bind(normalizePath(pathname));
+	return (await readMatchRules(db, statement))[0] ?? null;
+}
+
+/** The enabled pattern rules, in source order (the order they're tried); read through the patterns index. */
+export function loadPatternRules(db: D1Database): Promise<RedirectRule[]> {
+	return readMatchRules(db, db.prepare(`SELECT ${MATCH_COLUMNS} FROM ${TABLE} WHERE is_regex = 1 AND enabled = 1 ORDER BY source`));
 }
 
 /** Create or update (by id, or by source when importing). Returns the saved rule. */

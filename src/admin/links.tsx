@@ -363,7 +363,7 @@ function SettingsDialog(props: { open: boolean; onClose: () => void; onSaved: (m
 			<Dialog className="p-6" size="lg">
 				<Dialog.Title className="text-lg font-semibold">Link checking settings</Dialog.Title>
 				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">
-					How the scheduled job checks links. It runs every 5 minutes while Scheduled link checking is on under Plugins → Coywolf Pack.
+					How the scheduled job checks links. It runs with the site's scheduled jobs (every 5 minutes, or less often if the site's cron runs less often) while Scheduled link checking is on under Plugins → Coywolf Pack.
 				</Dialog.Description>
 				{!draft && !error ? (
 					<div className="py-8 text-center">

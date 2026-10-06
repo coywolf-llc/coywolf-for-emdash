@@ -172,7 +172,7 @@ function BulkRow(props: { kind: "entries" | "media"; label: string; enabled: boo
 					Stop
 				</Button>
 			) : (
-				<Button variant="primary" icon={<Play />} disabled={!props.enabled || pending} onClick={() => void run("bulk", { kind: props.kind, force }, "Bulk run started. Items are processed every two minutes.")}>
+				<Button variant="primary" icon={<Play />} disabled={!props.enabled || pending} onClick={() => void run("bulk", { kind: props.kind, force }, "Bulk run started. Items are processed with each scheduled run.")}>
 					Run bulk
 				</Button>
 			)}
@@ -206,7 +206,7 @@ function Overview(props: { status: Status; reload: () => Promise<void>; setNotic
 		<div className="space-y-6">
 			<Section
 				title="Queue"
-				description="Saves, publishes, and uploads add items here. A scheduled run works through them every two minutes, so saving is never slowed down."
+				description="Saves, publishes, and uploads add items here. Scheduled runs work through them in the background (every two minutes, or less often if the site's cron runs less often), so saving is never slowed down."
 				actions={
 					<Button variant="secondary" icon={<Play />} disabled={running || !status.features.ai} onClick={() => void runNow()}>
 						{running ? "Running…" : "Run one now"}

@@ -15,7 +15,7 @@ const FEATURES = [
 	{
 		id: "links.check",
 		label: "Scheduled link checking",
-		description: "Check links in the background every 5 minutes (broken links daily, working links weekly) and flag broken, redirected and blocked ones.",
+		description: "Check links in the background (broken links daily, working links weekly) and flag broken, redirected and blocked ones.",
 		default: false,
 	},
 ];

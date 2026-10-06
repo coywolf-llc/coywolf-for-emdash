@@ -1,9 +1,10 @@
 // Run: node --test test/redirects.test.mjs
 import "./ts-resolve.mjs";
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-const { compile, match, listRules } = await import("../src/redirects/rules.ts");
+const { compile, match, listRules, saveRule } = await import("../src/redirects/rules.ts");
 const { serveRedirect, invalidateRedirectCache } = await import("../src/redirects/middleware.ts");
 
 const rule = (source, target, extra = {}) => ({
@@ -74,14 +75,13 @@ test("middleware never answers with an off-site Location for a site path", async
 	const rows = [
 		{ id: "1", source: "^/blog/(.*)$", target: "/$1", type: 301, is_regex: 1, enabled: 1, hits: 0, last_hit: null, note: null, created_at: "", updated_at: "" },
 	];
-	const db = {
-		prepare: (sql) => ({
-			sql,
-			bind: () => ({ run: async () => ({ meta: { changes: 1 } }) }),
-			all: async () => ({ results: rows }),
-		}),
-		batch: async () => [],
-	};
+	const statement = (sql) => ({
+		sql,
+		bind: () => statement(sql),
+		run: async () => ({ meta: { changes: 1 } }),
+		all: async () => ({ results: /is_regex = 1/.test(sql) ? rows : [] }),
+	});
+	const db = { prepare: statement, batch: (statements) => Promise.all(statements.map((s) => s.all())) };
 	const res = await serveRedirect(new URL("https://example.com/blog//evil.com/x"), { DB: db }, () => {});
 	assert.equal(res.status, 301);
 	assert.equal(res.headers.get("Location"), "https://example.com/evil.com/x");
@@ -116,4 +116,118 @@ test("listRules creates the table once per isolate and recreates it if a restore
 	await listRules(db);
 	assert.equal(batches, before + 1);
 	assert.equal(selects, 5);
+});
+
+// ── Serving from D1: one indexed read per request, patterns cached ──
+
+/** A D1 stand-in over node:sqlite that records the SQL and bindings it runs. */
+function sqliteD1() {
+	const db = new DatabaseSync(":memory:");
+	const log = [];
+	const exec = (sql, params) => {
+		const st = db.prepare(sql);
+		return /^\s*select/i.test(sql) ? { results: st.all(...params) } : { results: [], meta: { changes: Number(st.run(...params).changes) } };
+	};
+	const statement = (sql, params = []) => ({
+		sql,
+		params,
+		bind: (...p) => statement(sql, p),
+		all: async () => (log.push({ sql, params }), exec(sql, params)),
+		first: async () => (log.push({ sql, params }), exec(sql, params).results[0] ?? null),
+		run: async () => (log.push({ sql, params }), exec(sql, params)),
+	});
+	return {
+		sqlite: db,
+		log,
+		prepare: (sql) => statement(sql),
+		batch: async (statements) => statements.map((s) => (log.push({ sql: s.sql, params: s.params }), exec(s.sql, s.params))),
+	};
+}
+
+async function serve(db, href) {
+	const hits = [];
+	const res = await serveRedirect(new URL(href), { DB: db }, (p) => hits.push(p));
+	await Promise.all(hits);
+	return res && [res.status, res.headers.get("Location")];
+}
+
+async function seeded() {
+	const db = sqliteD1();
+	await saveRule(db, { source: "/old", target: "/new" });
+	await saveRule(db, { source: "/both", target: "/exact-wins" });
+	await saveRule(db, { source: "^/both$", target: "/pattern-loses", isRegex: true });
+	await saveRule(db, { source: "^/a/(\\d+)/?$", target: "/b/$1", isRegex: true });
+	await saveRule(db, { source: "^/a/", target: "/later-pattern", isRegex: true });
+	await saveRule(db, { source: "/caf%C3%A9", target: "/coffee" });
+	await saveRule(db, { source: "/gone", type: 410 });
+	await saveRule(db, { source: "/off", target: "/x", enabled: false });
+	invalidateRedirectCache();
+	db.log.length = 0;
+	return db;
+}
+
+test("exact rules win over patterns; patterns are tried in source order", async () => {
+	const db = await seeded();
+	assert.deepEqual(await serve(db, "https://example.com/both"), [301, "https://example.com/exact-wins"]);
+	// "^/a/" sorts before "^/a/(\d+)/?$", so it's tried first.
+	assert.deepEqual(await serve(db, "https://example.com/a/42"), [301, "https://example.com/later-pattern"]);
+	assert.equal(await serve(db, "https://example.com/off"), undefined);
+	assert.deepEqual(await serve(db, "https://example.com/gone?x=1"), [410, null]);
+	invalidateRedirectCache();
+});
+
+test("exact rules match with or without a trailing slash and keep the query string", async () => {
+	const db = await seeded();
+	assert.deepEqual(await serve(db, "https://example.com/old"), [301, "https://example.com/new"]);
+	assert.deepEqual(await serve(db, "https://example.com/old/"), [301, "https://example.com/new"]);
+	assert.deepEqual(await serve(db, "https://example.com/old//?utm=x"), [301, "https://example.com/new?utm=x"]);
+	assert.equal(await serve(db, "https://example.com/OLD"), undefined, "case-sensitive, as before");
+	invalidateRedirectCache();
+});
+
+test("encoded paths match the rule's source as written (no decoding)", async () => {
+	const db = await seeded();
+	// The URL parser percent-encodes "café", so it reaches the rule written encoded.
+	assert.deepEqual(await serve(db, "https://example.com/café"), [301, "https://example.com/coffee"]);
+	assert.deepEqual(await serve(db, "https://example.com/caf%C3%A9/"), [301, "https://example.com/coffee"]);
+	assert.equal(await serve(db, "https://example.com/caf%c3%a9"), undefined);
+	invalidateRedirectCache();
+});
+
+test("hits are counted for exact and pattern matches", async () => {
+	const db = await seeded();
+	await serve(db, "https://example.com/old");
+	await serve(db, "https://example.com/old/");
+	await serve(db, "https://example.com/both");
+	const hits = Object.fromEntries(db.sqlite.prepare("SELECT source, hits FROM coywolf_redirects").all().map((r) => [r.source, r.hits]));
+	assert.equal(hits["/old"], 2);
+	assert.equal(hits["/both"], 1);
+	assert.equal(hits["^/both$"], 0);
+	invalidateRedirectCache();
+});
+
+test("a request reads only its exact rule (indexed) and, once per isolate, the patterns", async () => {
+	const db = await seeded();
+	await serve(db, "https://example.com/old/");
+	await serve(db, "https://example.com/nothing-here");
+	const reads = db.log.filter((q) => /^SELECT/.test(q.sql));
+	const exact = reads.filter((q) => /WHERE source = \? AND is_regex = 0 AND enabled = 1$/.test(q.sql));
+	const patterns = reads.filter((q) => /WHERE is_regex = 1 AND enabled = 1 ORDER BY source$/.test(q.sql));
+	assert.deepEqual(exact.map((q) => q.params), [["/old"], ["/nothing-here"]]);
+	assert.equal(patterns.length, 1);
+	assert.equal(reads.length, 3, reads.map((q) => q.sql).join("\n"));
+	// Both go through an index: no scan of the table.
+	const plan = (q) => db.sqlite.prepare(`EXPLAIN QUERY PLAN ${q.sql}`).all(...q.params).map((r) => r.detail).join("; ");
+	assert.match(plan(exact[0]), /SEARCH coywolf_redirects USING INDEX coywolf_redirects_source \(source=\? AND is_regex=\?\)/);
+	assert.match(plan(patterns[0]), /coywolf_redirects USING INDEX coywolf_redirects_patterns/);
+	assert.doesNotMatch(plan(patterns[0]), /TEMP B-TREE/);
+	invalidateRedirectCache();
+});
+
+test("serving from a database without the table: no rules, no error, no CREATE", async () => {
+	const db = sqliteD1();
+	invalidateRedirectCache();
+	assert.equal(await serve(db, "https://example.com/old"), undefined);
+	assert.ok(!db.log.some((q) => /CREATE/i.test(q.sql)));
+	invalidateRedirectCache();
 });

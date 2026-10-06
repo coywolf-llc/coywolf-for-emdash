@@ -574,7 +574,7 @@ export function linksModule() {
 		},
 	};
 
-	/** Every 5 minutes: run the first full scan automatically, and continue any scan in progress. */
+	/** Every 5 minutes (or each cron tick, if less often): run the first full scan automatically, and continue any scan in progress. */
 	async function scanTask(ctx: PluginContext) {
 		if (!ctx.site?.url) {
 			ctx.log.warn("links: the site URL isn't set (Settings → General or astro.config `site`); scanning waits for it.");

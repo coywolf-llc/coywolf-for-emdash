@@ -40,7 +40,7 @@ export const SETTINGS_SCHEMA = {
 	aiVisionModel: { type: "string" as const, label: "AI: image model", description: "Must accept images. Leave blank for the provider's default." },
 	aiApiKey: { type: "secret" as const, label: "AI: API key", description: "For Anthropic, OpenAI, or Gemini. Stored encrypted." },
 	aiMaxCallsPerDay: { type: "number" as const, label: "AI: max model calls per day", min: 1, max: 100000, default: 200 },
-	aiJobsPerTick: { type: "number" as const, label: "AI: items per scheduled run", description: "Runs every two minutes.", min: 1, max: 20, default: 3 },
+	aiJobsPerTick: { type: "number" as const, label: "AI: items per scheduled run", description: "Scheduled runs happen every two minutes, or with each cron tick if the site's cron runs less often.", min: 1, max: 20, default: 3 },
 	aiCollections: { type: "string" as const, label: "AI: collections", description: "Comma-separated collection slugs. Blank = every public collection." },
 	aiDebounceMinutes: { type: "number" as const, label: "AI: wait after a save (minutes)", min: 0, max: 120, default: 2 },
 	aiDescriptionsMode: {

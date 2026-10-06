@@ -74,10 +74,10 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 		notePackMiddleware();
 		const env = workers.env;
 		const waitUntil = (p: Promise<unknown>) => (workers.waitUntil ? workers.waitUntil(p) : void p);
-		// Redirect rules (when this isolate doesn't have them) load in the same D1 batch as the switches.
+		// This request's redirect lookup goes to D1 in the same batch as the switches (when they aren't cached).
 		// (Skipped when the switches this isolate last read have Redirects off.)
 		const known = knownFeatures();
-		if (!context.url.pathname.startsWith("/_emdash/") && (!known || isOn(known, "redirects"))) prefetchRedirects(env, { database: options.database });
+		if (!known || isOn(known, "redirects")) prefetchRedirects(context.url, env, { database: options.database });
 		const features = await siteFeatures(options.database);
 		const db = env[options.database ?? "DB"] as D1Database | undefined;
 		/** Clear cached pages, then (for a full purge, when warming is on) start warming them again. */

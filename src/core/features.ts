@@ -267,7 +267,7 @@ async function queryOptions(database: Database): Promise<SiteOptions> {
 	try {
 		const db = typeof database === "string" ? ((await workerEnv())[database] as D1Database | undefined) : database;
 		const names = [OPTION_NAME, ...[...keys].map(settingOption), ...optionNames];
-		// With the pack's other reads of this tick (on a cold isolate, the redirect rules): one D1 batch.
+		// With the pack's other reads of this tick (the request's redirect lookup): one D1 batch.
 		const rows = db
 			? await batchedAll<{ name: string; value: string }>(db, db.prepare(`SELECT name, value FROM options WHERE name IN (${names.map(() => "?").join(",")})`).bind(...names))
 			: [];
