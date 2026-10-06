@@ -27,18 +27,24 @@ export function purgesAfter(method: string, pathname: string): boolean {
 	return method === "POST" && pathname.startsWith(PACK_API) && !PUBLIC_ROUTE.test(pathname);
 }
 
-export type PurgeScope = { purgeEverything: true } | { pathPrefixes: string[] };
+export type PurgeScope = { purgeEverything: true } | { pathPrefixes: string[] } | { tags: string[] };
+
+/** Cache tag on every redirect the pack serves from the edge cache (src/redirects/middleware.ts). */
+export const REDIRECTS_TAG = "coywolf-redirects";
 
 /**
  * What a successful pack admin write has to clear. Most settings change page
  * output, so everything goes. These don't touch cached pages:
- * - redirects (answered by middleware and never edge-cached), backups, the link
- *   report, and the Performance page's own media rule and warming controls;
+ * - redirect edits clear only the cached redirects (their tag), and so does
+ *   rewinding the database (it may bring other rules back);
+ * - other backup actions, redirect lookups, the link report, and the Performance
+ *   page's own media rule and warming controls clear nothing;
  * - robots.txt rules change only /robots.txt.
  * null: nothing to clear.
  */
 export function purgeScope(pathname: string): PurgeScope | null {
 	const route = pathname.slice(PACK_API.length);
+	if (/^redirects\/(?!(list|test|removed)$)|^backups\/(rewind|undo)$/.test(route)) return { tags: [REDIRECTS_TAG] };
 	if (/^(redirects|backups|links)\//.test(route) || /^cache\/(media|warm|purge)(\/|$)/.test(route)) return null;
 	if (/^robots\//.test(route)) return { pathPrefixes: ["/robots.txt"] };
 	return { purgeEverything: true };

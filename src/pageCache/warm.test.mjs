@@ -12,7 +12,7 @@ const { purgeScope } = await import("./lib.ts");
 const API = "/_emdash/api/plugins/coywolf-pack/";
 
 test("settings that don't change pages don't clear them; robots clears only robots.txt", () => {
-	assert.equal(purgeScope(API + "redirects/import"), null);
+	assert.deepEqual(purgeScope(API + "redirects/import"), { tags: ["coywolf-redirects"] });
 	assert.equal(purgeScope(API + "backups/run"), null);
 	assert.equal(purgeScope(API + "links/recheck"), null);
 	assert.equal(purgeScope(API + "cache/warm/start"), null);

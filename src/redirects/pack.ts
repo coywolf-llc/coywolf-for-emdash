@@ -1,6 +1,6 @@
 import { registerFeatures } from "../core/features.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
-import { serveRedirect } from "./middleware.js";
+import { serveCachedRedirect } from "./middleware.js";
 import { type RedirectsOptions, redirectsModule } from "./module.js";
 import { TRASH_PROMPT_FEATURE, removedModule } from "./removed.js";
 
@@ -39,5 +39,6 @@ export function redirectsPack(options: RedirectsOptions): PackModule {
 export const redirectsMiddleware: PackMiddleware = {
 	module: "redirects",
 	feature: "redirects",
-	handle: (context, env, waitUntil) => serveRedirect(context.url, env, waitUntil),
+	ownsCache: true,
+	handle: serveCachedRedirect,
 };
