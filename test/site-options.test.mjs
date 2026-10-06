@@ -79,6 +79,8 @@ test("a save during a read: the stale read isn't cached", async () => {
 	let open;
 	db.gate = new Promise((resolve) => (open = resolve));
 	const stale = readSiteSetting("testA", db);
+	// Reads go out with the others of their tick (src/core/d1-batch.ts): let this one reach the database.
+	await new Promise((resolve) => setTimeout(resolve, 5));
 	rows[option("testA")] = '"new"';
 	invalidateFeatures();
 	db.gate = null;

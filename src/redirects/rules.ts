@@ -7,6 +7,8 @@
  * destinations and skip any path with a file extension.
  */
 
+import { batchedAll } from "../core/d1-batch.js";
+
 export const REDIRECT_TYPES = [301, 302, 307, 308, 410] as const;
 export type RedirectType = (typeof REDIRECT_TYPES)[number];
 
@@ -148,12 +150,46 @@ export async function listRules(db: D1Database): Promise<RedirectRule[]> {
 		({ results } = await read());
 	} catch (error) {
 		// A restore can drop the table after this isolate created it; recreate and retry once.
-		if (!/no such table/i.test(String((error as Error)?.message ?? error))) throw error;
+		if (!isMissingTable(error)) throw error;
 		tableReady = null;
 		await ensureTableOnce(db);
 		({ results } = await read());
 	}
 	return results.map(toRule);
+}
+
+const isMissingTable = (error: unknown) => /no such table/i.test(String((error as Error)?.message ?? error));
+
+/**
+ * The enabled rules, only the columns matching needs, for the site
+ * middleware. Never writes: the table is created by admin writes (saveRule,
+ * listRules); until then there are no rules.
+ */
+export async function loadMatchRules(db: D1Database): Promise<RedirectRule[]> {
+	let results: Array<Pick<Row, "id" | "source" | "target" | "type" | "is_regex">>;
+	try {
+		// With the pack's other reads of this tick (on a cold isolate, the feature switches): one D1 batch.
+		results = await batchedAll<Pick<Row, "id" | "source" | "target" | "type" | "is_regex">>(
+			db,
+			db.prepare(`SELECT id, source, target, type, is_regex FROM ${TABLE} WHERE enabled = 1 ORDER BY is_regex, source`),
+		);
+	} catch (error) {
+		if (isMissingTable(error)) return [];
+		throw error;
+	}
+	return results.map((r) => ({
+		id: r.id,
+		source: r.source,
+		target: r.target,
+		type: r.type as RedirectType,
+		isRegex: r.is_regex === 1,
+		enabled: true,
+		hits: 0,
+		lastHit: null,
+		note: null,
+		createdAt: "",
+		updatedAt: "",
+	}));
 }
 
 /** Create or update (by id, or by source when importing). Returns the saved rule. */

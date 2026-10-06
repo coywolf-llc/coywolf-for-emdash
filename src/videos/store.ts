@@ -6,6 +6,9 @@
 import { STORAGE_IN_LIMIT, deleteManyBatched, getManyBatched } from "../core/storage.js";
 import type { PluginContext, StorageCollection } from "emdash";
 
+import { PLUGIN_ID, isCurrent, readSiteSetting, registerSiteSetting, settingsEpoch } from "../core/features.js";
+import { batchedAll } from "../core/d1-batch.js";
+import { peekRequestMemo, seedRequestMemo } from "../core/request-memo.js";
 import { secret, workerEnv } from "../shared.js";
 import {
 	type VideoFacts,
@@ -67,8 +70,12 @@ export interface PublicConfig {
 	lightEmbed: boolean;
 }
 
-let publicCache: { value: PublicConfig; at: number } | null = null;
-const PUBLIC_TTL = 60_000;
+let publicCache: { value: PublicConfig; at: number; epoch: number } | null = null;
+/** Kept until a pack settings save (here or in another isolate) or ten minutes. */
+const PUBLIC_TTL = 10 * 60_000;
+/** The player settings public pages need, read with the feature switches (no query of their own). */
+const PUBLIC_SETTINGS = [SETTINGS.host, SETTINGS.accent, SETTINGS.background, SETTINGS.lightEmbed] as const;
+for (const key of PUBLIC_SETTINGS) registerSiteSetting(key);
 
 export function invalidatePublicConfig(): void {
 	publicCache = null;
@@ -76,22 +83,25 @@ export function invalidatePublicConfig(): void {
 
 const HOST_KEY = "state:videos:customerHost";
 
-/** Player settings safe to use on public pages (cached per isolate for a minute). */
+/** The four player settings: from the switches' cached query, else one read each through the plugin context. */
+async function playerSettings(ctx: Ctx): Promise<Array<unknown>> {
+	const shared = await Promise.all(PUBLIC_SETTINGS.map((key) => readSiteSetting(key).catch(() => null)));
+	if (shared.every(Boolean)) return shared.map((read) => read?.value ?? null);
+	return Promise.all(PUBLIC_SETTINGS.map((key) => ctx.settings.get<unknown>(key)));
+}
+
+/** Player settings safe to use on public pages (cached per isolate until settings change, ten minutes at most). */
 export async function publicConfig(ctx: Ctx): Promise<PublicConfig> {
-	if (publicCache && Date.now() - publicCache.at < PUBLIC_TTL) return publicCache.value;
-	const [host, accent, background, lightEmbed] = await Promise.all([
-		ctx.settings.get<string>(SETTINGS.host),
-		ctx.settings.get<string>(SETTINGS.accent),
-		ctx.settings.get<string>(SETTINGS.background),
-		ctx.settings.get<boolean>(SETTINGS.lightEmbed),
-	]);
+	if (publicCache && isCurrent(publicCache, PUBLIC_TTL)) return publicCache.value;
+	const epoch = settingsEpoch();
+	const [host, accent, background, lightEmbed] = await playerSettings(ctx);
 	const value: PublicConfig = {
-		host: normalizeCustomerHost(host) ?? normalizeCustomerHost(await ctx.kv.get<string>(HOST_KEY)),
+		host: normalizeCustomerHost(host as string | null) ?? normalizeCustomerHost(await ctx.kv.get<string>(HOST_KEY)),
 		accent: isHex(accent) ? accent : null,
 		background: isHex(background) ? background : null,
 		lightEmbed: lightEmbed !== false,
 	};
-	publicCache = { value, at: Date.now() };
+	if (epoch === settingsEpoch()) publicCache = { value, at: Date.now(), epoch };
 	return value;
 }
 
@@ -367,6 +377,103 @@ export async function countsFor(ctx: Ctx, uids: string[]): Promise<Map<string, C
 	const store = statsStore(ctx);
 	for (const [k, v] of await getManyBatched(store, uids)) out.set(k, v);
 	return out;
+}
+
+/** What a page render needs about one video. */
+export interface PageVideoFacts {
+	/** Embedded in a published entry (public routes only answer for these). */
+	published: boolean;
+	meta: VideoMeta | null;
+	counts: Counts | null;
+}
+
+const factsKey = (uid: string) => `coywolf-video-facts:${uid}`;
+
+/** One D1 batch for many videos: their metadata and counters, and which are embedded in published entries. */
+async function readFactsD1(db: D1Database, uids: string[]): Promise<Map<string, PageVideoFacts>> {
+	const marks = uids.map(() => "?").join(",");
+	// Both go out with the page's other pack reads of this tick (one D1 batch).
+	const [docs, published] = await Promise.all([
+		batchedAll<{ collection: string; id: string; data: string | null }>(
+			db,
+			db
+				.prepare(`SELECT collection, id, data FROM _plugin_storage WHERE plugin_id = ? AND collection IN (?, ?) AND id IN (${marks})`)
+				.bind(PLUGIN_ID, COLLECTIONS.meta, COLLECTIONS.stats, ...uids),
+		),
+		batchedAll<{ uid: string }>(
+			db,
+			db
+				.prepare(
+					`SELECT DISTINCT j.value AS uid FROM _plugin_storage AS s, json_each(s.data, '$.uids') AS j WHERE s.plugin_id = ? AND s.collection = ? AND json_extract(s.data, '$.status') = 'published' AND j.value IN (${marks})`,
+				)
+				.bind(PLUGIN_ID, COLLECTIONS.embeds, ...uids),
+		),
+	]);
+	const out = new Map<string, PageVideoFacts>(uids.map((uid) => [uid, { published: false, meta: null, counts: null }]));
+	for (const row of docs) {
+		const facts = out.get(row.id);
+		if (!facts || !row.data) continue;
+		try {
+			if (row.collection === COLLECTIONS.meta) facts.meta = JSON.parse(row.data) as VideoMeta;
+			else facts.counts = JSON.parse(row.data) as Counts;
+		} catch {
+			// An unreadable doc reads as missing.
+		}
+	}
+	for (const row of published) {
+		const facts = out.get(row.uid);
+		if (facts) facts.published = true;
+	}
+	return out;
+}
+
+async function readFactsCtx(ctx: Ctx, uids: string[], publishedUids: () => Promise<Set<string>>): Promise<Map<string, PageVideoFacts>> {
+	const [published, meta, counts] = await Promise.all([publishedUids(), getManyBatched(metaStore(ctx), uids), getManyBatched(statsStore(ctx), uids)]);
+	return new Map(uids.map((uid) => [uid, { published: published.has(uid), meta: meta.get(uid) ?? null, counts: counts.get(uid) ?? null }]));
+}
+
+/**
+ * Facts about these videos for a page render, shared within the request: the
+ * page:metadata hook (VideoObject schema) and every Coywolf Video block on
+ * the page (the videos/embed route) read each video once, in one D1 batch
+ * for all the videos asked for together. `publishedUids` is the fallback
+ * check when there's no D1 binding.
+ */
+export async function videoFacts(ctx: Ctx, uids: string[], publishedUids: () => Promise<Set<string>>): Promise<Map<string, PageVideoFacts>> {
+	const unique = [...new Set(uids)].slice(0, STORAGE_IN_LIMIT);
+	const pending = new Map<string, Promise<PageVideoFacts>>();
+	const missing: string[] = [];
+	for (const uid of unique) {
+		const hit = peekRequestMemo<PageVideoFacts>(factsKey(uid));
+		if (hit) pending.set(uid, hit);
+		else missing.push(uid);
+	}
+	if (missing.length) {
+		const batch = (async () => {
+			let db: D1Database | undefined;
+			try {
+				db = (await workerEnv()).DB as D1Database | undefined;
+			} catch {
+				db = undefined; // Not on Workers.
+			}
+			if (db && typeof db.prepare === "function") {
+				try {
+					return await readFactsD1(db, missing);
+				} catch (error) {
+					ctx.log?.warn?.("Videos: batched read failed; reading one by one", { error: String(error) });
+				}
+			}
+			return readFactsCtx(ctx, missing, publishedUids);
+		})();
+		for (const uid of missing) {
+			const one = batch.then((m) => m.get(uid) as PageVideoFacts);
+			seedRequestMemo(factsKey(uid), one);
+			pending.set(uid, one);
+		}
+	}
+	const entries = [...pending];
+	const values = await Promise.all(entries.map(([, facts]) => facts));
+	return new Map(entries.map(([uid], i) => [uid, values[i]]));
 }
 
 export async function metaFor(ctx: Ctx, uids: string[]): Promise<Map<string, VideoMeta>> {

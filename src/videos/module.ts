@@ -8,7 +8,7 @@ import type { PageMetadataContribution, PageMetadataEvent } from "emdash";
 import { z } from "zod";
 
 import { absoluteUrl, entryUrl } from "../core/content-url.js";
-import { ctxFeatures, isOn, requireCachedFeature, requireFeature, cachedCtxFeatures } from "../core/features.js";
+import { ctxFeatures, invalidateFeatures, isOn, requireCachedFeature, requireFeature, cachedCtxFeatures } from "../core/features.js";
 import { parseInput } from "../shared.js";
 import { ENGAGEMENT_HEADER, ENGAGEMENT_LIMITS, EngagementLimiter, LIKES_BY_PREFIX, hasEngagementHeader, likeAction, likesByKey, staleLikesByKey } from "./engagement.js";
 import {
@@ -36,6 +36,8 @@ import {
 	type Ctx,
 	type EmbedEntry,
 	SETTINGS,
+	type VideoMeta,
+	videoFacts,
 	SITEMAP_KEY,
 	adminSettings,
 	allEmbeds,
@@ -216,8 +218,8 @@ function usage(entries: EmbedEntry[]): Map<string, Array<{ title: string | null;
  * Schema & Social folds these into its @graph; on their own they're emitted
  * by pageMetadata below.
  */
-export async function entryVideoObjects(ctx: Ctx, page: PageMetadataEvent["page"]): Promise<Record<string, unknown>[]> {
-	const contributions = await videoContributions(ctx, page);
+export async function entryVideoObjects(ctx: Ctx, page: PageMetadataEvent["page"], embeds?: EmbedEntry | null): Promise<Record<string, unknown>[]> {
+	const contributions = await videoContributions(ctx, page, embeds);
 	return (contributions ?? []).flatMap((c) => {
 		if (c.kind !== "jsonld" || Array.isArray(c.graph)) return [];
 		const { "@context": _omit, ...node } = c.graph;
@@ -231,16 +233,27 @@ async function pageMetadata(event: PageMetadataEvent, ctx: Ctx): Promise<PageMet
 	return videoContributions(ctx, event.page);
 }
 
-async function videoContributions(ctx: Ctx, page: PageMetadataEvent["page"]): Promise<PageMetadataContribution[] | null> {
+/**
+ * `embeds`: the entry's embed-index doc when the caller already read it
+ * (undefined: read it here). The videos' metadata and counts are shared with
+ * the page's Coywolf Video blocks (videoFacts), so each is read once per page.
+ */
+async function videoContributions(ctx: Ctx, page: PageMetadataEvent["page"], embeds?: EmbedEntry | null): Promise<PageMetadataContribution[] | null> {
 	if (!page.content) return null;
-	const entry = await embedStore(ctx).get(embedKey(page.content.collection, page.content.id));
+	const entry = embeds !== undefined ? embeds : await embedStore(ctx).get(embedKey(page.content.collection, page.content.id));
 	// Legacy WordPress markers are rendered (with their own schema) by the theme.
 	const refs = (entry?.videos ?? []).filter((v) => !v.legacy);
 	if (!refs.length) return null;
 	const features = await cachedCtxFeatures(ctx);
 	const engagement = isOn(features, F.engagement);
 	const uids = refs.map((r) => r.uid);
-	const [meta, counts, cfg] = await Promise.all([metaFor(ctx, uids), engagement ? countsFor(ctx, uids) : Promise.resolve(new Map<string, Counts>()), publicConfig(ctx)]);
+	const [facts, cfg] = await Promise.all([videoFacts(ctx, uids, () => publishedUids(ctx)), publicConfig(ctx)]);
+	const meta = new Map<string, VideoMeta>();
+	const counts = new Map<string, Counts>();
+	for (const [uid, f] of facts) {
+		if (f.meta) meta.set(uid, f.meta);
+		if (f.counts) counts.set(uid, f.counts);
+	}
 	const siteUrl = page.siteUrl || ctx.site.url || new URL(page.url).origin;
 	return refs.map((ref) => ({
 		kind: "jsonld" as const,
@@ -414,6 +427,8 @@ export function videosModule(options: VideosOptions) {
 				if (input.lightEmbed !== undefined) await ctx.settings.set(SETTINGS.lightEmbed, input.lightEmbed);
 				if (input.clearToken) await ctx.settings.delete(SETTINGS.token);
 				else if (input.token) await ctx.settings.set(SETTINGS.token, input.token);
+				// The player settings are read with the feature switches: drop both caches.
+				invalidateFeatures();
 				invalidatePublicConfig();
 				await invalidateLibrary(ctx);
 				ctx.log.info("Videos settings saved", { tokenChanged: Boolean(input.clearToken || input.token) });
@@ -721,17 +736,19 @@ export function videosModule(options: VideosOptions) {
 			methods: ["POST"],
 			request: { body: "json", maxBytes: 1024 },
 			handler: async (ctx) => {
-				// Called once per video block on every render: the switches, the embed index and
-				// the player settings come from per-isolate caches, and the two reads run together.
+				// Called once per video block on every render: the switches and the player settings
+				// come from per-isolate caches; the video's facts are one D1 batch, shared with the
+				// page's schema (videoFacts), so a video page reads them once.
 				await requireCachedFeature(ctx, F.main);
 				const { uid } = parseInput(z.object({ uid: uidSchema }), ctx.input);
-				const [published, features, cfg] = await Promise.all([publishedUids(ctx), cachedCtxFeatures(ctx), publicConfig(ctx)]);
+				const [facts, features, cfg] = await Promise.all([videoFacts(ctx, [uid], () => publishedUids(ctx)), cachedCtxFeatures(ctx), publicConfig(ctx)]);
+				const fact = facts.get(uid);
 				// Only videos embedded in published content get metadata (no probing the library
 				// by ID, and nothing about videos that are only in drafts).
-				const embedded = published.has(uid);
+				const embedded = fact?.published === true;
 				const engagement = embedded && isOn(features, F.engagement);
-				const [meta, stats] = await Promise.all([embedded ? metaStore(ctx).get(uid) : Promise.resolve(null), engagement ? statsStore(ctx).get(uid) : Promise.resolve(null)]);
-				const counts = engagement ? (stats ?? { plays: 0, likes: 0 }) : null;
+				const meta = embedded ? (fact?.meta ?? null) : null;
+				const counts = engagement ? (fact?.counts ?? { plays: 0, likes: 0 }) : null;
 				return {
 					...cfg,
 					engagement,

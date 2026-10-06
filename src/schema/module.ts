@@ -17,7 +17,21 @@ import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
 import { absoluteUrl, entryUrl } from "../core/content-url.js";
-import { type FeatureMap, cachedCtxFeatures, ctxFeatures, isOn, requireFeature } from "../core/features.js";
+import {
+	type FeatureMap,
+	cachedCtxFeatures,
+	ctxFeatures,
+	invalidateFeatures,
+	isCurrent,
+	isOn,
+	readSiteSetting,
+	registerSiteSetting,
+	requireFeature,
+	settingsEpoch,
+} from "../core/features.js";
+import { batchedFirst } from "../core/d1-batch.js";
+import { readEntryDocs } from "../core/entry-docs.js";
+import { requestMemo } from "../core/request-memo.js";
 import { parseInput, workerEnv } from "../shared.js";
 import { type MediaRow, cleanDefaultOgImage, mediaHostImageInfo, ogImageTags, ownImageOnMediaHost, packOwnsOgImage } from "./og-image.js";
 import { ARTICLE_TYPES, ORGANIZATION_PROPERTIES, ORGANIZATION_TYPES, PAGE_TYPES, PERSON_PROPERTIES, PROPERTY_INPUTS } from "./catalog.js";
@@ -125,6 +139,8 @@ export const schemaSettingsSchema = {
 } as const;
 
 type SettingKey = keyof typeof schemaSettingsSchema;
+// Read with the feature switches (one query for all of them, cached per isolate).
+for (const key of Object.keys(schemaSettingsSchema)) registerSiteSetting(key);
 type SimpleSettings = { [K in SettingKey]: (typeof schemaSettingsSchema)[K]["default"] extends number ? number : (typeof schemaSettingsSchema)[K]["default"] extends boolean ? boolean : string };
 
 export const schemaStorage = {
@@ -156,10 +172,19 @@ interface Config {
 	types: TypeMap;
 	/** The publisher Person's byline and rows, when Site Details say "person". */
 	person: { byline: BylineFacts | null; rows: PropertyRow[] | null } | null;
+	/** Every byline's saved Person rows, by byline id; null when there are too many to keep (read per page then). */
+	authors: Map<string, { rows: PropertyRow[] }> | null;
 }
 
-const CONFIG_TTL_MS = 30_000;
-let configCache: { at: number; config: Config } | null = null;
+/**
+ * Kept until a pack settings save (here, or in another isolate: settingsEpoch)
+ * or ten minutes, whichever comes first. Byline profile edits (made in
+ * EmDash, not here) show up within the ten minutes.
+ */
+const CONFIG_TTL_MS = 10 * 60_000;
+/** Saved author rows kept in the config; more than this and they're read per page instead. */
+const MAX_CACHED_AUTHORS = 500;
+let configCache: { at: number; epoch: number; config: Config } | null = null;
 
 export function invalidateSchemaConfig(): void {
 	configCache = null;
@@ -167,12 +192,29 @@ export function invalidateSchemaConfig(): void {
 
 const DEFAULT_SITE: SiteDetails = { publisherType: "organization", personBylineId: null, orgRows: [] };
 
-async function readSettings(ctx: PluginContext): Promise<SimpleSettings> {
-	// One read for every schema* setting (they share the prefix).
-	const stored = new Map((await ctx.settings.list("schema")).map((e) => [e.key, e.value]));
+async function readSettings(ctx: PluginContext, database?: string, fresh = false): Promise<SimpleSettings> {
+	const keys = Object.keys(schemaSettingsSchema) as SettingKey[];
+	// From the feature switches' query (usually already cached); else (and for the admin) one read for every schema* setting (they share the prefix).
+	const reads = fresh ? [] : await Promise.all(keys.map((k) => readSiteSetting(k, database ?? "DB").catch(() => null)));
+	const stored = !fresh && reads.every(Boolean)
+		? new Map(keys.map((k, i) => [k as string, reads[i]?.value ?? undefined]))
+		: new Map((await ctx.settings.list("schema")).map((e) => [e.key, e.value]));
 	const out: Record<string, unknown> = {};
-	for (const k of Object.keys(schemaSettingsSchema) as SettingKey[]) out[k] = stored.get(k) ?? schemaSettingsSchema[k].default;
+	for (const k of keys) out[k] = stored.get(k) ?? schemaSettingsSchema[k].default;
 	return out as SimpleSettings;
+}
+
+/** Every saved author row (one query), or null when there are more than MAX_CACHED_AUTHORS. */
+async function readAllAuthors(ctx: PluginContext): Promise<Map<string, { rows: PropertyRow[] }> | null> {
+	const out = new Map<string, { rows: PropertyRow[] }>();
+	let cursor: string | undefined;
+	for (let page = 0; page * 100 < MAX_CACHED_AUTHORS; page++) {
+		const result = await authorsStore(ctx).query({ limit: 100, ...(cursor ? { cursor } : {}) });
+		for (const item of result.items as Array<{ id: string; data: { rows: PropertyRow[] } }>) out.set(item.id, item.data);
+		if (!result.hasMore || !result.cursor) return out;
+		cursor = result.cursor;
+	}
+	return null;
 }
 
 async function bylineFacts(ctx: PluginContext, id: string): Promise<BylineFacts | null> {
@@ -183,22 +225,35 @@ async function bylineFacts(ctx: PluginContext, id: string): Promise<BylineFacts 
 	return { id: byline.id, slug: byline.slug, displayName: byline.displayName, bio: byline.bio, websiteUrl: byline.websiteUrl, avatarUrl };
 }
 
-async function loadConfig(ctx: PluginContext): Promise<Config> {
-	if (configCache && Date.now() - configCache.at < CONFIG_TTL_MS) return configCache.config;
-	const [settings, stored] = await Promise.all([readSettings(ctx), docs(ctx).getMany(["site", "types"]) as Promise<Map<string, unknown>>]);
+/** The module's settings and docs (cached per isolate). `fresh`: read them now (admin pages). */
+async function loadConfig(ctx: PluginContext, database?: string, fresh = false): Promise<Config> {
+	if (!fresh && configCache && isCurrent(configCache, CONFIG_TTL_MS)) return configCache.config;
+	const epoch = settingsEpoch();
+	const [settings, stored, authors] = await Promise.all([
+		readSettings(ctx, database, fresh),
+		docs(ctx).getMany(["site", "types"]) as Promise<Map<string, unknown>>,
+		authorsStore(ctx)?.query ? readAllAuthors(ctx).catch(() => null) : null,
+	]);
 	const site = { ...DEFAULT_SITE, ...((stored.get("site") as SiteDetails | undefined) ?? {}) };
 	const types = (stored.get("types") as TypeMap | undefined) ?? {};
 	let person: Config["person"] = null;
 	if (site.publisherType === "person" && site.personBylineId) {
 		const [byline, rows] = await Promise.all([
 			bylineFacts(ctx, site.personBylineId),
-			authorsStore(ctx).get(site.personBylineId) as Promise<{ rows: PropertyRow[] } | null>,
+			authors ? authors.get(site.personBylineId) : (authorsStore(ctx).get(site.personBylineId) as Promise<{ rows: PropertyRow[] } | null>),
 		]);
 		person = { byline, rows: rows?.rows ?? null };
 	}
-	const config = { settings, site, types, person };
-	configCache = { at: Date.now(), config };
+	const config = { settings, site, types, person, authors };
+	// A save while this read ran (the epoch moved) leaves it uncached.
+	if (epoch === settingsEpoch()) configCache = { at: Date.now(), epoch, config };
 	return config;
+}
+
+/** Saved Person rows for these bylines: from the config when it holds them all, else one read. */
+async function authorRows(ctx: PluginContext, config: Config, ids: string[]): Promise<Map<string, { rows: PropertyRow[] }>> {
+	if (config.authors) return new Map(ids.flatMap((id) => (config.authors?.has(id) ? [[id, config.authors.get(id) as { rows: PropertyRow[] }]] : [])));
+	return getManyBatched(authorsStore(ctx), ids);
 }
 
 // ── Media lookups (dimensions and alt, cached per isolate) ───────
@@ -225,9 +280,8 @@ async function lookupCleanMedia(options: SchemaOptions, url: string, origin: str
 		try {
 			const env = await workerEnv();
 			const db = env[options.database ?? "DB"] as D1Database | undefined;
-			row = db
-				? await db.prepare("SELECT width, height, alt, mime_type FROM media WHERE storage_key = ? LIMIT 1").bind(key).first<MediaRow>()
-				: null;
+			// With the page's other pack reads of this tick (one D1 batch).
+			row = db ? await batchedFirst<MediaRow>(db, db.prepare("SELECT width, height, alt, mime_type FROM media WHERE storage_key = ? LIMIT 1").bind(key)) : null;
 		} catch {
 			return null; // Don't cache failures.
 		}
@@ -249,10 +303,10 @@ async function lookupCleanMedia(options: SchemaOptions, url: string, origin: str
 		const env = await workerEnv();
 		const db = env[options.database ?? "DB"] as D1Database | undefined;
 		const row = db
-			? await db
-					.prepare("SELECT width, height, alt FROM media WHERE storage_key LIKE ? LIMIT 1")
-					.bind(`${clean.id}.%`)
-					.first<{ width: number | null; height: number | null; alt: string | null }>()
+			? await batchedFirst<{ width: number | null; height: number | null; alt: string | null }>(
+					db,
+					db.prepare("SELECT width, height, alt FROM media WHERE storage_key LIKE ? LIMIT 1").bind(`${clean.id}.%`),
+				)
 			: null;
 		if (!row) return null;
 		const height = clean.height ?? (row.width && row.height ? Math.round((clean.width * row.height) / row.width) : null);
@@ -275,10 +329,10 @@ async function lookupMedia(options: SchemaOptions, url: string, origin: string):
 		const env = await workerEnv();
 		const db = env[options.database ?? "DB"] as D1Database | undefined;
 		const row = db
-			? await db
-					.prepare(`SELECT width, height, alt, mime_type FROM media WHERE ${ref.by === "id" ? "id" : "storage_key"} = ? LIMIT 1`)
-					.bind(ref.value)
-					.first<{ width: number | null; height: number | null; alt: string | null; mime_type: string | null }>()
+			? await batchedFirst<{ width: number | null; height: number | null; alt: string | null; mime_type: string | null }>(
+					db,
+					db.prepare(`SELECT width, height, alt, mime_type FROM media WHERE ${ref.by === "id" ? "id" : "storage_key"} = ? LIMIT 1`).bind(ref.value),
+				)
 			: null;
 		if (row) info = { url, width: row.width, height: row.height, alt: row.alt, mimeType: row.mime_type };
 	} catch {
@@ -336,11 +390,36 @@ async function primaryImage(options: SchemaOptions, page: PublicPageContext, sit
 }
 
 type EntryBylines = Awaited<ReturnType<NonNullable<PluginContext["bylines"]>["getEntriesBylines"]>>;
+type Credit = EntryBylines[number]["bylines"][number];
 
-/** The entry's credited bylines (none without an entry, or on error). Started early, alongside the page's other reads. */
-function entryBylines(ctx: PluginContext, page: PublicPageContext): Promise<EntryBylines> {
-	if (!page.content || !ctx.bylines) return Promise.resolve([]);
-	return ctx.bylines.getEntriesBylines(page.content.collection, [page.content.id]).catch(() => []);
+/**
+ * What the theme already loaded for the page's entry and passes through the
+ * page context, so the pack doesn't read it again:
+ * - `page.coywolf.entry`: the entry from getEmDashEntry() (its `data` has
+ *   the fields and, hydrated by EmDash, `bylines`);
+ * - `page.coywolf.bylines`: just the credits (entry.data.bylines).
+ * An entry whose data.id isn't the page's content id is ignored.
+ */
+export function themedEntry(page: PublicPageContext): { data?: Record<string, unknown>; bylines?: Credit[] } {
+	const coywolf = (page as PublicPageContext & { coywolf?: { entry?: unknown; bylines?: unknown } }).coywolf;
+	if (!coywolf || !page.content) return {};
+	const entry = coywolf.entry as { data?: unknown } | undefined;
+	const data = entry?.data && typeof entry.data === "object" ? (entry.data as Record<string, unknown>) : undefined;
+	const sameEntry = data && (typeof data.id !== "string" || data.id === page.content.id);
+	const credits = Array.isArray(coywolf.bylines) ? coywolf.bylines : sameEntry && Array.isArray(data?.bylines) ? data.bylines : undefined;
+	const bylines = credits?.filter((c): c is Credit => Boolean(c && typeof c === "object" && (c as Credit).byline && typeof (c as Credit).byline.id === "string"));
+	return { ...(sameEntry ? { data } : {}), ...(bylines ? { bylines } : {}) };
+}
+
+/** The entry's credited bylines (none without an entry, or on error): the theme's, else read. Started early, alongside the page's other reads. */
+function entryBylines(ctx: PluginContext, page: PublicPageContext, themed?: Credit[]): Promise<EntryBylines> {
+	if (!page.content) return Promise.resolve([]);
+	if (themed) return Promise.resolve([{ entryId: page.content.id, bylines: themed }]);
+	const bylines = ctx.bylines;
+	if (!bylines) return Promise.resolve([]);
+	const { collection, id } = page.content;
+	// Once per request, however many times the hook runs for the page.
+	return requestMemo(`coywolf-entry-bylines:${collection}:${id}`, () => bylines.getEntriesBylines(collection, [id]).catch(() => []));
 }
 
 async function authorNodes(ctx: PluginContext, credited: Promise<EntryBylines>, config: Config, site: SiteFacts, features: FeatureMap): Promise<Node[]> {
@@ -348,7 +427,7 @@ async function authorNodes(ctx: PluginContext, credited: Promise<EntryBylines>, 
 	const bylines = credits?.bylines.map((c) => c.byline) ?? [];
 	if (!bylines.length) return [];
 	const rowsById: Map<string, { rows: PropertyRow[] }> = isOn(features, SCHEMA_FEATURES.authors)
-		? await getManyBatched(authorsStore(ctx), bylines.map((b) => b.id))
+		? await authorRows(ctx, config, bylines.map((b) => b.id))
 		: new Map();
 	const nodes = await Promise.all(
 		bylines.map(async (b) => {
@@ -384,7 +463,7 @@ async function authorNodes(ctx: PluginContext, credited: Promise<EntryBylines>, 
 async function mainSubjectPerson(ctx: PluginContext, bylineId: string, config: Config, site: SiteFacts, features: FeatureMap): Promise<Node | null> {
 	const facts = await bylineFacts(ctx, bylineId);
 	if (!facts) return null;
-	const stored = isOn(features, SCHEMA_FEATURES.authors) ? ((await authorsStore(ctx).get(bylineId)) as { rows: PropertyRow[] } | null) : null;
+	const stored = isOn(features, SCHEMA_FEATURES.authors) ? ((await authorRows(ctx, config, [bylineId])).get(bylineId) ?? null) : null;
 	const path = authorPath(config.settings.schemaAuthorUrlPattern, facts.slug);
 	const authorUrl = path ? absolute(path, site.origin) : null;
 	return personNode({
@@ -404,14 +483,18 @@ async function mainSubjectPerson(ctx: PluginContext, bylineId: string, config: C
 type GraphStep = (graph: { "@graph": Node[] }) => void;
 const noStep: GraphStep = () => {};
 
-/** Load the page's videos; the step folds them into the graph (see attachVideos). Errors are logged, never fatal. */
-async function pageVideosStep(ctx: PluginContext, page: PublicPageContext, origin: string, on: FeatureMap): Promise<GraphStep> {
+/**
+ * Load the page's videos; the step folds them into the graph (see
+ * attachVideos). `embeds`: the entry's embed-index doc, already read with the
+ * page's other docs. Errors are logged, never fatal.
+ */
+async function pageVideosStep(ctx: PluginContext, page: PublicPageContext, origin: string, on: FeatureMap, embeds?: Promise<unknown>): Promise<GraphStep> {
 	const warn = (error: unknown) => ctx.log.warn("schema: could not attach videos", { error: String(error) });
 	try {
 		const videos: Node[] = [];
 		if (isOn(on, "videos.schema")) {
-			const { entryVideoObjects } = await import("../videos/module.js");
-			videos.push(...(await entryVideoObjects(ctx as never, page)));
+			const [{ entryVideoObjects }, embedDoc] = await Promise.all([import("../videos/module.js"), embeds]);
+			videos.push(...(await entryVideoObjects(ctx as never, page, embeds ? (embedDoc as never) : undefined)));
 		}
 		const themed = (page as PublicPageContext & { coywolf?: { videos?: unknown } }).coywolf?.videos;
 		if (Array.isArray(themed)) for (const v of themed.slice(0, 50)) {
@@ -436,11 +519,11 @@ async function pageVideosStep(ctx: PluginContext, page: PublicPageContext, origi
  * page's Article node (or its WebPage when there's no Article). Loaded lazily
  * so sites without the AI module don't pay for it.
  */
-async function entitiesStep(ctx: PluginContext, content: { collection: string; id: string }): Promise<GraphStep> {
+async function entitiesStep(ctx: PluginContext, content: { collection: string; id: string }, record?: Promise<unknown>): Promise<GraphStep> {
 	const warn = (error: unknown) => ctx.log.warn("schema: could not attach AI entities", { error: String(error) });
 	try {
-		const { getEntryEntities } = await import("../ai/entities.js");
-		const { about, mentions } = await getEntryEntities(ctx, content.collection, content.id);
+		const [{ getEntryEntities }, preloaded] = await Promise.all([import("../ai/entities.js"), record]);
+		const { about, mentions } = await getEntryEntities(ctx, content.collection, content.id, record ? { record: preloaded as never } : undefined);
 		if (!about.length && !mentions.length) return noStep;
 		return (graph) => {
 			try {
@@ -474,7 +557,9 @@ function mergeEntities(graph: { "@graph": Node[] }, about: Record<string, unknow
 /**
  * Every contribution this module makes for a page (also used by the admin
  * preview). Reads that don't depend on each other run at once: config and
- * site facts, then the page image, entry override, credited bylines, logo
+ * site facts, then the page image, the entry's docs (override, embed index,
+ * AI entities, and its data for review blocks when the theme didn't pass it:
+ * one D1 batch), credited bylines (unless the theme passed them), logo
  * dimensions, videos, reviews and entities; then the bylines' Person nodes
  * (which need the override's article type). The graph is assembled in a
  * fixed order afterwards, so the output doesn't depend on which read
@@ -492,7 +577,7 @@ export async function schemaContributions(
 	const graphOn = isOn(on, SCHEMA_FEATURES.graph);
 	const ogOn = isOn(on, SCHEMA_FEATURES.openGraph);
 	const cleanImages = isOn(on, "images");
-	const [config, site] = await Promise.all([loadConfig(ctx), siteFacts(ctx, page), cleanImages ? refreshMediaHost() : undefined]);
+	const [config, site] = await Promise.all([loadConfig(ctx, options.database), siteFacts(ctx, page), cleanImages ? refreshMediaHost() : undefined]);
 	const imageRead = graphOn || ogOn ? primaryImage(options, page, site, cleanImages) : Promise.resolve(null);
 
 	if (graphOn) {
@@ -506,18 +591,46 @@ export async function schemaContributions(
 			authorUrl: personPath ? absolute(personPath, site.origin) : null,
 		});
 		const logoUrl = (publisher.logo as Node | undefined)?.url;
-		// Credited bylines are read before knowing whether the page has an article (one read, usually needed).
-		const credited = entryBylines(ctx, page);
+		const themed = themedEntry(page);
+		// Credited bylines are read before knowing whether the page has an article (one read, usually needed), unless the theme passed them.
+		const credited = entryBylines(ctx, page, themed.bylines);
+		const reviewsOn = isOn(on, "reviews.schema");
+		const reviews = reviewsOn ? import("../reviews/schema.js") : null;
+		// The entry's docs in one read: its override, embed index and AI entities, and its data when review blocks must be looked for.
+		const entryRead = page.content
+			? (reviews ?? Promise.resolve(null)).then((r) =>
+					readEntryDocs(
+						ctx,
+						{
+							collection: page.content!.collection,
+							id: page.content!.id,
+							collections: [
+								"schemaEntries",
+								...(isOn(on, "videos.schema") ? ["videosEmbeds"] : []),
+								...(isOn(on, "ai.entities") ? ["aiEntries"] : []),
+							],
+							data: Boolean(r && !themed.data && r.needsEntryData(page)),
+							database: options.database,
+						},
+						r?.REVIEW_MARKER,
+					),
+				)
+			: null;
+		const doc = (collection: string) => entryRead?.then((d) => d.docs.get(collection) ?? null);
 		const [image, override, logoInfo, videosStep, reviewsStep, entityStep] = await Promise.all([
 			imageRead,
-			page.content ? (entries(ctx).get(`${page.content.collection}:${page.content.id}`) as Promise<EntryOverride | null>) : null,
+			(doc("schemaEntries") ?? null) as Promise<EntryOverride | null> | null,
 			typeof logoUrl === "string" ? lookupMedia(options, logoUrl, site.origin) : null,
 			// Videos: from the Videos module, and any the theme passes as page.coywolf.videos.
-			pageVideosStep(ctx, page, site.origin, on),
+			pageVideosStep(ctx, page, site.origin, on, doc("videosEmbeds")),
 			// Reviews: coywolf-review blocks in the entry, and any the theme passes as page.coywolf.reviews.
-			isOn(on, "reviews.schema") ? import("../reviews/schema.js").then(({ pageReviewsStep }) => pageReviewsStep(ctx, page, site.origin)) : noStep,
+			reviews
+				? reviews.then(({ pageReviewsStep }) =>
+						pageReviewsStep(ctx, page, site.origin, themed.data ?? (entryRead ? () => entryRead.then((d) => d.data) : undefined)),
+					)
+				: noStep,
 			// AI Enrichment's Wikidata-grounded entities, when that feature is on.
-			page.content && isOn(on, "ai.entities") ? entitiesStep(ctx, page.content) : noStep,
+			page.content && isOn(on, "ai.entities") ? entitiesStep(ctx, page.content, doc("aiEntries")) : noStep,
 		]);
 		enrichImageObjects(publisher, (url) => (url === logoUrl ? logoInfo : null));
 		const { articleType } = resolveTypes(page, config.types, override);
@@ -666,7 +779,7 @@ export function schemaModule(options: SchemaOptions) {
 				await requireFeature(ctx, MAIN);
 				invalidateSchemaConfig();
 				const [config, collections, features] = await Promise.all([
-					loadConfig(ctx),
+					loadConfig(ctx, options.database, true),
 					ctx.schema?.listCollections().catch(() => []) ?? [],
 					ctxFeatures(ctx),
 				]);
@@ -717,8 +830,10 @@ export function schemaModule(options: SchemaOptions) {
 				if (input.schemaSearchUrl && !input.schemaSearchUrl.includes("{search_term_string}"))
 					throw PluginRouteError.badRequest("The search URL needs {search_term_string} where the query goes.");
 				for (const [key, value] of Object.entries(input)) if (value !== undefined) await ctx.settings.set(key, value);
+				// The settings are read with the feature switches: drop that cache too.
+				invalidateFeatures();
 				invalidateSchemaConfig();
-				return { settings: (await loadConfig(ctx)).settings };
+				return { settings: (await loadConfig(ctx, options.database, true)).settings };
 			},
 		}),
 
@@ -944,6 +1059,8 @@ export function schemaModule(options: SchemaOptions) {
 					ctx.input,
 				);
 				invalidateSchemaConfig();
+				// Fresh settings and docs for the preview (and the cache it then renders from).
+				await loadConfig(ctx, options.database, true);
 				const siteUrl = originOf(ctx.site.url);
 				const name = await siteName(ctx);
 				let page: PublicPageContext;

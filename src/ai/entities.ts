@@ -27,10 +27,17 @@ function isD1(source: Source): source is D1Database {
 	return typeof (source as D1Database).prepare === "function";
 }
 
-export async function getEntryEntities(source: Source, collection: string, id: string): Promise<EntryEntities> {
+/**
+ * `preloaded.record`: the entry's aiEntries doc, already read by the caller
+ * (Schema & Social reads it with the entry's other docs), so nothing is read
+ * here; the caller has checked the "ai.entities" switch.
+ */
+export async function getEntryEntities(source: Source, collection: string, id: string, preloaded?: { record: EntryRecord | null }): Promise<EntryEntities> {
 	try {
 		let record: EntryRecord | null = null;
-		if (isD1(source)) {
+		if (preloaded) {
+			record = preloaded.record ?? null;
+		} else if (isD1(source)) {
 			if (!isOn(await siteFeatures(), "ai.entities")) return EMPTY;
 			const row = await source
 				.prepare("SELECT data FROM _plugin_storage WHERE plugin_id = ? AND collection = ? AND id = ?")
