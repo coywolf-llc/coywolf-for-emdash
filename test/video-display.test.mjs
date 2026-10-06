@@ -151,7 +151,7 @@ test("captionHtml: name and description, escaped", () => {
 	assert.equal(captionHtml("Name", "Desc", { name: false, description: true }), '<figcaption class="cw-video__caption"><span class="cw-video__desc">Desc</span></figcaption>');
 });
 
-test("metaHtml: like button with the chosen icon and count, views, date and length", () => {
+test("metaHtml: like button with the chosen icon and count, views and date", () => {
 	const base = { uid: UID, likes: 3, showLikeCount: true, likeIcon: "star", plays: 1, date: "2026-03-07T00:00:00Z", dateStyle: "absolute", now: NOW };
 	const html = metaHtml(base);
 	assert.match(html, new RegExp(`^<div class="cw-video__meta"><button type="button" class="cw-video__like" data-cw-like="${UID}" aria-pressed="false"><svg`));

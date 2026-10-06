@@ -309,6 +309,8 @@ test("redirect changes purge the redirects tag; lookups purge nothing", async ()
 		assert.deepEqual(purgeScope(API + route), { tags: [REDIRECTS_TAG] }, route);
 	}
 	for (const route of ["redirects/list", "redirects/test", "redirects/removed", "backups/run"]) assert.equal(purgeScope(API + route), null, route);
+	for (const route of ["videos/list", "videos/detail", "videos/status", "videos/storage", "videos/settings", "videos/captions/list"]) assert.equal(purgeScope(API + route), null, route);
+	for (const route of ["videos/settings/save", "videos/update", "videos/delete"]) assert.deepEqual(purgeScope(API + route), { purgeEverything: true }, route);
 	const purged = [];
 	globalThis.__purge = (options) => (purged.push(options), Promise.resolve({ success: true }));
 	assert.equal(await purgePageCache(purgeScope(API + "redirects/save")), true);

@@ -269,10 +269,8 @@ export const VIDEO_CSS = `
 .cw-video .cw-video__like[aria-pressed="true"]{color:var(--cw-video-like-active,var(--cw-video-accent));background:var(--cw-video-like-active-bg,var(--cw-video-like-bg,transparent))}
 .cw-video .cw-video__like[aria-pressed="true"] svg{fill:currentColor}
 @media (hover:hover){
-.cw-video .cw-video__like:not([data-held]):hover{color:var(--cw-video-like-active,var(--cw-video-accent));background:var(--cw-video-like-active-bg,var(--cw-video-like-bg,transparent))}
+.cw-video .cw-video__like:not([data-held]):hover{color:var(--cw-video-like-color);background:var(--cw-video-like-bg,transparent)}
 .cw-video .cw-video__like:not([data-held]):hover svg{fill:currentColor}
-.cw-video .cw-video__like[aria-pressed="true"]:not([data-held]):hover{color:var(--cw-video-like-color);background:var(--cw-video-like-bg,transparent)}
-.cw-video .cw-video__like[aria-pressed="true"]:not([data-held]):hover svg{fill:none}
 }
 .cw-video .cw-video__like[data-pop] svg{animation:cw-video-pop 0.35s ease}
 @keyframes cw-video-pop{0%{transform:scale(1)}40%{transform:scale(1.35) rotate(-8deg)}100%{transform:scale(1)}}
@@ -300,7 +298,7 @@ const PLAY_ICON = '<svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="
 /**
  * A sample video with every part the settings can show: the frame (16:9),
  * name and description, like button (175), "23 views", an upload date seven
- * months back, and the length. The preview frame runs no scripts, so a
+ * months back, . The preview frame runs no scripts, so a
  * second like button shows the clicked state; hover works as on the site.
  */
 export function renderVideoPreviewHtml(d: VideoDisplay, background: string | null = null, now = Date.now()): string {
