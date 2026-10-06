@@ -22,6 +22,12 @@
  * parallel never take the same pages. A new purge restarts it (new
  * generation) and clears older runs' URL rows.
  *
+ * EmDash clears cached pages by tag when content, menus, taxonomies or site
+ * settings change, and list pages carry their collection's tag, so one saved
+ * post clears the home page, the archives and many posts. The pack middleware
+ * sees those clears (cache.invalidate) and schedules a new run a minute after
+ * the last one (scheduleRewarm), so a burst of edits makes one run.
+ *
  * A page whose render used a stopgap (a video's Stream poster while its copy
  * on the media host is made, see src/videos/poster.ts) comes back with
  * STOPGAP_HEADER and isn't cached. Such pages are listed in the progress row
@@ -62,6 +68,12 @@ export interface WarmState {
 	/** Pages visited again and cached with the normal lifetime; pages still on a stopgap after their last revisit (or past MAX_REVISIT). */
 	rewarmed?: number;
 	revisitGaveUp?: number;
+	/** When the last batch was claimed (a batch never recorded stops keeping the run open BATCH_STALE_MS later). */
+	claimedAt?: string;
+	/** Content changed (see scheduleRewarm): start a new run ("edit") once this time (ISO) has passed. */
+	rewarmAfter?: string;
+	/** However long edits keep coming, the new run starts by then (ISO). */
+	rewarmBy?: string;
 }
 
 /** Most URLs one job warms (a guard for huge sitemaps). */
@@ -78,6 +90,12 @@ export const REVISIT_DELAY_MS = 20_000;
 export const MAX_REVISIT_ROUNDS = 2;
 /** Revisits claimed this long ago and never recorded (the isolate stopped) no longer keep the run open. */
 const REVISIT_STALE_MS = 2 * 60_000;
+/** Same for a batch of the main queue: its pages count as failed and the run finishes. */
+export const BATCH_STALE_MS = 2 * 60_000;
+/** A run starts this long after the last content edit (edits in a burst, autosaves… make one run). */
+export const REWARM_DELAY_MS = 60_000;
+/** …and at most this long after the first edit of a burst, however long it goes on. */
+export const REWARM_MAX_DELAY_MS = 5 * 60_000;
 
 export function newWarmState(reason: string, now = new Date()): WarmState {
 	return { generation: `${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`, startedAt: now.toISOString(), phase: "collect", next: 0, total: 0, warmed: 0, failed: 0, reason };
@@ -232,7 +250,7 @@ async function migrateLegacy(db: D1Database, raw: string, now: number): Promise<
 	await writeWarmQueue(db, generation, urls);
 	const migrated: WarmState = { ...rest, generation, next: 0, total: urls.length, warmed: 0, failed: 0 };
 	if (await swap(db, raw, migrated)) return true;
-	await deleteQueue(db, generation).catch(() => undefined);
+	await deleteQueue(db, { run: generation }).catch(() => undefined);
 	return false;
 }
 
@@ -296,15 +314,36 @@ export async function writeWarmState(db: D1Database, state: WarmState): Promise<
 		.run();
 }
 
-/** Delete a run's URL rows, or every run's but `keep`'s. */
-async function deleteQueue(db: D1Database, generation: string | null, keep?: string): Promise<void> {
-	if (generation) {
-		await db.prepare("DELETE FROM options WHERE name LIKE ?").bind(`${WARM_QUEUE_PREFIX}${generation}:%`).run();
+/**
+ * Names starting with `prefix` are those in [prefix, prefixEnd): the same
+ * string with its last character moved one up (prefixes here end in ":", so
+ * the end is ";"). Range comparisons rather than LIKE: D1 refuses LIKE
+ * patterns over 50 bytes ("LIKE or GLOB pattern too complex"), and a queue
+ * row's name is longer than that, so the LIKE deletes this replaced never
+ * deleted anything. A range also uses the options table's primary key.
+ */
+const prefixEnd = (prefix: string) => prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
+
+/**
+ * Delete warm queue rows: `{ run }` deletes one run's rows; `{ upTo }` deletes
+ * that run's rows and every older run's (generations start with their start
+ * time in milliseconds, 13 digits, so they sort by age), leaving any newer
+ * run's alone; `{ keep }` deletes every run's rows but that run's.
+ */
+async function deleteQueue(db: D1Database, which: { run: string } | { upTo: string } | { keep: string }): Promise<void> {
+	if ("run" in which) {
+		const prefix = `${WARM_QUEUE_PREFIX}${which.run}:`;
+		await db.prepare("DELETE FROM options WHERE name >= ? AND name < ?").bind(prefix, prefixEnd(prefix)).run();
 		return;
 	}
+	if ("upTo" in which) {
+		await db.prepare("DELETE FROM options WHERE name >= ? AND name < ?").bind(WARM_QUEUE_PREFIX, prefixEnd(`${WARM_QUEUE_PREFIX}${which.upTo}:`)).run();
+		return;
+	}
+	const keep = `${WARM_QUEUE_PREFIX}${which.keep}:`;
 	await db
-		.prepare("DELETE FROM options WHERE name LIKE ? AND name NOT LIKE ?")
-		.bind(`${WARM_QUEUE_PREFIX}%`, `${WARM_QUEUE_PREFIX}${keep ?? ""}:%`)
+		.prepare("DELETE FROM options WHERE name >= ? AND name < ? AND NOT (name >= ? AND name < ?)")
+		.bind(WARM_QUEUE_PREFIX, prefixEnd(WARM_QUEUE_PREFIX), keep, prefixEnd(keep))
 		.run();
 }
 
@@ -363,8 +402,60 @@ async function queueSlice(db: D1Database, generation: string, start: number, end
 export async function startWarm(db: D1Database, reason: string): Promise<WarmState> {
 	const state = newWarmState(reason);
 	await writeWarmState(db, state);
-	await deleteQueue(db, null, state.generation).catch((error) => console.error("coywolf-pack: could not clear old warm queues", error));
+	await deleteQueue(db, { keep: state.generation }).catch((error) => console.error("coywolf-pack: could not clear old warm queues", error));
 	return state;
+}
+
+/**
+ * Content changed (EmDash cleared cached pages by tag): warm again
+ * REWARM_DELAY_MS after the last such change, REWARM_MAX_DELAY_MS after the
+ * first at most. Only marks the progress row (`rewarmAfter`); the run starts
+ * from the traffic-driven warm steps once it's due (claimWork), so a burst of
+ * edits makes one run. A run in progress goes on meanwhile and is replaced
+ * when the new one starts. Returns the row as written (null if it couldn't be).
+ */
+export async function scheduleRewarm(db: D1Database, now = Date.now()): Promise<WarmState | null> {
+	for (let attempt = 0; attempt < 5; attempt++) {
+		const raw = await readRaw(db);
+		if (!raw) {
+			// No run yet: a finished, empty one carrying the schedule.
+			const state: WarmState = {
+				...newWarmState("edit", new Date(now)),
+				phase: "done",
+				rewarmAfter: new Date(now + REWARM_DELAY_MS).toISOString(),
+				rewarmBy: new Date(now + REWARM_MAX_DELAY_MS).toISOString(),
+			};
+			const result = await db
+				.prepare("INSERT INTO options (name, value) VALUES (?, ?) ON CONFLICT(name) DO NOTHING")
+				.bind(WARM_STATE_OPTION, JSON.stringify(state))
+				.run();
+			if ((result.meta?.changes ?? 0) > 0) return state;
+			continue;
+		}
+		const state = parseState(raw);
+		if (!state || state.legacy) return null;
+		const by = state.rewarmBy ? Date.parse(state.rewarmBy) : now + REWARM_MAX_DELAY_MS;
+		const next: WarmState = { ...state, rewarmAfter: new Date(Math.min(now + REWARM_DELAY_MS, by)).toISOString(), rewarmBy: new Date(by).toISOString() };
+		if (await swap(db, raw, next)) return next;
+	}
+	return null;
+}
+
+/**
+ * Whether a progress row (as last read with the feature switches) may have
+ * work for a warm step: a run under way, or a rewarm that's due. True when
+ * unknown (undefined) or unreadable; false when there's no row.
+ */
+export function warmMayHaveWork(raw: string | null | undefined, now = Date.now()): boolean {
+	if (raw === undefined) return true;
+	if (raw === null) return false;
+	try {
+		const state = JSON.parse(raw) as { phase?: unknown; rewarmAfter?: unknown };
+		if (state.phase !== "done" && state.phase !== "failed") return true;
+		return typeof state.rewarmAfter === "string" && now >= Date.parse(state.rewarmAfter);
+	} catch {
+		return true;
+	}
 }
 
 // ── Claims (compare-and-swap on the progress row) ──
@@ -401,6 +492,15 @@ export async function claimWork(db: D1Database, batchSize: number, now = Date.no
 		state = raw ? parseState(raw) : null;
 	}
 	if (!raw || !state || state.legacy) return null;
+	if (state.rewarmAfter && now >= Date.parse(state.rewarmAfter)) {
+		// Content changed a minute ago: a new run (it supersedes one in progress; pages that
+		// one already warmed and nothing invalidated since are cache hits, so they cost little).
+		const fresh = newWarmState("edit", new Date(now));
+		if (!(await swap(db, raw, fresh))) return null;
+		await deleteQueue(db, { keep: fresh.generation }).catch((error) => console.error("coywolf-pack: could not clear old warm queues", error));
+		raw = JSON.stringify(fresh);
+		state = fresh;
+	}
 	if (state.phase === "collect") {
 		if (state.collectingAt && now - Date.parse(state.collectingAt) < COLLECT_STALE_MS) return null;
 		const next = { ...state, collectingAt: new Date(now).toISOString() };
@@ -409,7 +509,7 @@ export async function claimWork(db: D1Database, batchSize: number, now = Date.no
 	if (state.phase !== "warm") return null;
 	if (state.next >= state.total) return claimRevisit(db, raw, state, batchSize, now);
 	const end = Math.min(state.next + batchSize, state.total);
-	const next = { ...state, next: end };
+	const next = { ...state, next: end, claimedAt: new Date(now).toISOString() };
 	if (!(await swap(db, raw, next))) return null;
 	const urls = await queueSlice(db, state.generation, state.next, end);
 	// URLs whose row is gone count as failed, so the run still finishes.
@@ -425,7 +525,14 @@ export async function claimWork(db: D1Database, batchSize: number, now = Date.no
 async function claimRevisit(db: D1Database, raw: string, state: WarmState, batchSize: number, now: number): Promise<Claim> {
 	const list = state.revisit ?? [];
 	if (!list.length) {
-		if (state.revisitBusy && runFinished(state, now) && (await swap(db, raw, finished(state, now)))) await deleteQueue(db, state.generation).catch(() => undefined);
+		// A batch claimed long ago and never recorded (its isolate stopped, or its record lost every
+		// retry): its pages count as failed, so the run finishes and its URL rows go.
+		const missing = state.total - state.warmed - state.failed;
+		const lost = missing > 0 && now - Date.parse(state.claimedAt ?? state.startedAt) >= BATCH_STALE_MS ? missing : 0;
+		const settled = lost ? { ...state, failed: state.failed + lost } : state;
+		if ((lost || state.revisitBusy) && runFinished(settled, now) && (await swap(db, raw, finished(settled, now)))) {
+			await deleteQueue(db, { upTo: state.generation }).catch((error) => console.error("coywolf-pack: could not clear warm queues", error));
+		}
 		return null;
 	}
 	if (state.revisitAfter && now < Date.parse(state.revisitAfter)) return { kind: "wait", state, until: state.revisitAfter };
@@ -448,7 +555,7 @@ export async function finishCollect(db: D1Database, generation: string, urls: st
 		if (await swap(db, raw, next)) return;
 	}
 	// Superseded by a newer run (or never stored): don't leave its URLs behind.
-	if (urls.length) await deleteQueue(db, generation).catch(() => undefined);
+	if (urls.length) await deleteQueue(db, { run: generation }).catch(() => undefined);
 }
 
 /**
@@ -457,7 +564,10 @@ export async function finishCollect(db: D1Database, generation: string, urls: st
  */
 export async function recordBatch(db: D1Database, generation: string, warmed: number, failed: number, now = Date.now(), stopgap: string[] = []): Promise<void> {
 	await recordProgress(db, generation, now, (state) =>
-		addRevisits({ ...state, warmed: state.warmed + warmed, failed: state.failed + failed }, stopgap.map((url): [string, number] => [url, 0]), now),
+		// A run already finished (a lost batch's isolate recording late) keeps its counts.
+		state.phase === "warm"
+			? addRevisits({ ...state, warmed: state.warmed + warmed, failed: state.failed + failed }, stopgap.map((url): [string, number] => [url, 0]), now)
+			: null,
 	);
 }
 
@@ -505,7 +615,7 @@ async function recordProgress(db: D1Database, generation: string, now: number, u
 		const done = runFinished(next, now);
 		if (done) next = finished(next, now);
 		if (await swap(db, raw, next)) {
-			if (done) await deleteQueue(db, generation).catch(() => undefined);
+			if (done) await deleteQueue(db, { upTo: generation }).catch((error) => console.error("coywolf-pack: could not clear warm queues", error));
 			return;
 		}
 	}

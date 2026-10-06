@@ -139,3 +139,22 @@ export async function shortenStopgapPage(cache: RouteCache | undefined, response
 	}
 	return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
+
+/**
+ * Notice when the request clears cached pages by tag (EmDash does on content,
+ * menu, taxonomy, widget and site settings writes, and skips it for saves that
+ * don't change live content, such as draft autosaves): wraps this request's
+ * cache.invalidate. Astro gives the middleware and the route the same cache
+ * object. Returns a function telling whether it was called (and succeeded).
+ */
+export function watchInvalidation(cache: { invalidate?: (...args: unknown[]) => Promise<unknown> } | undefined): () => boolean {
+	let invalidated = false;
+	const original = cache?.invalidate;
+	if (!cache || typeof original !== "function") return () => false;
+	cache.invalidate = async (...args: unknown[]) => {
+		const result = await original.apply(cache, args);
+		invalidated = true;
+		return result;
+	};
+	return () => invalidated;
+}

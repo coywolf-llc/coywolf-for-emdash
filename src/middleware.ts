@@ -19,8 +19,8 @@ import { injectAdminEnhancements } from "./core/settings-enhance.js";
 import type { PackMiddleware } from "./core/module.js";
 import { MIDDLEWARE } from "./modules.js";
 import { ALWAYS, LIFETIME_DEFAULTS, LIFETIME_SETTINGS } from "./pageCache/pack.js";
-import { type PurgeScope, applyPageLifetime, purgePageCache, purgeScope, purgesAfter, shortenStopgapPage } from "./pageCache/lib.js";
-import { STOPGAP_HEADER, WARMER_AGENT, WARM_SETTING, WARM_STATE_OPTION, startWarm, warmStep } from "./pageCache/warm.js";
+import { type PurgeScope, applyPageLifetime, purgePageCache, purgeScope, purgesAfter, shortenStopgapPage, watchInvalidation } from "./pageCache/lib.js";
+import { STOPGAP_HEADER, WARMER_AGENT, WARM_SETTING, WARM_STATE_OPTION, scheduleRewarm, startWarm, warmMayHaveWork, warmStep } from "./pageCache/warm.js";
 import { prefetchRedirects } from "./redirects/middleware.js";
 import { notePackMiddleware } from "./search/live-serve.js";
 import { pendingPosterRenders, renderedPendingPoster } from "./videos/poster.js";
@@ -30,21 +30,14 @@ registerSiteOption(WARM_STATE_OPTION);
 
 /**
  * False when the progress row as last read with the switches says there's
- * nothing to warm (no run, or it's done or failed), so the request skips its
- * warming step and that step's read. A run started in another isolate is seen
- * on this isolate's next read of the switches (FEATURES_TTL_MS at most); one
- * started here is remembered at once. True when unknown.
+ * nothing to warm (no run, or it's done or failed, and no rewarm is due), so
+ * the request skips its warming step and that step's read. A run started (or
+ * rewarm scheduled) in another isolate is seen on this isolate's next read of
+ * the switches (FEATURES_TTL_MS at most); one started here is remembered at
+ * once. True when unknown.
  */
 function warmingMayHaveWork(): boolean {
-	const raw = siteOption(WARM_STATE_OPTION);
-	if (raw === undefined) return true;
-	if (raw === null) return false;
-	try {
-		const phase = (JSON.parse(raw) as { phase?: unknown }).phase;
-		return phase !== "done" && phase !== "failed";
-	} catch {
-		return true;
-	}
+	return warmMayHaveWork(siteOption(WARM_STATE_OPTION));
 }
 
 /** Start warming, and remember the new run in this isolate's copy of the progress row. */
@@ -107,6 +100,25 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 			}
 			return response;
 		}
+		// Content writes: EmDash clears the pages tagged with the collection (home page, archives, many
+		// posts). With warming on, a run starts a minute after the last such write (scheduleRewarm).
+		const method = context.request.method;
+		const invalidated =
+			method !== "GET" && method !== "HEAD" && context.url.pathname.startsWith("/_emdash/api/")
+				? watchInvalidation((context as unknown as { cache?: Parameters<typeof watchInvalidation>[0] }).cache)
+				: null;
+		const afterWrite = (response: Response): Response => {
+			if (invalidated?.() && response.status < 400 && db) {
+				waitUntil(
+					(async () => {
+						if (!(await siteSetting<boolean>(WARM_SETTING, options.database))) return;
+						const state = await scheduleRewarm(db);
+						if (state) rememberSiteOption(WARM_STATE_OPTION, JSON.stringify(state));
+					})().catch((error) => console.error("coywolf-pack: could not schedule cache warming", error)),
+				);
+			}
+			return response;
+		};
 		// Settings saved in another isolate reach every isolate within the switches' lifetime; pages
 		// rendered meanwhile may have used the old ones, so the first request after that purges once more.
 		if (db) {
@@ -180,7 +192,7 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 				context.request.headers.get("user-agent") === WARMER_AGENT ? STOPGAP_HEADER : undefined,
 			);
 		}
-		return next();
+		return afterWrite(await next());
 	};
 }
 
