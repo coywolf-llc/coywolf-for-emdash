@@ -45,10 +45,12 @@ interface WarmStatus {
 		reason: string;
 		/** Content changed: a new run starts after then. */
 		rewarmAfter?: string;
+		/** When the daily refresh starts the next run (ms). */
+		nextDailyAt?: number;
 	} | null;
 }
 
-const REASON: Record<string, string> = { deploy: "after a deploy", settings: "after a settings change", cleared: "after the cache was cleared", manual: "on request", edit: "after content edits" };
+const REASON: Record<string, string> = { deploy: "after a deploy", settings: "after a settings change", cleared: "after the cache was cleared", manual: "on request", edit: "after content edits", daily: "for the daily refresh" };
 
 function warmText(state: NonNullable<WarmStatus["state"]>): string {
 	const when = REASON[state.reason] ?? "";
@@ -63,6 +65,12 @@ function warmText(state: NonNullable<WarmStatus["state"]>): string {
 	if (state.phase === "failed") return state.error ?? "The last run failed.";
 	const at = state.finishedAt ? new Date(state.finishedAt).toLocaleString() : "";
 	return `Last run ${when}: ${state.warmed} of ${state.total} pages warmed${state.failed ? ` (${state.failed} didn't load)` : ""}${at ? `, finished ${at}` : ""}.`;
+}
+
+/** "Next daily refresh: about …" while idle (no run going, none scheduled after edits). */
+function dailyText(state: NonNullable<WarmStatus["state"]>): string | null {
+	if (state.phase !== "done" || state.rewarmAfter || !state.nextDailyAt) return null;
+	return `Next daily refresh: about ${new Date(state.nextDailyAt).toLocaleString()}.`;
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
@@ -243,7 +251,13 @@ export function PerformancePage() {
 					{warm?.enabled && (
 						<div className="flex flex-wrap items-center justify-between gap-4">
 							<p className="text-sm leading-5 text-kumo-subtle" aria-live="polite">
-								{warm.state ? warmText(warm.state) : "No run yet. It starts after the next deploy or full clear."}
+								{warm.state ? warmText(warm.state) : "No run yet. It starts with the next page visit."}
+								{warm.state && dailyText(warm.state) && (
+									<>
+										<br />
+										{dailyText(warm.state)}
+									</>
+								)}
 							</p>
 							<Button variant="secondary" icon={<Fire />} disabled={busy !== null || Boolean(running)} onClick={() => void warmNow()}>
 								{running ? "Warming…" : "Warm now"}

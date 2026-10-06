@@ -30,7 +30,7 @@ registerSiteOption(WARM_STATE_OPTION);
 
 /**
  * False when the progress row as last read with the switches says there's
- * nothing to warm (no run, or it's done or failed, and no rewarm is due), so
+ * nothing to warm (the run is done or failed, and no rewarm or daily refresh is due), so
  * the request skips its warming step and that step's read. A run started (or
  * rewarm scheduled) in another isolate is seen on this isolate's next read of
  * the switches (FEATURES_TTL_MS at most); one started here is remembered at
