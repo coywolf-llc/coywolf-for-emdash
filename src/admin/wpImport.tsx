@@ -272,7 +272,7 @@ function PrepareStep({ onWxr }: { onWxr: (info: WxrInfo) => void }) {
 			{result && (
 				<div className="space-y-3" role="status">
 					<p className="text-sm">
-						{plural(result.posts.length, "entry", "entries")} changed. “→ anchor” keeps a heading id, “→ inlined” puts a reusable block's content in
+						{plural(result.posts.length, "entry", "entries")} changed. “→ anchor” keeps a heading id, “→ caption” keeps a table's caption, “→ inlined” puts a reusable block's content in
 						place, “→ details”, “→ note”, “→ quote”, “→ disclosure”, “→ testimonial” and “→ podcast” become Custom Blocks, “→ html” keeps content as an
 						HTML block, “→ flag” leaves an empty marker for the theme, and “→ removed” rendered nothing on WordPress.
 						{result.guestAuthors.length ? ` ${plural(postCredits(result.guestAuthors).length, "post has", "posts have")} co-authors or guest authors: credit them in step 3 after importing.` : ""}

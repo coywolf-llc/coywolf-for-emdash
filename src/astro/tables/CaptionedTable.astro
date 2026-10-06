@@ -1,0 +1,32 @@
+---
+/**
+ * EmDash's table, plus its caption: tables imported from WordPress keep their
+ * <figcaption> as a `caption` field on the table block (WordPress import
+ * module; EmDash's editor keeps the field when it saves). With a caption the
+ * table is wrapped in <figure class="cw-table"> with a <figcaption>; without
+ * one it renders EmDash's table as is.
+ *
+ * Opt in from the theme, for the Portable Text it renders:
+ *
+ *   import { CaptionedTable } from "@coywolf/emdash/astro";
+ *   <PortableText value={value} components={{ type: { table: CaptionedTable } }} />
+ */
+import { emdashComponents } from "emdash/ui";
+
+interface Props {
+	node: { caption?: unknown };
+}
+
+const { node } = Astro.props;
+const Table = emdashComponents.type.table;
+const caption = typeof node?.caption === "string" ? node.caption.trim() : "";
+---
+
+{caption ? (
+	<figure class="cw-table">
+		<Table node={node} />
+		<figcaption>{caption}</figcaption>
+	</figure>
+) : (
+	<Table node={node} />
+)}
