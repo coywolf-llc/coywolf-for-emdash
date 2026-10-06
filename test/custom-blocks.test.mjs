@@ -310,6 +310,13 @@ test("testimonial: figure, blockquote and figcaption; fields escaped; unsafe lin
 	assert.equal(R.renderTestimonialHtml(R.normalizeTestimonial({ quote: "Just this." })), '<figure class="cw-testimonial"><blockquote class="cw-testimonial__quote"><p>Just this.</p></blockquote></figure>');
 	// media_picker values may be objects with a url; site-relative works too.
 	assert.equal(R.normalizeTestimonial({ quote: "q", photo: { url: "/_emdash/api/media/file/a.jpg" } }).photo, "/_emdash/api/media/file/a.jpg");
+	assert.match(
+		R.renderTestimonialHtml({ ...R.normalizeTestimonial({ quote: "q", photo: "/_emdash/api/media/file/a.jpg" }) }, { src: "https://m.x/s/64x64/a.jpg", srcset: "https://m.x/s/64x64/a.jpg 1x, https://m.x/s/128x128/a.jpg 2x" }),
+		/<img class="cw-testimonial__photo" src="https:\/\/m\.x\/s\/64x64\/a\.jpg" srcset="https:\/\/m\.x\/s\/64x64\/a\.jpg 1x, https:\/\/m\.x\/s\/128x128\/a\.jpg 2x" alt=""/,
+		"resized copies when the caller has them",
+	);
+	assert.match(R.renderTestimonialHtml(R.normalizeTestimonial({ quote: "q", photo: "/_emdash/api/media/file/a.jpg" }), null), /src="\/_emdash\/api\/media\/file\/a\.jpg" alt=""/, "else the original");
+
 	assert.equal(R.normalizeTestimonial({ quote: "q", photo: "//evil.example/a.jpg" }).photo, "");
 	assert.equal(R.normalizeTestimonial({ quote: "q", photo: 'https://x.com/a.jpg" onerror="x' }).photo, "", "no spaces or quotes in URLs");
 	assert.match(R.CUSTOM_BLOCKS_CSS, /\.cw-testimonial \.cw-testimonial__quote>:first-child::before\{content:"\\201C";content:"\\201C"\/""\}/);
