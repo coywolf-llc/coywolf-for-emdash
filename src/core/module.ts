@@ -96,5 +96,7 @@ export interface PackModule {
 export interface PackMiddleware {
 	module: string;
 	feature: string;
+	/** Sets its own edge caching (context.cache) on the responses it returns; others' are never edge-cached. */
+	ownsCache?: boolean;
 	handle: (context: Parameters<MiddlewareHandler>[0], env: Record<string, unknown>, waitUntil: (p: Promise<unknown>) => void) => Promise<Response | undefined> | Response | undefined;
 }

@@ -7,8 +7,16 @@
  * generation, see src/core/generation.ts), or after `cacheSeconds`. Reading
  * never writes: the table is created by the first admin write. Hits are
  * counted after the response is sent.
+ *
+ * With Astro's cacheCloudflare() provider, GET and HEAD redirects are kept in
+ * the edge cache (Workers Cache) for 30 days, tagged REDIRECTS_TAG; any
+ * redirect edit purges that tag (src/pageCache/lib.ts purgeScope). Repeats
+ * served from the cache don't reach the Worker, so they aren't counted as hits.
  */
+import type { MiddlewareHandler } from "astro";
+
 import { isCurrent, settingsEpoch } from "../core/features.js";
+import { REDIRECTS_TAG } from "../pageCache/lib.js";
 import { type CompiledRules, compile, findExactRule, loadPatternRules, match, recordHit } from "./rules.js";
 
 export interface CoywolfRedirectsOptions {
@@ -78,12 +86,16 @@ export function prefetchRedirects(url: URL, env: Record<string, unknown>, option
 	rulesFor(url, db, ttlOf(options)).catch(() => undefined);
 }
 
-/** Answer a request from the redirect rules, or return undefined to pass it on. */
+/**
+ * Answer a request from the redirect rules, or return undefined to pass it on.
+ * `edge`: the response will be kept in the edge cache (see serveCachedRedirect).
+ */
 export async function serveRedirect(
 	url: URL,
 	env: Record<string, unknown>,
 	waitUntil: (p: Promise<unknown>) => void,
 	options: CoywolfRedirectsOptions = {},
+	edge = false,
 ): Promise<Response | undefined> {
 	const { pathname, search } = url;
 	if (SKIP.test(pathname)) return undefined;
@@ -103,11 +115,10 @@ export async function serveRedirect(
 
 	waitUntil(recordHit(db, found.rule.id).catch(() => undefined));
 
-	// Browsers may keep a redirect for an hour, but an edge cache in front of the
-	// Worker (Workers Cache) must not, or hits would stop being counted. "private"
-	// is what makes shared caches skip it (Cloudflare-CDN-Cache-Control: no-store
-	// didn't stop Workers Cache from storing redirects).
-	const caching = { "Cache-Control": "private, max-age=3600" };
+	// Browsers may keep a redirect for an hour. Unless it goes in the edge cache
+	// (whose lifetime Astro sets in Cloudflare-CDN-Cache-Control), "private" keeps
+	// Workers Cache from storing it untagged, where an edit couldn't clear it.
+	const caching = { "Cache-Control": edge ? "max-age=3600" : "private, max-age=3600" };
 	if (found.rule.type === 410) return new Response("Gone", { status: 410, headers: caching });
 	let location = found.location;
 	if (location.startsWith("/")) {
@@ -115,7 +126,41 @@ export async function serveRedirect(
 		// second check that a site-relative destination never resolves off-site.
 		const resolved = new URL(location, url);
 		if (resolved.origin !== url.origin) return undefined;
-		location = resolved.href;
+		// The edge cache is shared by every hostname the Worker answers (it's keyed by
+		// path and query), so a cached redirect stays on whichever host was asked.
+		location = edge ? resolved.pathname + resolved.search + resolved.hash : resolved.href;
 	}
 	return new Response(null, { status: found.rule.type, headers: { Location: location, ...caching } });
+}
+
+/** Astro's per-request cache controls (route caching), as far as redirects use them. */
+interface RouteCache {
+	enabled?: boolean;
+	set(options: { maxAge?: number; tags?: string[] } | false): void;
+}
+
+/** How long the edge cache keeps a redirect: until an edit purges it, or 30 days. */
+export const REDIRECT_EDGE_MAX_AGE = 30 * 86400;
+
+/**
+ * The pack middleware's redirect handler: serveRedirect, and for GET and HEAD
+ * with Astro route caching on, the edge lifetime and tag (replacing any the
+ * site's route rules gave the request). Astro sends them as
+ * Cloudflare-CDN-Cache-Control and Cache-Tag, which Cloudflare strips before
+ * the response reaches the browser.
+ */
+export async function serveCachedRedirect(
+	context: Parameters<MiddlewareHandler>[0],
+	env: Record<string, unknown>,
+	waitUntil: (p: Promise<unknown>) => void,
+): Promise<Response | undefined> {
+	const cache = (context as unknown as { cache?: RouteCache }).cache;
+	const method = context.request.method;
+	const edge = Boolean(cache?.enabled) && (method === "GET" || method === "HEAD");
+	const response = await serveRedirect(context.url, env, waitUntil, {}, edge);
+	if (response && edge) {
+		cache!.set(false);
+		cache!.set({ maxAge: REDIRECT_EDGE_MAX_AGE, tags: [REDIRECTS_TAG] });
+	}
+	return response;
 }

@@ -168,11 +168,10 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 			try {
 				const response = await handler.handle(context, env, waitUntil);
 				if (response) {
-					// The pack's own responses (redirects, robots.txt, files…) set their own
-					// Cache-Control. Without this, a site route rule (e.g. on a catch-all page
-					// route) would add its edge lifetime to them too, so redirects would be
-					// cached and stop counting hits.
-					(context as unknown as { cache?: { set?(options: false): void } }).cache?.set?.(false);
+					// The pack's own responses (robots.txt, files…) set their own Cache-Control.
+					// Without this, a site route rule (e.g. on a catch-all page route) would add
+					// its edge lifetime to them too. Redirects set their own edge caching.
+					if (!handler.ownsCache) (context as unknown as { cache?: { set?(options: false): void } }).cache?.set?.(false);
 					return response;
 				}
 			} catch (error) {

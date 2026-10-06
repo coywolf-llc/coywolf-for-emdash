@@ -367,7 +367,9 @@ export function RedirectsPage() {
 						<div className="w-6" />
 						<div className="min-w-0 flex-1">Destination</div>
 						<div className="w-14 text-center">Code</div>
-						<div className="hidden w-16 text-end md:block">Hits</div>
+						<div className="hidden w-16 text-end md:block" title="Requests the site's Worker answered; repeats served from the edge cache aren't counted">
+							Hits
+						</div>
 						<div className="hidden w-28 lg:block">Last hit</div>
 						<div className="w-10" />
 					</div>
@@ -435,6 +437,12 @@ export function RedirectsPage() {
 					{visible.length === 0 && <p className="px-4 py-6 text-center text-sm text-kumo-subtle">No redirects match.</p>}
 				</div>
 			) : null}
+			{rules && rules.length > 0 && (
+				<p className="text-sm text-kumo-subtle">
+					Hits count requests the site's Worker answered. With the page cache on, redirects are cached at the edge (and cleared when you
+					change them), so repeats served from the cache aren't counted.
+				</p>
+			)}
 
 			<RuleDialog
 				rule={editing}

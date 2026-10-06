@@ -252,6 +252,8 @@ test("a save keeps a settling purge still pending from an earlier one", async ()
 	assert.deepEqual(row.settle, { purgeEverything: true });
 	assert.deepEqual(mergeScopes({ pathPrefixes: ["/a"] }, { pathPrefixes: ["/b", "/a"] }), { pathPrefixes: ["/a", "/b"] });
 	assert.deepEqual(mergeScopes(null, { pathPrefixes: ["/a"] }), { pathPrefixes: ["/a"] });
+	assert.deepEqual(mergeScopes({ tags: ["coywolf-redirects"] }, { tags: ["coywolf-redirects"] }), { tags: ["coywolf-redirects"] });
+	assert.deepEqual(mergeScopes({ tags: ["coywolf-redirects"] }, { pathPrefixes: ["/robots.txt"] }), { purgeEverything: true });
 });
 
 // ── Redirects ────────────────────────────────────────────────────

@@ -1,8 +1,19 @@
 // Run: node --test test/redirects.test.mjs
 import "./ts-resolve.mjs";
+import { registerHooks } from "node:module";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+
+// Workers Cache's purge, as cloudflare:workers exposes it.
+registerHooks({
+	resolve(specifier, context, next) {
+		if (specifier === "cloudflare:workers") {
+			return { url: "data:text/javascript,export const cache = { purge: (o) => globalThis.__purge(o) };", shortCircuit: true };
+		}
+		return next(specifier, context);
+	},
+});
 
 const { compile, match, listRules, saveRule } = await import("../src/redirects/rules.ts");
 const { serveRedirect, invalidateRedirectCache } = await import("../src/redirects/middleware.ts");
@@ -230,4 +241,76 @@ test("serving from a database without the table: no rules, no error, no CREATE",
 	assert.equal(await serve(db, "https://example.com/old"), undefined);
 	assert.ok(!db.log.some((q) => /CREATE/i.test(q.sql)));
 	invalidateRedirectCache();
+});
+
+// ── Edge caching (Workers Cache through Astro's route caching) ──
+
+const { serveCachedRedirect, REDIRECT_EDGE_MAX_AGE } = await import("../src/redirects/middleware.ts");
+const { REDIRECTS_TAG, purgeScope, purgePageCache } = await import("../src/pageCache/lib.ts");
+const { redirectsMiddleware } = await import("../src/redirects/pack.ts");
+
+/** Astro's per-request cache, recording what's set. */
+function routeCache(enabled = true) {
+	const calls = [];
+	return { enabled, calls, set: (options) => calls.push(options) };
+}
+
+async function serveWith(db, href, { method = "GET", cache = routeCache() } = {}) {
+	const hits = [];
+	const context = { url: new URL(href), request: new Request(href, { method }), cache };
+	const res = await serveCachedRedirect(context, { DB: db }, (p) => hits.push(p));
+	await Promise.all(hits);
+	return { res, cache };
+}
+
+test("GET and HEAD redirects go in the edge cache, tagged; browsers keep them an hour", async () => {
+	const db = await seeded();
+	for (const method of ["GET", "HEAD"]) {
+		const { res, cache } = await serveWith(db, "https://example.com/old?x=1", { method });
+		assert.equal(res.status, 301);
+		// Site-relative: the edge cache is shared by every hostname the Worker answers.
+		assert.equal(res.headers.get("Location"), "/new?x=1");
+		assert.equal(res.headers.get("Cache-Control"), "max-age=3600");
+		// Any lifetime a site route rule gave the request is dropped first.
+		assert.deepEqual(cache.calls, [false, { maxAge: REDIRECT_EDGE_MAX_AGE, tags: [REDIRECTS_TAG] }]);
+	}
+	const gone = await serveWith(db, "https://example.com/gone");
+	assert.equal(gone.res.status, 410);
+	assert.equal(gone.res.headers.get("Cache-Control"), "max-age=3600");
+	assert.equal(gone.cache.calls.length, 2);
+	const pattern = await serveWith(db, "https://example.com/a/42");
+	assert.equal(pattern.res.headers.get("Location"), "/later-pattern");
+	assert.ok(redirectsMiddleware.ownsCache, "the pack middleware leaves the redirect's caching alone");
+	invalidateRedirectCache();
+});
+
+test("other methods, no route caching, and pages are never edge-cached by redirects", async () => {
+	const db = await seeded();
+	const post = await serveWith(db, "https://example.com/old", { method: "POST" });
+	assert.equal(post.res.status, 301);
+	assert.equal(post.res.headers.get("Cache-Control"), "private, max-age=3600");
+	assert.equal(post.res.headers.get("Location"), "https://example.com/new");
+	assert.deepEqual(post.cache.calls, []);
+	const off = await serveWith(db, "https://example.com/old", { cache: routeCache(false) });
+	assert.equal(off.res.headers.get("Cache-Control"), "private, max-age=3600");
+	assert.deepEqual(off.cache.calls, []);
+	const page = await serveWith(db, "https://example.com/not-redirected");
+	assert.equal(page.res, undefined);
+	assert.deepEqual(page.cache.calls, [], "a page keeps the site's route caching");
+	const admin = await serveWith(db, "https://example.com/_emdash/api/plugins/coywolf-pack/redirects/list");
+	assert.equal(admin.res, undefined);
+	assert.deepEqual(admin.cache.calls, []);
+	invalidateRedirectCache();
+});
+
+test("redirect changes purge the redirects tag; lookups purge nothing", async () => {
+	const API = "/_emdash/api/plugins/coywolf-pack/";
+	for (const route of ["redirects/save", "redirects/delete", "redirects/import", "redirects/removed/resolve", "backups/rewind", "backups/undo"]) {
+		assert.deepEqual(purgeScope(API + route), { tags: [REDIRECTS_TAG] }, route);
+	}
+	for (const route of ["redirects/list", "redirects/test", "redirects/removed", "backups/run"]) assert.equal(purgeScope(API + route), null, route);
+	const purged = [];
+	globalThis.__purge = (options) => (purged.push(options), Promise.resolve({ success: true }));
+	assert.equal(await purgePageCache(purgeScope(API + "redirects/save")), true);
+	assert.deepEqual(purged, [{ tags: ["coywolf-redirects"] }]);
 });
