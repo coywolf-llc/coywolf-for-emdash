@@ -12,6 +12,7 @@
  *    resized by the Images binding, cached at the edge for a year. With a
  *    media host set, these old URLs 301 to the media host.
  */
+import { batchedAll } from "../core/d1-batch.js";
 import { registerFeatures, siteFeatureOn } from "../core/features.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { CLOUDFLARE_API_HOST } from "./cloudflare.js";
@@ -132,10 +133,11 @@ export async function imageDimensions(srcs: Iterable<string | null | undefined>,
 	// D1 allows at most 100 bound parameters per query.
 	for (let i = 0; i < keys.length; i += 90) {
 		const batch = keys.slice(i, i + 90);
-		const { results } = await db
-			.prepare(`SELECT storage_key, width, height FROM media WHERE storage_key IN (${batch.map(() => "?").join(",")})`)
-			.bind(...batch)
-			.all<{ storage_key: string; width: number | null; height: number | null }>();
+		// With the page's other pack reads of this tick (one D1 batch).
+		const results = await batchedAll<{ storage_key: string; width: number | null; height: number | null }>(
+			db,
+			db.prepare(`SELECT storage_key, width, height FROM media WHERE storage_key IN (${batch.map(() => "?").join(",")})`).bind(...batch),
+		);
 		const found = new Map(results.map((r) => [r.storage_key, r.width && r.height ? { width: r.width, height: r.height } : null]));
 		if (dimensionCache.size > 5000) dimensionCache.clear();
 		for (const key of batch) {

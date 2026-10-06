@@ -3,10 +3,18 @@
  * Features admin page; the choices are one plugin setting ("features", an
  * object of id → boolean). Hooks and routes read it through the plugin
  * context; middleware and Astro block renderers, which run outside it, read
- * the same option row from D1 with a short per-isolate cache.
+ * the same option row from D1 with a per-isolate cache (five minutes).
+ *
+ * That one query also reads every registered site setting and a few pack
+ * option rows (the settings generation, the deployed version), so the
+ * settings a page render needs cost no query of their own. A save through
+ * the pack's admin routes clears this isolate's cache at once and records a
+ * new settings generation; other isolates see it on their next read and drop
+ * every cache keyed on settingsEpoch() (see src/core/generation.ts).
  */
 import type { FeatureDef } from "./module.js";
 import { workerEnv } from "../shared.js";
+import { batchedAll } from "./d1-batch.js";
 
 export const PLUGIN_ID = "coywolf-pack";
 export const FEATURES_SETTING = "features";
@@ -115,16 +123,78 @@ export async function requireCachedFeature(ctx: SettingsCtx, id: string): Promis
 
 // ── Outside the plugin context (middleware, Astro components) ────
 
-const TTL_MS = 30_000;
+/** How long this isolate trusts its read of the switches, settings and generation. */
+export const FEATURES_TTL_MS = 5 * 60_000;
+const TTL_MS = FEATURES_TTL_MS;
 /**
  * `settings` is set when the read came from D1 (siteFeatures), which also
- * reads the registered settings; `keys` are the settings that read asked for.
+ * reads the registered settings; `keys` are the settings that read asked for;
+ * `options` are the raw values of the registered option rows (registerSiteOption).
  */
-let cached: { features: FeatureMap; at: number; settings?: Map<string, unknown>; keys?: Set<string> } | null = null;
+let cached: { features: FeatureMap; at: number; settings?: Map<string, unknown>; keys?: Set<string>; options?: Map<string, string> } | null = null;
 /** A D1 read in progress: concurrent cache misses in this isolate share it. */
 let reading: Promise<SiteOptions> | null = null;
 /** Bumped by invalidateFeatures, so a read that started before a save isn't cached. */
 let generation = 0;
+
+/**
+ * Bumped whenever settings may have changed: a save in this isolate
+ * (invalidateFeatures) or a new settings generation seen in D1 (a save in
+ * another isolate). Per-isolate caches of settings-derived data store the
+ * epoch they were read at and are dropped when it moves (isCurrent).
+ */
+let epoch = 0;
+export function settingsEpoch(): number {
+	return epoch;
+}
+
+/** A per-isolate cache entry is usable while the settings epoch hasn't moved and it's younger than `maxAgeMs`. */
+export function isCurrent(entry: { epoch: number; at: number } | null | undefined, maxAgeMs: number): boolean {
+	return Boolean(entry && entry.epoch === epoch && Date.now() - entry.at < maxAgeMs);
+}
+
+/**
+ * Settings read on most page renders, registered up front so the first read
+ * of an isolate already includes them (a key registered after that read costs
+ * a second query). Modules still call registerSiteSetting for their own keys.
+ */
+const PRELOADED_SETTINGS = [
+	// Content blocks, Headings, Breadcrumbs (+ its legacy key), Code blocks, Reviews.
+	"contentBlocks",
+	"customBlocksPodcast",
+	"headings",
+	"breadcrumbs",
+	"codeBlocksTheme",
+	"reviewsStyle",
+	// Clean image URLs, Page cache, Search, Videos posters.
+	"imagesMediaHost",
+	"pageCacheMaxAgeDays",
+	"pageCacheRefreshDays",
+	"pageCacheWarm",
+	"searchVersion",
+	"videosMirroredPosters",
+	// Coywolf Files.
+	"filesBase",
+	"filesPublicBaseUrl",
+	"filesScheme",
+	"filesAccent",
+	// Schema & Social (src/schema/module.ts schemaSettingsSchema).
+	"schemaSearchUrl",
+	"schemaAuthorUrlPattern",
+	"schemaBreadcrumbHome",
+	"schemaRobotsMaxImage",
+	"schemaRobotsMaxSnippet",
+	"schemaRobotsMaxVideo",
+	"schemaRobotsNofollow",
+	"schemaOgLocale",
+	// Videos player settings (src/videos/store.ts publicConfig).
+	"videosCustomerSubdomain",
+	"videosAccentColor",
+	"videosBackgroundColor",
+	"videosLightEmbed",
+	// Discovery.
+	"discoverySettings",
+];
 
 /**
  * Other plugin settings read in the same query as the switches, sharing
@@ -132,9 +202,15 @@ let generation = 0;
  * need them on every request add no query (e.g. the search content version,
  * the code block theme, the review style).
  */
-const siteSettingKeys = new Set<string>();
+const siteSettingKeys = new Set<string>(PRELOADED_SETTINGS);
 export function registerSiteSetting(key: string): void {
 	siteSettingKeys.add(key);
+}
+
+/** Whole option rows (not plugin settings) read in the same query, raw (see siteOption). */
+const siteOptionNames = new Set<string>();
+export function registerSiteOption(name: string): void {
+	siteOptionNames.add(name);
 }
 
 const settingOption = (key: string) => `plugin:${PLUGIN_ID}:settings:${key}`;
@@ -144,7 +220,14 @@ export function invalidateFeatures(): void {
 	cached = null;
 	reading = null;
 	generation++;
+	epoch++;
 }
+
+/** The option row last read for the settings generation, to notice saves made in other isolates. */
+let lastGeneration: string | null | undefined;
+/** Name of the settings-generation row (written by src/core/generation.ts). */
+export const GENERATION_OPTION = `plugin:${PLUGIN_ID}:state:settingsGeneration`;
+registerSiteOption(GENERATION_OPTION);
 
 /** Read the switches straight from D1. Fails closed (all off) if the database can't be read. */
 export async function siteFeatures(database = "DB"): Promise<FeatureMap> {
@@ -177,22 +260,21 @@ function readSiteOptions(database: Database): Promise<SiteOptions> {
 async function queryOptions(database: Database): Promise<SiteOptions> {
 	let stored: FeatureMap | null = null;
 	const settings = new Map<string, unknown>();
+	const options = new Map<string, string>();
 	const keys = new Set(siteSettingKeys);
+	const optionNames = new Set(siteOptionNames);
 	const started = generation;
 	try {
 		const db = typeof database === "string" ? ((await workerEnv())[database] as D1Database | undefined) : database;
-		const names = [OPTION_NAME, ...[...keys].map(settingOption)];
+		const names = [OPTION_NAME, ...[...keys].map(settingOption), ...optionNames];
+		// With the pack's other reads of this tick (on a cold isolate, the redirect rules): one D1 batch.
 		const rows = db
-			? (
-					await db
-						.prepare(`SELECT name, value FROM options WHERE name IN (${names.map(() => "?").join(",")})`)
-						.bind(...names)
-						.all<{ name: string; value: string }>()
-				).results
+			? await batchedAll<{ name: string; value: string }>(db, db.prepare(`SELECT name, value FROM options WHERE name IN (${names.map(() => "?").join(",")})`).bind(...names))
 			: [];
 		for (const row of rows) {
 			if (!row.value) continue;
-			if (row.name === OPTION_NAME) stored = JSON.parse(row.value) as FeatureMap;
+			if (optionNames.has(row.name)) options.set(row.name, row.value);
+			else if (row.name === OPTION_NAME) stored = JSON.parse(row.value) as FeatureMap;
 			else {
 				try {
 					settings.set(row.name.slice(settingOption("").length), JSON.parse(row.value));
@@ -206,9 +288,42 @@ async function queryOptions(database: Database): Promise<SiteOptions> {
 		return { features: resolveFeatures({}), settings, keys, ok: false };
 	}
 	const features = remember(resolveFeatures(stored));
+	// A save in another isolate since the last read: drop this isolate's settings-derived caches.
+	const seen = options.get(GENERATION_OPTION) ?? null;
+	if (lastGeneration !== undefined && seen !== lastGeneration && savedGeneration(seen) !== savedGeneration(lastGeneration)) epoch++;
+	lastGeneration = seen;
 	// A save in this isolate while the query ran (invalidateFeatures) makes this read stale: don't cache it.
-	if (generation === started) cached = { features, at: Date.now(), settings, keys };
+	if (generation === started) cached = { features, at: Date.now(), settings, keys, options };
 	return { features, settings, keys, ok: true };
+}
+
+/** The generation id in a settings-generation row ("settled" changes don't count as a new save). */
+function savedGeneration(raw: string | null | undefined): string | null {
+	if (!raw) return null;
+	try {
+		const value = JSON.parse(raw) as { id?: unknown };
+		return typeof value?.id === "string" ? value.id : raw;
+	} catch {
+		return raw;
+	}
+}
+
+/**
+ * A registered option row (registerSiteOption) from the last read of this
+ * isolate, raw. Undefined when there's no current read with it (call
+ * siteFeatures first); null when the row doesn't exist.
+ */
+export function siteOption(name: string): string | null | undefined {
+	if (!cached?.options || Date.now() - cached.at >= TTL_MS) return undefined;
+	return cached.options.get(name) ?? null;
+}
+
+/** Update a registered option row in this isolate's cache after writing it. */
+export function rememberSiteOption(name: string, raw: string | null): void {
+	if (!cached?.options) return;
+	if (raw === null) cached.options.delete(name);
+	else cached.options.set(name, raw);
+	if (name === GENERATION_OPTION) lastGeneration = raw;
 }
 
 /**
@@ -240,7 +355,7 @@ export async function readSiteSetting<T = unknown>(key: string, database: Databa
 	return settings ? { value: (settings.get(key) as T | undefined) ?? null } : null;
 }
 
-/** Update a registered setting in this isolate's cache after writing it (other isolates see it within 30 seconds). */
+/** Update a registered setting in this isolate's cache after writing it (other isolates see it within FEATURES_TTL_MS). */
 export function rememberSiteSetting(key: string, value: unknown): void {
 	cached?.settings?.set(key, value);
 }

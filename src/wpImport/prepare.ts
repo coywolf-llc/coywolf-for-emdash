@@ -16,6 +16,8 @@
  *   the reference);
  * - core Details blocks (EmDash would drop the summary) into markers that
  *   become Details blocks;
+ * - core Table captions (EmDash would drop the <figcaption>) into a marker
+ *   after the table, which becomes the table's `caption` field;
  * - WordPress's &#91; (and bold markup) inside code blocks, which would
  *   otherwise show up as literal text;
  * - Yoast's related links into Custom HTML with the markup WordPress
@@ -52,7 +54,7 @@ import { type GBlock, blockHtml, htmlBlock, parseBlocks, serializeBlocks } from 
 import { type GuestAuthor, wxrGuestAuthors } from "./guests.js";
 import { escapeAttr, markerHtml, parseMarker } from "./markers.js";
 import { type WxrCategory, type WxrPage, wxrCategories, wxrPages } from "./parents.js";
-import { hasStreamPlayer, parseStreamEmbed } from "./stream.js";
+import { decodeHtml, hasStreamPlayer, parseStreamEmbed } from "./stream.js";
 
 export interface PrepareOptions {
 	/** WordPress attachment id → URL (from the WXR), for testimonial headshots. */
@@ -83,6 +85,8 @@ export type PrepareAction =
 	| "anchor"
 	| "note"
 	| "details"
+	/** A table's caption (EmDash drops it), kept in a marker after the table. */
+	| "caption"
 	| "quote"
 	| "disclosure"
 	| "testimonial"
@@ -347,6 +351,19 @@ function replacement(block: GBlock, opts: PrepareOptions): { blocks: GBlock[]; a
 
 const isBlank = (b: GBlock) => b.name === null && !b.innerHTML.trim();
 
+/**
+ * A core Table block's caption (its <figcaption>), as plain text: tags
+ * dropped (a line break becomes a space), entities decoded. Empty when it has
+ * none.
+ */
+export function tableCaption(html: string): string {
+	const m = html.match(/<figcaption\b[^>]*>([\s\S]*?)<\/figcaption>/i);
+	if (!m) return "";
+	return decodeHtml((m[1] as string).replace(/<br\s*\/?>/gi, " ").replace(/<[^>]*>/g, ""))
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
 /** Transform one list of sibling blocks. Returns, for each original block, what replaces it. */
 function transformList(list: GBlock[], opts: PrepareOptions, counts: PrepareCounts): GBlock[][] {
 	const out: GBlock[][] = list.map((b) => [b]);
@@ -392,6 +409,18 @@ function transformList(list: GBlock[], opts: PrepareOptions, counts: PrepareCoun
 			if (id && !marked) {
 				out[i] = [WRAP(markerHtml("anchor", { id })), block];
 				count(block.name, "anchor");
+			}
+			continue;
+		}
+		if (block.name === "core/table") {
+			// EmDash's converter keeps the rows but drops the caption: a marker after the table carries it.
+			const caption = tableCaption(block.innerHTML);
+			let k = i + 1;
+			while (k < list.length && isBlank(list[k] as GBlock)) k++;
+			const next = k < list.length ? parseMarker((list[k] as GBlock).innerHTML.trim()) : null;
+			if (caption && next?.name !== "table-caption") {
+				out[i] = [block, WRAP(markerHtml("table-caption", { caption }, `<p>${escapeAttr(caption)}</p>`))];
+				count(block.name, "caption");
 			}
 			continue;
 		}

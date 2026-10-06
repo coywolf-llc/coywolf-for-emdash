@@ -39,6 +39,7 @@ function fakeCtx(log, stats = { inFlight: 0, most: 0 }) {
 	const store = (name, rows) => ({
 		get: (id) => later(`${name}.get:${id}`, rows[id] ?? null),
 		getMany: (ids) => later(`${name}.getMany:${ids.join(",")}`, new Map(ids.filter((id) => rows[id]).map((id) => [id, rows[id]]))),
+		query: () => later(`${name}.query`, { items: Object.entries(rows).map(([id, data]) => ({ id, data })), hasMore: false }),
 	});
 	return {
 		site: { url: ORIGIN, name: "Example", locale: "en-US" },
@@ -120,4 +121,27 @@ test("page:metadata runs independent reads at once", async () => {
 	await schemaContributions(fakeCtx([], stats), page, {}, features);
 	// The entry override, credited bylines and AI entities row are read together (one after another before).
 	assert.ok(stats.most >= 3, `at most ${stats.most} reads at once`);
+});
+
+test("a theme that passes the entry (page.coywolf.entry) saves the bylines and content reads, same output", async () => {
+	invalidateSchemaConfig();
+	const log = [];
+	const themed = {
+		...page,
+		coywolf: { ...page.coywolf, entry: { id: "my-post", data: { id: "e1", bylines: [{ byline: bylines.b1 }, { byline: bylines.b2 }], content: [] } } },
+	};
+	const out = await schemaContributions(fakeCtx(log), themed, {}, features);
+	assert.equal(`${JSON.stringify(out, null, "\t")}\n`, readFileSync(FIXTURE, "utf8"));
+	assert.ok(!log.some((l) => l.startsWith("bylines.getEntriesBylines") || l.startsWith("content.get")), log.join("\n"));
+	// Author rows come from the cached config (one query for all of them), not a read per page.
+	assert.ok(!log.some((l) => l.startsWith("schemaAuthors.getMany")), log.join("\n"));
+});
+
+test("an entry passed for another page is ignored (its bylines aren't used)", async () => {
+	invalidateSchemaConfig();
+	const log = [];
+	const other = { ...page, coywolf: { ...page.coywolf, entry: { data: { id: "someone-else", bylines: [] } } } };
+	const out = await schemaContributions(fakeCtx(log), other, {}, features);
+	assert.equal(`${JSON.stringify(out, null, "\t")}\n`, readFileSync(FIXTURE, "utf8"));
+	assert.ok(log.some((l) => l.startsWith("bylines.getEntriesBylines")));
 });

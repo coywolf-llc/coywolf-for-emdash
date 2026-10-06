@@ -237,7 +237,7 @@ export async function hostedPosterImage(
 			list: async (key) => {
 				if (!db) return;
 				await listPoster(db, key);
-				// This isolate sees it now; others when their settings cache refreshes (30 s).
+				// This isolate sees it now; others when their settings cache refreshes (FEATURES_TTL_MS).
 				const current = (await siteSetting<unknown>(POSTERS_SETTING)) ?? [];
 				if (Array.isArray(current) && !current.includes(key)) rememberSiteSetting(POSTERS_SETTING, [...current, key]);
 			},

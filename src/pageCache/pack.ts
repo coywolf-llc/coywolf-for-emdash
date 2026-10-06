@@ -1,14 +1,14 @@
 import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
-import { registerSiteSetting, rememberSiteSetting, siteFeatureOn, siteSetting } from "../core/features.js";
+import { registerSiteOption, registerSiteSetting, rememberSiteOption, rememberSiteSetting, siteFeatureOn, siteOption, siteSetting } from "../core/features.js";
 import { parseInput } from "../shared.js";
 import { CLOUDFLARE_API_HOST, CloudflareApiError, applyMediaCacheRule, readMediaCacheRule } from "../images/cloudflare.js";
 import { mediaApiAccess, purgeMediaHost } from "../images/module.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { workerEnv } from "../shared.js";
-import { purgeIfNewVersion, purgePageCache, versionId } from "./lib.js";
-import { WARM_SETTING, pendingRevisits, readWarmState, remainingUrls, startWarm } from "./warm.js";
+import { VERSION_OPTION, purgeIfNewVersion, purgePageCache, versionId } from "./lib.js";
+import { WARM_SETTING, WARM_STATE_OPTION, pendingRevisits, readWarmState, remainingUrls, startWarm } from "./warm.js";
 
 /**
  * Performance is always on (its page sits right below Coywolf Pack). On a site
@@ -23,6 +23,8 @@ export const LIFETIME_DEFAULTS = { maxAgeDays: 7, refreshDays: 1 } as const;
 registerSiteSetting(LIFETIME_SETTINGS.maxAgeDays);
 registerSiteSetting(LIFETIME_SETTINGS.refreshDays);
 registerSiteSetting(WARM_SETTING);
+// The deployed version whose pages are cached, read with the switches (no query of its own per isolate).
+registerSiteOption(VERSION_OPTION);
 
 async function siteDb(): Promise<D1Database | undefined> {
 	const env: Record<string, unknown> = await workerEnv().catch(() => ({}));
@@ -189,9 +191,9 @@ export const pageCacheMiddleware: PackMiddleware = {
 		const db = env.DB as D1Database | undefined;
 		if (id && db)
 			waitUntil(
-				purgeIfNewVersion(db, id)
+				purgeIfNewVersion(db, id, siteOption(VERSION_OPTION))
 					.then(async (purged) => {
-						if (purged && (await siteSetting<boolean>(WARM_SETTING))) await startWarm(db, "deploy");
+						if (purged && (await siteSetting<boolean>(WARM_SETTING))) rememberSiteOption(WARM_STATE_OPTION, JSON.stringify(await startWarm(db, "deploy")));
 					})
 					.catch((error) => console.error("coywolf-pack: page cache version check failed", error)),
 			);

@@ -14,9 +14,20 @@ EmDash on Cloudflare builds every page in a Worker, and a Worker that hasn't run
 | **Images** | Serves media from a `media.` subdomain (R2 custom domain + Image Transformations), never through the Worker, with clean resized URLs, a one-year Cache Rule, responsive `srcset` helpers, and width/height lookups for images that have none (WordPress imports), so layouts don't shift. |
 | **Live search** | Results as you type in tens of milliseconds: an instant title index in the browser, an edge cache keyed to content changes, and 2–3 D1 queries instead of 25–31. |
 | **Redirects** | Answered by middleware from rules cached per isolate, before EmDash renders anything, and kept out of the edge cache so hit counts stay accurate. |
+| **Fewer D1 round trips** | Pages that aren't cached yet cost the pack about one D1 round trip: settings come with the feature switches' query (cached per isolate for five minutes), an entry's pack data is one query, and the pack's own reads of a moment go to D1 as one batch. See [Database reads](#database-reads). |
 | **No client JavaScript where it isn't needed** | Code highlighting, tables of contents, breadcrumbs, reviews and schema are rendered on the server. |
 
 See [Page cache](#page-cache) for setup.
+
+## Database reads
+
+A page that isn't in the edge cache yet is built by the Worker, and every D1 round trip costs it about 25–30 ms. The pack keeps its share to about one:
+
+- **Settings with the switches.** The feature switches, the settings page renders need (schema, videos player, discovery, code theme, review style…), the deployed version and the settings generation are one query, cached per Worker isolate for five minutes. A save through the pack's admin pages applies at once in the isolate that made it.
+- **Settings generation.** Every successful pack admin save writes a new generation (`plugin:coywolf-pack:state:settingsGeneration`). Other isolates see it on their next read of the switches (within five minutes) and drop everything they derived from settings (schema config, player settings, redirect rules…), which otherwise lasts up to ten minutes. Because those isolates may render pages with the old settings in the meantime, a save that clears the page cache clears it once more about five minutes later (see [Page cache](#page-cache)). Changes made outside the pack's admin pages (a byline's profile in EmDash) show up within ten minutes.
+- **One query per entry.** An entry's Schema override, Videos embed index and AI entities are one query (and its blocks, for review schema, when the theme didn't pass the entry), read once per request however many hooks ask.
+- **Batched.** The pack reads D1 through the raw binding (`env.DB`), which EmDash's per-request session (and its `coalesce` option) never sees, so reads the pack starts in the same moment are sent as one `db.batch()`: one round trip. On a cold isolate the feature switches and the redirect rules are one batch; on a page, the entry's data, image dimensions and video details are another.
+- **From the theme.** Pass the entry you rendered as `coywolf.entry` on the page context (see [Schema & Social](#pass-the-entry-to-save-reads)) and the pack doesn't read its bylines or blocks again.
 
 ## Modules
 
@@ -236,7 +247,7 @@ and add `"version_metadata": { "binding": "CF_VERSION_METADATA" }` to `wrangler.
 EmDash clears the pages it tagged when content, menus or site settings change. **Plugins → Performance** (always on, right below Coywolf Pack; on a site without Workers Cache it does nothing) covers the rest:
 
 - **After a deploy**: the first request a new Worker version handles clears every cached page, so theme and code changes show up right away.
-- **After Coywolf Pack settings change**: a successful admin save that changes page output (schema, blocks, videos, images, feature switches…) clears every cached page (see Scoped clearing below).
+- **After Coywolf Pack settings change**: a successful admin save that changes page output (schema, blocks, videos, images, feature switches…) clears every cached page (see Scoped clearing below). Other Worker isolates may keep the old settings for up to five minutes (see [Database reads](#database-reads)), so pages they render meanwhile could be cached with them: about five minutes after the save, the first request in any isolate clears the same pages once more (a "settling" clear; with warming on, it restarts the warm-up).
 - **Page cache lifetimes**: how many days the edge keeps a page (default 7) and how many more days it may serve it while fetching a fresh copy in the background (default 1). They replace the `routeRules` lifetimes on the routes the site made cacheable, at runtime, so no deploy is needed. Routes without a route rule are never cached by this.
 - **Media cache**: shows whether the media host (Clean Image URLs) has a Cloudflare Cache Rule, and **Cache media for a year** adds one (edge and browser TTL one year; media file names never change). Needs the Clean Image URLs token with **Zone → Cache Rules → Edit**. Other cache rules on the zone are kept.
 - **Cache warming** (off until an admin turns it on): after a deploy or a full clear, the pack reads `/sitemap.xml` (following a sitemap index) and visits every page, home page first, then the pages the home page links to (menus and section pages such as category archives, which sitemaps often leave out; up to 200, same site only, no feeds, files or query strings), then in sitemap order. The work rides on real traffic: after the site answers a request, the Worker claims a few queued pages and visits them in the background through its own `SELF` service binding, so the warm-up runs where readers and crawlers are (with Smart Placement, near the database) and fills that region's cache tiers. It doesn't use a Cron Trigger: those run in whatever data center has spare capacity, often on another continent, and placement hints don't apply to them. Batches are claimed atomically, so parallel isolates never repeat pages; a new clear or deploy restarts the run. The run's URLs are stored once (`plugin:coywolf-pack:pageCache:warmQueue:<run>:<n>` option rows of up to 500 URLs, removed when the run finishes or a new one starts) and each claim only updates a small progress row, so even a 5,000-page run writes little per batch. Pages whose render used a stopgap (a video poster still being copied to the media host, see **Posters from your media host**) aren't left cold: the warmer's render of such a page isn't cached (the middleware answers it with an internal `X-Coywolf-Stopgap: 1` header, which is never stored in the cache, so visitors don't see it), and the page is listed in the progress row (up to 200, same site only) and visited again once the rest of the run is done and 20 seconds have passed, by which time its posters are copied, so it's cached with the normal lifetime. A page still on a stopgap is tried at most twice more, then given up on (it's counted, the run still finishes). The list belongs to its run: a new clear or deploy starts over. The page shows progress ("Re-warming N pages after their video posters were copied" while revisits are pending), and **Warm now** starts a run by hand. Needs a `services` binding named `SELF` pointing at the Worker itself.
@@ -354,7 +365,7 @@ import { coywolfRedirects } from "@coywolf/emdash/middleware";
 export const onRequest = sequence(coywolfRedirects(), /* your middleware */);
 ```
 
-Rules are read at most once a minute per Worker isolate, and hits are counted after the response is sent, so redirects add no database query to normal page views.
+Each Worker isolate keeps the enabled rules in memory (exact sources in a map, patterns in source order), so redirects add no database query to normal page views. They're read again after a redirect edit (at once in the isolate that saved it, in others within five minutes; see [Database reads](#database-reads)) or after ten minutes, and on a cold isolate in the same D1 batch as the feature switches. Serving never writes: the `coywolf_redirects` table is created by the first admin write (saving or importing a rule), and until then there are simply no rules. Hits are counted after the response is sent. `coywolfPack()` takes no redirect options; `serveRedirect(url, env, waitUntil, { cacheSeconds })` (ten minutes by default) is the longest time to keep rules.
 
 ### Removed content
 
@@ -593,7 +604,7 @@ Feature switches: `codeBlocks` (main), `codeBlocks.label`, `codeBlocks.copy`, `c
 
 ### Setup
 
-Nothing beyond the plugin itself: the block renderer is registered through the plugin's `componentsEntry`, so it applies wherever the site renders Portable Text with EmDash's `<PortableText>`. It reads the theme and switches from the site's D1 database (`DB`), cached for 30 seconds per Worker isolate.
+Nothing beyond the plugin itself: the block renderer is registered through the plugin's `componentsEntry`, so it applies wherever the site renders Portable Text with EmDash's `<PortableText>`. It reads the theme and switches from the site's D1 database (`DB`), cached for five minutes per Worker isolate (a save on the Code Blocks page applies at once in that isolate; see [Database reads](#database-reads)).
 
 ### Notes
 
@@ -625,7 +636,19 @@ The Schema page has:
 
 ### Setup
 
-Nothing to configure beyond the Schema page. The module reads the site database (`DB` by default; set `schema: { database: "MY_DB" }` otherwise) to look up image dimensions and alt text, cached per Worker isolate for 10 minutes, and its settings are cached for 30 seconds. It needs the `content:read`, `schema:read`, `bylines:read` and `media:read` capabilities, which it declares.
+Nothing to configure beyond the Schema page. The module reads the site database (`DB` by default; set `schema: { database: "MY_DB" }` otherwise) to look up image dimensions and alt text, cached per Worker isolate for 10 minutes. Its settings come with the feature switches' query; its Site Details, types and author properties are cached until a pack settings save (here or in another isolate, see [Database reads](#database-reads)) or ten minutes. It needs the `content:read`, `schema:read`, `bylines:read` and `media:read` capabilities, which it declares.
+
+#### Pass the entry to save reads
+
+A theme that renders an entry already has it (from `getEmDashEntry()`), with its bylines hydrated by EmDash. Pass it on the page context as `coywolf.entry`, and Schema & Social takes the credited bylines (`entry.data.bylines`) and the entry's blocks (for review schema) from it instead of reading them again: two to five fewer queries per page. It's only used when `entry.data.id` is the page's `content.id`. `coywolf.bylines` (just the credits) works too.
+
+```astro
+---
+const { entry } = await getEmDashEntry("posts", slug);
+const page = { ...createPublicPageContext({ Astro, kind: "content", content: { collection: "posts", id: entry.data.id, slug: entry.id }, /* … */ }), coywolf: { entry } };
+---
+<EmDashHead page={page} />
+```
 
 ### Notes
 
@@ -664,6 +687,8 @@ const page = { ...createPublicPageContext({ /* … */ }), coywolf: { videos: [
 
 Theme videos are validated (absolute http(s) URLs, ISO 8601 duration) and de-duplicated by embed or content URL. When the graph is on, the Videos module doesn't print separate VideoObject blocks.
 
+A video's details (metadata, plays and likes, whether it's in a published entry) are read once per request: the schema and every Coywolf Video block on the page share one D1 batch.
+
 ## Search
 
 EmDash has full-text search built in: SQLite FTS5 with BM25 ranking, English stemming, prefix matching, highlighted snippets, a public API (`/_emdash/api/search`), and a `LiveSearch` component. This module adds what it leaves out. Turn on **Search** and its parts on the Coywolf Pack page. Search is off by default; once it's on, **Live results** is on too, and the other parts are off until you turn them on.
@@ -689,7 +714,7 @@ Results come from `GET /_emdash/api/plugins/coywolf-pack/search/live?q=…` (opt
 **Speed and caching.** With the pack middleware installed (`coywolfPack()` in `src/middleware.ts`), the middleware answers both URLs itself, before EmDash's plugin routing:
 
 - Every answer is stored in Cloudflare's cache (the Cache API, per location; live answers for 5 minutes, title indexes for a day) and in a small per-isolate memory cache. The key is the query (trimmed, spaces collapsed, lower-cased), `limit`, `collections`, `locale` and the **search content version**. Browsers keep live answers for 60 seconds, and the title index for a year when the page's version matches (its URL changes with every version), 5 minutes otherwise.
-- The content version changes whenever published content does (publish, unpublish, update, delete, restore), and when search settings change on the **Search** admin page. New keys miss, so visitors never see results from before an edit; old copies just expire. Other Worker isolates pick up a new version within 30 seconds.
+- The content version changes whenever published content does (publish, unpublish, update, delete, restore), and when search settings change on the **Search** admin page. New keys miss, so visitors never see results from before an edit; old copies just expire. Other Worker isolates pick up a new version within five minutes (it's read with the feature switches).
 - Cache hits skip the database and the rate limit. Misses count against **Search rate limit** when it's on.
 - A miss reads the database in a few batched round trips: search settings (cached per isolate for a minute), then title and full-text matches for every collection at once, then excerpts and URL terms at once. The any-word fallback adds one more. That's 2–3 D1 round trips (about 7 statements) where it was 25–31 queries.
 - Responses carry `Server-Timing` (`cw-search` says `hit-memory`, `hit-edge`, `miss` or `warm`; `cw-d1` counts statements and round trips) and `X-Coywolf-Cache: HIT` or `MISS`.
@@ -1131,6 +1156,7 @@ Sites that used Coywolf's WordPress plugins (Video Manager, Coywolf SEO, Custom 
 | Reusable blocks (synced patterns) | The `core/block` reference is dropped | Prepare puts the pattern's blocks in its place, from the export's `wp_block` items |
 | Core Details blocks | The summary is dropped | Prepare + converter: a Details block (Custom Blocks → Details) |
 | Core Quote blocks | The quote's paragraphs are dropped; only the citation is kept | Prepare + converter: a Quote block with the paragraphs and citation (Custom Blocks → Quote); with Quote off, the quote stays HTML |
+| Core Table captions (`<figcaption>`) | Dropped; the rows are kept | Prepare + converter: the table's `caption` field (plain text). Render it with `CaptionedTable` (see below) |
 | Self-closing third-party blocks (all their content is in settings) | Dropped without a trace | Prepare lists them under **Blocks EmDash will drop**; rebuild them by hand |
 | `&#91;` and bold markup in code blocks | Shown as literal text | Prepare cleans them |
 | Co-authors and guest authors (Co-Authors Plus, PublishPress Authors) | Each post is credited to its WordPress user only | Step 3, **Co-authors and guest authors** |
@@ -1182,6 +1208,7 @@ EmDash converts Gutenberg with `@emdash-cms/gutenberg-to-portable-text`, which p
 | `core/block` (reusable block, synced pattern) | the pattern's blocks | Inlined from the export's `wp_block` items, up to 5 levels deep, and prepared like the rest. A pattern that isn't in the export is listed as `core/block (reusable block not in the export)`. Later edits to the pattern don't carry over (EmDash has no synced patterns). |
 | core `details` | Details | Summary and content exactly; "open by default" kept. Needs the Custom Blocks Details block. |
 | core `quote` | Quote | The paragraphs (formatting, links and the spaces between them kept) and the `<cite>` directly inside the quote as who said it (several are joined with commas). A `<cite>` inside a paragraph (a cited title) and a quote nested in it stay part of the quote. Needs the Custom Blocks Quote block; without it, a blockquote in an HTML block. |
+| core `table` with a caption | EmDash table + `caption` | EmDash keeps the rows; the `<figcaption>` becomes a `caption` string on the table block (tags dropped, entities decoded). EmDash's editor keeps the field when it saves. EmDash's own table renderer ignores it: pass `CaptionedTable` from `@coywolf/emdash/astro` as the table renderer, `<PortableText value={value} components={{ type: { table: CaptionedTable } }} />`, which wraps a captioned table in `<figure class="cw-table">` with a `<figcaption>` (and renders tables without a caption as EmDash does). |
 | `code` | EmDash code block | Language kept (Prism's `markup` → `html`); bold markup and `&#91;` inside code are cleaned |
 | Yoast related links | HTML block | The markup WordPress rendered |
 | `gravityforms/form` | empty marker (`gravity-form`, with `formId`) | Rebuild the form (EmDash forms plugin or theme) |

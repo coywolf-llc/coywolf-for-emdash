@@ -1,22 +1,60 @@
 /**
  * Serves Coywolf redirects (through the pack middleware in src/middleware.ts).
- * Rules are read from D1 at most once a minute per Worker isolate; hits are
- * counted after the response is sent.
+ * Each Worker isolate keeps the enabled rules in memory: exact sources in a
+ * map (one lookup per request), patterns compiled in source order. They're
+ * read again after a redirect edit (in this isolate at once; in others when
+ * they see the new settings generation, see src/core/generation.ts), or
+ * after `cacheSeconds`. Reading them never writes: the table is created by
+ * the first admin write. Hits are counted after the response is sent.
  */
-import { type CompiledRules, compile, listRules, match, recordHit } from "./rules.js";
+import { isCurrent, settingsEpoch } from "../core/features.js";
+import { type CompiledRules, compile, loadMatchRules, match, recordHit } from "./rules.js";
 
 export interface CoywolfRedirectsOptions {
 	/** D1 binding of the site database. Default "DB". */
 	database?: string;
-	/** Seconds to cache rules per isolate. Default 60. */
+	/** Longest time to keep rules per isolate, in seconds. Default 600 (edits reload them sooner). */
 	cacheSeconds?: number;
 }
 
-let cache: { compiled: CompiledRules; loadedAt: number } | null = null;
+let cache: { compiled: CompiledRules; at: number; epoch: number } | null = null;
+/** A load in progress: concurrent requests of a cold isolate share it. */
+let loading: Promise<CompiledRules> | null = null;
 
 /** Drop the in-memory rules so the next request reloads them (called after admin edits). */
 export function invalidateRedirectCache(): void {
 	cache = null;
+	loading = null;
+}
+
+async function rules(db: D1Database, ttl: number): Promise<CompiledRules> {
+	if (cache && isCurrent(cache, ttl)) return cache.compiled;
+	if (!loading) {
+		const epoch = settingsEpoch();
+		const load = loadMatchRules(db)
+			.then((list) => {
+				const compiled = compile(list);
+				if (loading === load && epoch === settingsEpoch()) cache = { compiled, at: Date.now(), epoch };
+				return compiled;
+			})
+			.finally(() => {
+				if (loading === load) loading = null;
+			});
+		loading = load;
+	}
+	return loading;
+}
+
+/**
+ * Start loading the rules if this isolate doesn't have them, without waiting:
+ * the pack middleware calls it before reading the feature switches, so on a
+ * cold isolate both reads go to D1 in one batch. Errors surface (logged) when
+ * a request needs the rules.
+ */
+export function prefetchRedirects(env: Record<string, unknown>, options: CoywolfRedirectsOptions = {}): void {
+	const db = env[options.database ?? "DB"] as D1Database | undefined;
+	if (!db || (cache && isCurrent(cache, (options.cacheSeconds ?? 600) * 1000))) return;
+	rules(db, (options.cacheSeconds ?? 600) * 1000).catch(() => undefined);
 }
 
 const SKIP = /^\/(_emdash|_astro|_image)\//;
@@ -28,22 +66,21 @@ export async function serveRedirect(
 	waitUntil: (p: Promise<unknown>) => void,
 	options: CoywolfRedirectsOptions = {},
 ): Promise<Response | undefined> {
-	const ttl = (options.cacheSeconds ?? 60) * 1000;
+	const ttl = (options.cacheSeconds ?? 600) * 1000;
 	const { pathname, search } = url;
 	if (SKIP.test(pathname)) return undefined;
 	const db = env[options.database ?? "DB"] as D1Database | undefined;
 	if (!db) return undefined;
 
-	if (!cache || Date.now() - cache.loadedAt > ttl) {
-		try {
-			cache = { compiled: compile(await listRules(db)), loadedAt: Date.now() };
-		} catch (error) {
-			console.error("coywolf redirects: could not load rules", error);
-			return undefined;
-		}
+	let compiled: CompiledRules;
+	try {
+		compiled = await rules(db, ttl);
+	} catch (error) {
+		console.error("coywolf redirects: could not load rules", error);
+		return undefined;
 	}
 
-	const found = match(cache.compiled, pathname, search);
+	const found = match(compiled, pathname, search);
 	if (!found) return undefined;
 
 	waitUntil(recordHit(db, found.rule.id).catch(() => undefined));

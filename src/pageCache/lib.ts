@@ -76,9 +76,10 @@ export function versionId(env: Record<string, unknown>): string | undefined {
  * isolates of the same version find it recorded. Racing isolates may both purge,
  * which is harmless.
  */
-export async function purgeIfNewVersion(db: D1Database, id: string): Promise<boolean> {
-	const row = await db.prepare("SELECT value FROM options WHERE name = ?").bind(VERSION_OPTION).first<{ value: string }>();
-	if (row && JSON.parse(row.value) === id) return false;
+export async function purgeIfNewVersion(db: D1Database, id: string, known?: string | null): Promise<boolean> {
+	// `known`: the row as read with the feature switches (undefined when not read; then it's read here).
+	const value = known !== undefined ? known : ((await db.prepare("SELECT value FROM options WHERE name = ?").bind(VERSION_OPTION).first<{ value: string }>())?.value ?? null);
+	if (value && JSON.parse(value) === id) return false;
 	if (!(await purgePageCache())) return false;
 	await db
 		.prepare("INSERT INTO options (name, value) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value")

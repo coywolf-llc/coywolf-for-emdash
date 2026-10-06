@@ -35,6 +35,9 @@ export const blockComponents = {
 	"coywolf-podcast": Podcast,
 };
 
+/** EmDash's table with its `caption` (tables imported from WordPress): pass as `components.type.table`. */
+export { default as CaptionedTable } from "./tables/CaptionedTable.astro";
+
 /** Videos module: the Stream player, for theme code. */
 export { CoywolfVideo };
 export { hostedPosterImage } from "../videos/poster.js";

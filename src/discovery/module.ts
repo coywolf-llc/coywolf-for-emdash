@@ -7,7 +7,7 @@ import { type PluginContext, PluginRouteError, after, definePluginRoute } from "
 import { z } from "zod";
 
 import { absoluteUrl, entryUrl } from "../core/content-url.js";
-import { ctxFeatures, isOn, requireFeature } from "../core/features.js";
+import { ctxFeatures, invalidateFeatures, isOn, readSiteSetting, registerSiteSetting, requireFeature } from "../core/features.js";
 import { parseInput } from "../shared.js";
 import { LLMS_CACHE, NEWS_CACHE, type CachedDocument, type DocKind, buildMarkdown, readDoc, rebuildNow, scheduleRebuild } from "./build.js";
 import { INDEXNOW_ENDPOINTS, IndexNowBatcher, buildPayload, generateKey } from "./indexnow.js";
@@ -127,10 +127,16 @@ const idOf = (content: Record<string, unknown>) => (typeof content.id === "strin
 
 // ── Head link to the Markdown source ─────────────────────────────
 
-let settingsMemo: { settings: DiscoverySettings; at: number } | null = null;
+// Read on every page render: it comes with the feature switches' query (no query of its own).
+registerSiteSetting(SETTINGS_KEY);
+/** The last stored value and its parsed settings, so a cache hit doesn't parse again. */
+let settingsMemo: { raw: unknown; settings: DiscoverySettings } | null = null;
 async function memoSettings(ctx: PluginContext): Promise<DiscoverySettings> {
-	if (settingsMemo && Date.now() - settingsMemo.at < 30_000) return settingsMemo.settings;
-	settingsMemo = { settings: await loadSettings(ctx), at: Date.now() };
+	const read = await readSiteSetting(SETTINGS_KEY).catch(() => null);
+	if (!read) return loadSettings(ctx); // D1 unreadable here: through the plugin context.
+	if (settingsMemo && settingsMemo.raw === read.value) return settingsMemo.settings;
+	const parsed = settingsSchema.safeParse(read.value ?? {});
+	settingsMemo = { raw: read.value, settings: parsed.success ? parsed.data : settingsSchema.parse({}) };
 	return settingsMemo.settings;
 }
 
@@ -241,6 +247,8 @@ export function discoveryModule(_options: DiscoveryOptions) {
 				const settings = parseInput(settingsSchema, ctx.input);
 				await ctx.settings.set(SETTINGS_KEY, settings);
 				settingsMemo = null;
+				// Read with the feature switches: drop that cache too.
+				invalidateFeatures();
 				// Rebuild in the background; the old copies keep serving until then.
 				const features = await ctxFeatures(ctx);
 				const kinds: DocKind[] = [...(isOn(features, FEATURE.llms) ? (["llms"] as const) : []), ...(isOn(features, FEATURE.news) ? (["news"] as const) : [])];

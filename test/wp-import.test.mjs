@@ -37,7 +37,7 @@ const ofType = (blocks, type) => blocks.filter((b) => b._type === type);
 // ── Parser ───────────────────────────────────────────────────────
 
 test("the block parser round-trips every fixture byte for byte and agrees with WordPress's parser", () => {
-	for (const name of ["cloudflare-stream.html", "stream-embeds.html", "video-manager.html", "reviews.html", "toc.html", "file.html", "templates.html", "details.html", "code.html", "testimonials-podcast.html", "custom-blocks.html"]) {
+	for (const name of ["cloudflare-stream.html", "stream-embeds.html", "video-manager.html", "reviews.html", "toc.html", "file.html", "templates.html", "details.html", "code.html", "testimonials-podcast.html", "custom-blocks.html", "table.html"]) {
 		const raw = fixture(name);
 		const ours = parseBlocks(raw);
 		assert.equal(serializeBlocks(ours), raw, name);
@@ -325,6 +325,45 @@ test("core Details blocks become Details blocks with their summary and paragraph
 	assert.match(d.body, /^<p>Jon Henshaw: Welcome to the fifth episode/);
 	assert.ok(d.body.endsWith("</p>"));
 	assert.ok(!d.body.includes("<!-- wp:"), "the inner blocks' comments are gone");
+});
+
+test("core Table captions survive the import as the table's caption field (EmDash's converter drops them)", () => {
+	// Without preparing, the caption is gone.
+	assert.ok(!JSON.stringify(gutenbergToPortableText(fixture("table.html"))).includes("alternatives"));
+	const { prepared, result } = importFixture("table.html");
+	assert.equal(prepared.counts["core/table → caption"], 2);
+	const tables = ofType(result.value, "table");
+	assert.equal(tables.length, 3);
+	assert.equal(tables[0].caption, "The 8 best SEO metric alternatives to Alexa Rank & more", "&nbsp; reads as a space");
+	assert.equal(tables[0].rows.length, 3, "rows are EmDash's own");
+	assert.equal(tables[0].hasHeaderRow, true);
+	assert.equal(tables[1].caption, undefined, "a table without a caption gets none");
+	assert.equal(tables[2].caption, "Thermacup's five heat settings", "a line break becomes a space");
+	assert.equal(ofType(result.value, "htmlBlock").length, 0, "the caption markers are gone");
+	assert.deepEqual(
+		result.changes.filter((c) => c.from === "table-caption").map((c) => c.to),
+		["table", "table"],
+	);
+});
+
+test("table captions: preparing twice adds no second marker, converting twice changes nothing", () => {
+	const once = prepareContent(fixture("table.html"));
+	const twice = prepareContent(once.content);
+	assert.equal(twice.changed, false);
+	const { result } = importFixture("table.html");
+	const again = convertPortableText(result.value, { key: keys() });
+	assert.equal(again.changed, false);
+});
+
+test("a table-caption marker with no table before it stays an HTML block showing the caption", () => {
+	const html = markerHtml("table-caption", { caption: "Orphan" }, "<p>Orphan</p>");
+	const pt = [
+		{ _type: "block", _key: "p1", style: "normal", children: [{ _type: "span", text: "x" }] },
+		{ _type: "htmlBlock", _key: "h1", html },
+	];
+	const out = convertPortableText(pt, { key: keys() });
+	assert.equal(out.changed, false);
+	assert.equal(out.leftovers["marker:table-caption"], 1);
 });
 
 test("core Quote blocks keep their paragraphs and citation (EmDash's converter drops the quote)", () => {

@@ -10,7 +10,9 @@
  *   `originalAttrs`: coywolf/video, coywolf/file).
  *
  * For any WordPress site it moves "anchor" markers (heading ids) onto the
- * next heading's `anchor` field, turns core Details markers into
+ * next heading's `anchor` field, "table-caption" markers onto the table
+ * before them (its `caption` field; EmDash's editor keeps the field when it
+ * saves), turns core Details markers into
  * `coywolf-details`, and maps Prism language names on code blocks to the
  * editor's (markup → html). For content from Coywolf's WordPress plugins it
  * produces `coywolf-video`, `coywolf-review`, `coywolf-toc` and
@@ -517,6 +519,13 @@ function convertHtmlBlock(block: Block, w: Walk): Block | null | undefined | { a
 	}
 }
 
+/** The caption in a "table-caption" marker (prepare step), or null when the block isn't one. */
+function tableCaptionMarker(block: Block): string | null {
+	const marker = parseMarker(block.html);
+	if (marker?.name !== "table-caption" || marker.source !== "coywolf") return null;
+	return str(marker.attrs.caption).replace(/\s+/g, " ");
+}
+
 /** Leave a marker as it is, counting it for the report. */
 function leftover(name: string, w: Walk): undefined {
 	w.leftovers[`marker:${name}`] = (w.leftovers[`marker:${name}`] ?? 0) + 1;
@@ -531,8 +540,12 @@ function convertArray(blocks: unknown[], w: Walk, depth: number): unknown[] | nu
 		out[i] = value;
 	};
 	const REMOVE = Symbol("remove");
+	/** Index of the block just before this one when it's a table (a caption marker attaches to it). */
+	let tableBefore: number | null = null;
 	for (let i = 0; i < blocks.length; i++) {
 		const item = blocks[i];
+		const table = tableBefore;
+		tableBefore = null;
 		if (!item || typeof item !== "object" || Array.isArray(item)) {
 			if (Array.isArray(item)) {
 				const inner = convertArray(item, w, depth + 1);
@@ -541,7 +554,20 @@ function convertArray(blocks: unknown[], w: Walk, depth: number): unknown[] | nu
 			continue;
 		}
 		const block = item as Block;
+		if (block._type === "table") tableBefore = i;
 		if (block._type === "htmlBlock") {
+			const caption = tableCaptionMarker(block);
+			if (caption !== null) {
+				if (table === null) {
+					leftover("table-caption", w);
+					continue;
+				}
+				const current = ((out as unknown[] | null) ?? blocks)[table] as Block;
+				if (caption && current.caption !== caption) set(table, { ...current, caption });
+				set(i, REMOVE);
+				w.changes.push({ from: "table-caption", to: "table", detail: caption || undefined });
+				continue;
+			}
 			const result = convertHtmlBlock(block, w);
 			if (result === undefined) continue;
 			const from = parseMarker(block.html)?.name ?? String(block.originalBlockName ?? "htmlBlock");

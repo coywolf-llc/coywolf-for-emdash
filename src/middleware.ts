@@ -13,15 +13,45 @@
  */
 import type { MiddlewareHandler } from "astro";
 
-import { siteFeatures, siteSetting, isOn } from "./core/features.js";
+import { invalidateFeatures, knownFeatures, registerSiteOption, rememberSiteOption, siteFeatures, siteOption, siteSetting, isOn } from "./core/features.js";
+import { claimSettle, recordSettingsChange } from "./core/generation.js";
 import { injectAdminEnhancements } from "./core/settings-enhance.js";
 import type { PackMiddleware } from "./core/module.js";
 import { MIDDLEWARE } from "./modules.js";
 import { ALWAYS, LIFETIME_DEFAULTS, LIFETIME_SETTINGS } from "./pageCache/pack.js";
-import { applyPageLifetime, purgePageCache, purgeScope, purgesAfter, shortenStopgapPage } from "./pageCache/lib.js";
-import { STOPGAP_HEADER, WARMER_AGENT, WARM_SETTING, startWarm, warmStep } from "./pageCache/warm.js";
+import { type PurgeScope, applyPageLifetime, purgePageCache, purgeScope, purgesAfter, shortenStopgapPage } from "./pageCache/lib.js";
+import { STOPGAP_HEADER, WARMER_AGENT, WARM_SETTING, WARM_STATE_OPTION, startWarm, warmStep } from "./pageCache/warm.js";
+import { prefetchRedirects } from "./redirects/middleware.js";
 import { notePackMiddleware } from "./search/live-serve.js";
 import { pendingPosterRenders, renderedPendingPoster } from "./videos/poster.js";
+
+// The warming progress row is read with the feature switches, so requests can skip an idle warmer without a query.
+registerSiteOption(WARM_STATE_OPTION);
+
+/**
+ * False when the progress row as last read with the switches says there's
+ * nothing to warm (no run, or it's done or failed), so the request skips its
+ * warming step and that step's read. A run started in another isolate is seen
+ * on this isolate's next read of the switches (FEATURES_TTL_MS at most); one
+ * started here is remembered at once. True when unknown.
+ */
+function warmingMayHaveWork(): boolean {
+	const raw = siteOption(WARM_STATE_OPTION);
+	if (raw === undefined) return true;
+	if (raw === null) return false;
+	try {
+		const phase = (JSON.parse(raw) as { phase?: unknown }).phase;
+		return phase !== "done" && phase !== "failed";
+	} catch {
+		return true;
+	}
+}
+
+/** Start warming, and remember the new run in this isolate's copy of the progress row. */
+async function startWarming(db: D1Database, reason: string): Promise<void> {
+	const state = await startWarm(db, reason);
+	rememberSiteOption(WARM_STATE_OPTION, JSON.stringify(state));
+}
 
 /** Per isolate: when this isolate last started a warming step (one at a time, at most every few seconds). */
 let warmingUntil = 0;
@@ -51,20 +81,40 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 		notePackMiddleware();
 		const env = workers.env;
 		const waitUntil = (p: Promise<unknown>) => (workers.waitUntil ? workers.waitUntil(p) : void p);
+		// Redirect rules (when this isolate doesn't have them) load in the same D1 batch as the switches.
+		// (Skipped when the switches this isolate last read have Redirects off.)
+		const known = knownFeatures();
+		if (!context.url.pathname.startsWith("/_emdash/") && (!known || isOn(known, "redirects"))) prefetchRedirects(env, { database: options.database });
 		const features = await siteFeatures(options.database);
+		const db = env[options.database ?? "DB"] as D1Database | undefined;
+		/** Clear cached pages, then (for a full purge, when warming is on) start warming them again. */
+		const purge = (scope: PurgeScope) =>
+			purgePageCache(scope).then(async (purged) => {
+				if (purged && "purgeEverything" in scope && db && (await siteSetting<boolean>(WARM_SETTING, options.database))) await startWarming(db, "settings");
+			});
 		// Page cache: a successful pack admin write (settings, redirects, imports…) can change any page.
 		if (purgesAfter(context.request.method, context.url.pathname)) {
 			const response = await next();
 			const scope = purgeScope(context.url.pathname);
-			if (response.status < 400 && scope) {
-				waitUntil(
-					purgePageCache(scope).then(async (purged) => {
-						const db = env[options.database ?? "DB"] as D1Database | undefined;
-						if (purged && "purgeEverything" in scope && db && (await siteSetting<boolean>(WARM_SETTING, options.database))) await startWarm(db, "settings");
-					}),
-				);
+			if (response.status < 400) {
+				// This isolate's settings caches go now; other isolates drop theirs when they see the new generation.
+				invalidateFeatures();
+				const recorded = db
+					? recordSettingsChange(db, scope).catch((error) => console.error("coywolf-pack: could not record the settings change", error))
+					: Promise.resolve();
+				if (scope) waitUntil(recorded.then(() => purge(scope)));
+				else waitUntil(recorded);
 			}
 			return response;
+		}
+		// Settings saved in another isolate reach every isolate within the switches' lifetime; pages
+		// rendered meanwhile may have used the old ones, so the first request after that purges once more.
+		if (db) {
+			waitUntil(
+				claimSettle(db)
+					.then((scope) => (scope ? purge(scope) : undefined))
+					.catch((error) => console.error("coywolf-pack: settling purge failed", error)),
+			);
 		}
 		// Page cache lifetimes from Plugins → Performance, on routes the site made cacheable.
 		if (context.request.method === "GET") {
@@ -85,9 +135,9 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 			!context.url.pathname.startsWith("/_emdash/") &&
 			context.request.headers.get("user-agent") !== WARMER_AGENT &&
 			Date.now() > warmingUntil &&
-			(await siteSetting<boolean>(WARM_SETTING, options.database))
+			(await siteSetting<boolean>(WARM_SETTING, options.database)) &&
+			warmingMayHaveWork()
 		) {
-			const db = env[options.database ?? "DB"] as D1Database | undefined;
 			const self = env.SELF as { fetch(request: Request): Promise<Response> } | undefined;
 			if (db && self) {
 				warmingUntil = Date.now() + WARM_BUDGET_MS + WARM_EVERY_MS;
