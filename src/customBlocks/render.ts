@@ -226,13 +226,16 @@ export function normalizeTestimonial(node: Record<string, unknown>): Testimonial
  * `<figure><blockquote>…</blockquote><figcaption>photo, name, title</figcaption></figure>`.
  * The photo's alt is empty: the name right after it says who it is. No
  * schema: testimonials a site picks about itself aren't eligible for review
- * rich results.
+ * rich results. `photoSrc` replaces the photo's URL with resized copies (the
+ * media host's 64px and 128px squares) when the caller has them.
  */
-export function renderTestimonialHtml(t: Testimonial): string {
+export function renderTestimonialHtml(t: Testimonial, photoSrc?: { src: string; srcset?: string } | null): string {
 	const body = renderRich(t.quote);
 	if (!body) return "";
 	const link = (url: string, text: string) => (url ? `<a href="${escapeHtml(url)}">${text}</a>` : text);
-	const photo = t.photo ? `<img class="cw-testimonial__photo" src="${escapeHtml(t.photo)}" alt="" width="64" height="64" loading="lazy" decoding="async">` : "";
+	const src = photoSrc?.src || t.photo;
+	const srcset = photoSrc?.src && photoSrc.srcset ? ` srcset="${escapeHtml(photoSrc.srcset)}"` : "";
+	const photo = t.photo ? `<img class="cw-testimonial__photo" src="${escapeHtml(src)}"${srcset} alt="" width="64" height="64" loading="lazy" decoding="async">` : "";
 	const who =
 		t.name || t.title
 			? `<span class="cw-testimonial__who">${t.name ? `<span class="cw-testimonial__name">${link(t.nameUrl, escapeHtml(t.name))}</span>` : ""}${
