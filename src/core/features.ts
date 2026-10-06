@@ -192,6 +192,7 @@ const PRELOADED_SETTINGS = [
 	"videosAccentColor",
 	"videosBackgroundColor",
 	"videosLightEmbed",
+	"videosDisplay",
 	// Discovery.
 	"discoverySettings",
 ];

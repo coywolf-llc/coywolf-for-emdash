@@ -15,7 +15,7 @@ const { parseMarker, markerHtml } = await import("../src/wpImport/markers.ts");
 const { parseStreamEmbed } = await import("../src/wpImport/stream.ts");
 const { defaultsFromWordPress, parseFileRows } = await import("../src/wpImport/sources.ts");
 const { normalizeReview, reviewSchema } = await import("../src/reviews/lib.ts");
-const { findVideoBlocks, buildVideoObject, playerConfig } = await import("../src/videos/lib.ts");
+const { findVideoBlocks, buildVideoObject, playerConfig, SHOW_DEFAULTS } = await import("../src/videos/lib.ts");
 const { stampContent } = await import("../src/headings/stamp.ts");
 const { isFileId, isUploadId } = await import("../src/files/format.ts");
 const { wxrCategories, wxrPages, parentsMap, planCategoryParents, flattenTerms, optionSnippet, termParentsSnippet } = await import("../src/wpImport/parents.ts");
@@ -109,23 +109,43 @@ test("stand-alone Stream embeds (iframes, <stream> elements) become Coywolf Vide
 test("Video Manager blocks become Coywolf Video blocks with the plugin's defaults filled in", () => {
 	const { result } = importFixture("video-manager.html");
 	const [search, firmware, , talk, ogc] = ofType(result.value, "coywolf-video");
-	// Autoplaying loop with no controls; unset options took Video Manager's defaults (title and description shown).
+	// Autoplaying loop with no controls; unset show/hide options follow the Videos site defaults (shown).
 	assert.deepEqual(
 		{ controls: search.controls, autoplay: search.autoplay, loop: search.loop, muted: search.muted, showName: search.showName, showDescription: search.showDescription },
-		{ controls: false, autoplay: true, loop: true, muted: true, showName: true, showDescription: true },
+		{ controls: false, autoplay: true, loop: true, muted: true, showName: undefined, showDescription: undefined },
 	);
-	assert.deepEqual([firmware.sizeMode, firmware.maxWidth, firmware.showName, firmware.aspect], ["maxwidth", 360, false, 178.03]);
+	assert.deepEqual([playerConfig(search).showName, playerConfig(search).showDescription], [true, true]);
+	// Set on the WordPress block: kept as an explicit choice.
+	assert.deepEqual([firmware.sizeMode, firmware.maxWidth, firmware.showName, firmware.showDate, firmware.aspect], ["maxwidth", 360, "hide", "hide", 178.03]);
+	assert.equal(playerConfig(firmware, { ...SHOW_DEFAULTS, followSiteDefaults: true }).showName, false, "explicit choices survive follow-site-defaults");
+	// Per-video alignment kept only where the WordPress block set it.
+	assert.deepEqual([firmware.contentAlign, firmware.metaAlign, firmware.radius, firmware.showBorder], ["center", "center", undefined, undefined]);
+	assert.equal(search.contentAlign, "center");
 	// HTML descriptions become plain text; the block's poster frame is kept.
 	assert.equal(talk.caption, "AI Agent, AI Spy presented by Meredith Whittaker and Udbhav Tiwari at 39C3 – CC BY 4.0");
 	assert.equal(talk.posterTime, 392);
-	assert.deepEqual([ogc.controls, ogc.showDate, ogc.showPlays, ogc.showLikes], [true, true, true, true]);
+	assert.deepEqual([ogc.controls, ogc.showDate, ogc.showPlays, ogc.showLikes], [true, undefined, undefined, undefined]);
+	assert.deepEqual([playerConfig(ogc).showDate, playerConfig(ogc).showPlays, playerConfig(ogc).showLikes], [true, true, true]);
 	const fact = result.videos.find((v) => v.uid === search.uid);
 	assert.deepEqual(fact, { uid: search.uid, name: "Coywolf Search", duration: 49.3, width: 1920, height: 1573, created: "2026-07-24T05:20:49.223509Z" });
 
 	// Site settings from WordPress override the plugin defaults.
 	const custom = importFixture("video-manager.html", { videoDefaults: defaultsFromWordPress({ show_title: false, likes_enabled: false }, null).video });
 	const first = ofType(custom.result.value, "coywolf-video")[0];
-	assert.deepEqual([first.showName, first.showLikes], [false, false]);
+	// Off on the WordPress site: hidden here too (the Videos default is on).
+	assert.deepEqual([first.showName, first.showLikes, first.showPlays], ["hide", "hide", undefined]);
+});
+
+test("Video Manager per-video radius and border map to the block, checked like the settings", () => {
+	const html = (attrs) =>
+		`<!-- wp:coywolf/video ${JSON.stringify({ videoId: "be5ad65bed8de8188f16df8f32388b8b", ...attrs })} -->\n<div class="wp-block-coywolf-video"></div>\n<!-- /wp:coywolf/video -->`;
+	const convert = (attrs) => ofType(convertPortableText(gutenbergToPortableText(prepareContent(html(attrs)).content), { key: keys() }).value, "coywolf-video")[0];
+	const set = convert({ radius: 12, showBorder: true, borderWidth: 3, borderColor: "#336699", metaAlign: "right" });
+	assert.deepEqual([set.radius, set.showBorder, set.borderWidth, set.borderColor, set.metaAlign], [12, "show", 3, "#336699", "right"]);
+	const bad = convert({ radius: 500, showBorder: false, borderWidth: -2, borderColor: "red", contentAlign: "justify" });
+	assert.deepEqual([bad.radius, bad.showBorder, bad.borderWidth, bad.borderColor, bad.contentAlign], [48, "hide", 0, undefined, undefined]);
+	const none = convert({});
+	assert.deepEqual([none.radius, none.showBorder, none.borderWidth, none.borderColor, none.contentAlign, none.metaAlign], [undefined, undefined, undefined, undefined, undefined, undefined]);
 });
 
 test("converted videos work with the Videos module: index, player options, schema without a Stream token", () => {
@@ -490,10 +510,10 @@ test("prepareWxr rewrites only content:encoded, keeps CDATA safe, and reads atta
 
 test("Video Manager and Coywolf Files settings map to converter defaults", () => {
 	const d = defaultsFromWordPress(
-		{ controls: true, autoplay: false, loop: false, mute: false, preload: "metadata", show_title: true, show_desc: false, show_date: "1", plays_enabled: 0, likes_enabled: true },
+		{ controls: true, autoplay: false, loop: false, mute: false, preload: "metadata", show_title: true, show_desc: false, show_date: "1", plays_enabled: 0, likes_enabled: true, likes_show_count: false },
 		{ show_icon: true, show_description: false, show_meta: true, show_download: true, show_copy_link: false },
 	);
-	assert.deepEqual(d.video, { controls: true, autoplay: false, loop: false, mute: false, showName: true, showDescription: false, showDate: true, showPlays: false, showLikes: true, preload: "metadata" });
+	assert.deepEqual(d.video, { controls: true, autoplay: false, loop: false, mute: false, showName: true, showDescription: false, showDate: true, showPlays: false, showLikes: true, showLikeCount: false, preload: "metadata" });
 	assert.deepEqual(d.files, { showIcon: true, showDescription: false, showMeta: true, showDownload: true, showCopyLink: false });
 });
 

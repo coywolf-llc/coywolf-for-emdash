@@ -19,6 +19,7 @@ export interface StreamVideo {
 	readyToStream?: boolean;
 	status?: { state?: string; pctComplete?: string; errorReasonText?: string };
 	meta?: Record<string, unknown>;
+	creator?: string | null;
 	created?: string;
 	modified?: string;
 	uploaded?: string;
@@ -83,8 +84,11 @@ export function streamClient(creds: StreamCredentials) {
 		list: (limit = 1000) => call<StreamVideo[]>("GET", `?limit=${limit}&asc=false`),
 		get: (uid: string) => call<StreamVideo>("GET", id(uid)),
 		update: (uid: string, fields: Record<string, unknown>) => call<StreamVideo>("POST", id(uid), { uid, ...fields }),
-		directUpload: (opts: { maxDurationSeconds: number; name: string }) =>
-			call<{ uploadURL: string; uid: string }>("POST", "/direct_upload", { maxDurationSeconds: opts.maxDurationSeconds, meta: { name: opts.name } }),
+		remove: (uid: string) => call<unknown>("DELETE", id(uid)),
+		/** Minutes stored and the account's limit. */
+		storageUsage: () => call<{ videoCount?: number; totalStorageMinutes?: number; totalStorageMinutesLimit?: number }>("GET", "/storage-usage"),
+		directUpload: (opts: { maxDurationSeconds: number; meta: Record<string, string> }) =>
+			call<{ uploadURL: string; uid: string }>("POST", "/direct_upload", { maxDurationSeconds: opts.maxDurationSeconds, meta: opts.meta }),
 
 		/** One-time tus upload URL for large files (the browser uploads straight to Stream). */
 		async tusUpload(opts: { length: number; maxDurationSeconds: number; name: string }): Promise<{ uploadURL: string; uid: string | null }> {

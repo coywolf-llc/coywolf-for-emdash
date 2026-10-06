@@ -3,7 +3,7 @@
  * where each video is used; editing, captions, uploads (straight from the
  * browser to Stream), index rebuild and the Stream webhook.
  */
-import { Badge, Banner, Button, Checkbox, Dialog, DropdownMenu, Input, InputArea, Loader, Tabs } from "@cloudflare/kumo";
+import { Badge, Banner, Button, Checkbox, Dialog, DropdownMenu, Input, InputArea, Loader, Select, Tabs } from "@cloudflare/kumo";
 import {
 	ArrowClockwise,
 	ClosedCaptioning,
@@ -18,7 +18,9 @@ import {
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import type { VideoDisplay } from "../videos/render.js";
 import { CredentialGuide } from "./guides.js";
+import { DisplaySettings, fromDisplayDraft, toDisplayDraft } from "./videos-display.js";
 import { SaveBar, isDirty } from "./save-bar.js";
 import { SecretField, SettingsSection, SetupCard } from "./settings-ui.js";
 
@@ -48,7 +50,23 @@ interface Video {
 	likes: number;
 	usedIn: Usage[];
 	captions: Array<{ language: string; label?: string }>;
+	tags?: string[];
+	creator?: string;
 }
+
+/** Embedded videos that are no longer in Stream (deleted in its dashboard). */
+interface Orphan {
+	uid: string;
+	usedIn: Usage[];
+}
+
+interface StorageUsage {
+	videos: number;
+	minutes: number;
+	limit: number;
+}
+
+type Filter = "all" | "plays" | "likes" | "used" | "unused";
 
 interface Status {
 	configured: boolean;
@@ -65,6 +83,8 @@ interface VideosSettings {
 	accentColor: string;
 	backgroundColor: string;
 	lightEmbed: boolean;
+	display: VideoDisplay;
+	defaultTags: string;
 	envAccountId: boolean;
 	envToken: boolean;
 }
@@ -119,6 +139,8 @@ function EditDialog(props: { video: Video | null; onClose: () => void; onSaved: 
 	const [posterTime, setPosterTime] = React.useState("");
 	const [posterImage, setPosterImage] = React.useState("");
 	const [origins, setOrigins] = React.useState("");
+	const [tags, setTags] = React.useState("");
+	const [creator, setCreator] = React.useState("");
 	const [downloads, setDownloads] = React.useState(false);
 	const [pending, setPending] = React.useState(false);
 	const [error, setError] = React.useState<string>();
@@ -131,6 +153,8 @@ function EditDialog(props: { video: Video | null; onClose: () => void; onSaved: 
 		setName(video.name);
 		setDescription(video.description);
 		setOrigins(video.allowedOrigins.join(", "));
+		setTags((video.tags ?? []).join(", "));
+		setCreator(video.creator ?? "");
 		post<{ meta: Meta | null; download: typeof download }>("detail", { uid: video.uid })
 			.then((d) => {
 				const m = d.meta ?? { uid: video.uid };
@@ -162,6 +186,8 @@ function EditDialog(props: { video: Video | null; onClose: () => void; onSaved: 
 					.split(/[\s,]+/)
 					.map((o) => o.trim())
 					.filter(Boolean),
+				tags,
+				creator: creator.trim(),
 				...(downloads !== Boolean(download) ? { downloads } : {}),
 			});
 			props.onSaved(`Saved ${name || props.video.uid}.`);
@@ -212,6 +238,22 @@ function EditDialog(props: { video: Video | null; onClose: () => void; onSaved: 
 								placeholder="https://…"
 								value={posterImage}
 								onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPosterImage(e.target.value)}
+							/>
+						</div>
+						<div className="grid gap-4 sm:grid-cols-2">
+							<Input
+								label="Tags"
+								placeholder="tutorial, product"
+								description="Comma-separated. Search the library with #tag."
+								value={tags}
+								onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTags(e.target.value)}
+							/>
+							<Input
+								label="Creator (optional)"
+								description="Stream's creator ID, such as a user or team, for your own records."
+								value={creator}
+								maxLength={64}
+								onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCreator(e.target.value)}
 							/>
 						</div>
 						<Input
@@ -398,6 +440,7 @@ async function uploadTus(url: string, file: File, onProgress: (pct: number) => v
 function UploadDialog(props: { open: boolean; onClose: () => void; onUploaded: (name: string) => void }) {
 	const [file, setFile] = React.useState<File | null>(null);
 	const [name, setName] = React.useState("");
+	const [tags, setTags] = React.useState("");
 	const [progress, setProgress] = React.useState<number | null>(null);
 	const [error, setError] = React.useState<string>();
 
@@ -406,7 +449,11 @@ function UploadDialog(props: { open: boolean; onClose: () => void; onUploaded: (
 		setError(undefined);
 		setProgress(0);
 		try {
-			const target = await post<{ method: "basic" | "tus"; uploadURL: string }>("upload", { name: name.trim() || file.name, size: file.size });
+			const target = await post<{ method: "basic" | "tus"; uploadURL: string }>("upload", {
+				name: name.trim() || file.name,
+				size: file.size,
+				...(tags.trim() ? { tags } : {}),
+			});
 			if (target.method === "basic") await uploadBasic(target.uploadURL, file, setProgress);
 			else await uploadTus(target.uploadURL, file, setProgress);
 			const label = name.trim() || file.name;
@@ -448,6 +495,14 @@ function UploadDialog(props: { open: boolean; onClose: () => void; onUploaded: (
 						/>
 					</div>
 					<Input label="Name" value={name} disabled={uploading} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} />
+					<Input
+						label="Tags (optional)"
+						placeholder="tutorial, product"
+						description="Comma-separated. Empty uses the default tags from Settings → Uploads."
+						value={tags}
+						disabled={uploading}
+						onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTags(e.target.value)}
+					/>
 					{uploading && (
 						<div>
 							<progress className="w-full" max={100} value={progress ?? 0} aria-label="Upload progress" />
@@ -465,6 +520,69 @@ function UploadDialog(props: { open: boolean; onClose: () => void; onUploaded: (
 							Upload
 						</Button>
 					</div>
+				</div>
+			</Dialog>
+		</Dialog.Root>
+	);
+}
+
+// ── Delete ───────────────────────────────────────────────────────
+
+function DeleteDialog(props: { video: Video | null; onClose: () => void; onDeleted: (message: string) => void }) {
+	const [pending, setPending] = React.useState(false);
+	const [error, setError] = React.useState<string>();
+	const video = props.video;
+	React.useEffect(() => setError(undefined), [video]);
+	const used = video?.usedIn ?? [];
+	const remove = async () => {
+		if (!video) return;
+		setPending(true);
+		setError(undefined);
+		try {
+			await post("delete", { uid: video.uid, force: used.length > 0 });
+			props.onDeleted(`Deleted ${video.name}.`);
+		} catch (cause) {
+			setError(errorText(cause, "Could not delete the video"));
+		} finally {
+			setPending(false);
+		}
+	};
+	return (
+		<Dialog.Root open={video !== null} onOpenChange={(open) => !open && !pending && props.onClose()}>
+			<Dialog className="p-6" size="lg">
+				<Dialog.Title className="text-lg font-semibold">Delete {video?.name ?? "video"}?</Dialog.Title>
+				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">
+					This permanently deletes the video from Cloudflare Stream, with its captions and download, and removes its plays, likes and details from
+					this site. It can't be undone.
+				</Dialog.Description>
+				{used.length > 0 && (
+					<Banner
+						className="mt-4"
+						variant="error"
+						title={`Used in ${used.length} ${used.length === 1 ? "entry" : "entries"}`}
+						description={
+							<>
+								These will show nothing where the video was until you remove its block:
+								<ul className="mt-1 list-disc ps-5">
+									{used.slice(0, 10).map((u, i) => (
+										<li key={i}>
+											{u.title ?? "(untitled)"} ({u.collection}, {u.status})
+										</li>
+									))}
+									{used.length > 10 && <li>and {used.length - 10} more</li>}
+								</ul>
+							</>
+						}
+					/>
+				)}
+				{error && <Banner variant="error" role="alert" className="mt-4" description={error} />}
+				<div className="mt-6 flex justify-end gap-2">
+					<Button variant="secondary" disabled={pending} onClick={props.onClose}>
+						Cancel
+					</Button>
+					<Button variant="destructive" icon={<Trash />} disabled={pending} onClick={() => void remove()}>
+						{pending ? "Deleting…" : used.length ? "Delete anyway" : "Delete"}
+					</Button>
 				</div>
 			</Dialog>
 		</Dialog.Root>
@@ -541,9 +659,6 @@ function ConnectForm(props: { onConnected: () => void }) {
 
 function SettingsPanel(props: { onSaved: (message: string) => void }) {
 	const [saved, setSaved] = React.useState<VideosSettings>();
-	const [draft, setDraft] = React.useState({ accountId: "", token: "", customerSubdomain: "", accentColor: "", backgroundColor: "", lightEmbed: true });
-	const [pending, setPending] = React.useState<"save" | "clear">();
-	const [error, setError] = React.useState<string>();
 	const toDraft = (s: VideosSettings) => ({
 		accountId: s.accountId,
 		token: "",
@@ -551,7 +666,12 @@ function SettingsPanel(props: { onSaved: (message: string) => void }) {
 		accentColor: s.accentColor,
 		backgroundColor: s.backgroundColor,
 		lightEmbed: s.lightEmbed,
+		display: toDisplayDraft(s.display),
+		defaultTags: s.defaultTags,
 	});
+	const [draft, setDraft] = React.useState<ReturnType<typeof toDraft>>();
+	const [pending, setPending] = React.useState<"save" | "clear">();
+	const [error, setError] = React.useState<string>();
 	const apply = (s: VideosSettings) => {
 		setSaved(s);
 		setDraft(toDraft(s));
@@ -561,13 +681,20 @@ function SettingsPanel(props: { onSaved: (message: string) => void }) {
 			.then(apply)
 			.catch((cause) => setError(errorText(cause, "Could not load the Videos settings")));
 	}, []);
-	const set = (patch: Partial<typeof draft>) => setDraft((d) => ({ ...d, ...patch }));
+	const set = (patch: Partial<NonNullable<typeof draft>>) => setDraft((d) => (d ? { ...d, ...patch } : d));
 	const save = async (clearToken = false) => {
+		if (!draft) return;
 		setPending(clearToken ? "clear" : "save");
 		setError(undefined);
 		try {
-			const { token, ...rest } = draft;
-			apply(await post<VideosSettings>("settings/save", { ...rest, ...(clearToken ? { clearToken: true } : token.trim() ? { token: token.trim() } : {}) }));
+			const { token, display, ...rest } = draft;
+			apply(
+				await post<VideosSettings>("settings/save", {
+					...rest,
+					display: fromDisplayDraft(display),
+					...(clearToken ? { clearToken: true } : token.trim() ? { token: token.trim() } : {}),
+				}),
+			);
 			props.onSaved(clearToken ? "Stream API token removed." : "Videos settings saved.");
 		} catch (cause) {
 			setError(errorText(cause, "Could not save the settings"));
@@ -575,7 +702,7 @@ function SettingsPanel(props: { onSaved: (message: string) => void }) {
 			setPending(undefined);
 		}
 	};
-	if (!saved)
+	if (!saved || !draft)
 		return error ? (
 			<Banner variant="error" role="alert" title="Could not load the settings" description={error} />
 		) : (
@@ -583,7 +710,7 @@ function SettingsPanel(props: { onSaved: (message: string) => void }) {
 				<Loader />
 			</div>
 		);
-	const text = (key: "accountId" | "customerSubdomain" | "accentColor" | "backgroundColor") => ({
+	const text = (key: "accountId" | "customerSubdomain" | "accentColor" | "defaultTags") => ({
 		value: draft[key],
 		disabled: Boolean(pending),
 		onChange: (e: React.ChangeEvent<HTMLInputElement>) => set({ [key]: e.target.value }),
@@ -627,9 +754,7 @@ function SettingsPanel(props: { onSaved: (message: string) => void }) {
 							description="Stream → any video → Embed. Learned from the library automatically when empty."
 							{...text("customerSubdomain")}
 						/>
-						<div aria-hidden="true" className="hidden sm:block" />
-						<Input label="Accent color" placeholder="#f6821f" description="Play button and progress bar. Empty uses Stream's default." {...text("accentColor")} />
-						<Input label="Background color" placeholder="#000000" description="Behind letterboxed videos. Empty is transparent." {...text("backgroundColor")} />
+						<Input label="Accent color" placeholder="#f6821f" description="Stream's play button and progress bar. Empty uses Stream's default." {...text("accentColor")} />
 					</div>
 					<Checkbox
 						label="Load the player only when it's needed (faster pages)"
@@ -643,6 +768,21 @@ function SettingsPanel(props: { onSaved: (message: string) => void }) {
 						page otherwise loads with it and can hold back the page's first paint by several seconds. Turn this off to load the
 						player with the page.
 					</p>
+				</SettingsSection>
+				<DisplaySettings
+					draft={draft.display}
+					background={draft.backgroundColor}
+					disabled={Boolean(pending)}
+					onChange={(patch) => set({ display: { ...draft.display, ...patch } })}
+					onBackground={(value) => set({ backgroundColor: value })}
+				/>
+				<SettingsSection id="videos-uploads" title="Uploads">
+					<Input
+						label="Default tags"
+						placeholder="tutorial, product"
+						description="Added to every video you upload here (you can change them in the upload dialog). Comma-separated; tags are kept in Stream's video metadata, like Video Manager's."
+						{...text("defaultTags")}
+					/>
 				</SettingsSection>
 				{error && <Banner variant="error" role="alert" description={error} />}
 			</form>
@@ -667,6 +807,10 @@ export function VideosPage() {
 	const [query, setQuery] = React.useState("");
 	const [editing, setEditing] = React.useState<Video | null>(null);
 	const [captioning, setCaptioning] = React.useState<Video | null>(null);
+	const [deleting, setDeleting] = React.useState<Video | null>(null);
+	const [filter, setFilter] = React.useState<Filter>("all");
+	const [orphans, setOrphans] = React.useState<Orphan[]>([]);
+	const [storage, setStorage] = React.useState<StorageUsage | null>(null);
 	const [uploading, setUploading] = React.useState(false);
 	const [busy, setBusy] = React.useState<string>();
 	const [tab, setTab] = React.useState("library");
@@ -680,8 +824,13 @@ export function VideosPage() {
 				setVideos([]);
 				return;
 			}
-			const data = await post<{ items: Video[] }>("list", { refresh });
+			const data = await post<{ items: Video[]; orphans?: Orphan[] }>("list", { refresh });
 			setVideos(data.items);
+			setOrphans(data.orphans ?? []);
+			// Optional: a token without storage access still lists the library.
+			post<StorageUsage>("storage")
+				.then(setStorage)
+				.catch(() => setStorage(null));
 		} catch (cause) {
 			setError(errorText(cause, "Could not load videos"));
 		}
@@ -731,8 +880,18 @@ export function VideosPage() {
 			return subscribe ? "Stream will notify this site when videos finish processing." : "Stream webhook removed.";
 		});
 
-	const q = query.trim().toLowerCase();
-	const visible = (videos ?? []).filter((v) => !q || v.name.toLowerCase().includes(q) || v.uid.includes(q) || v.description.toLowerCase().includes(q));
+	// "#tag" words filter by tag (all must match); the rest searches names, descriptions and IDs.
+	const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+	const tagWords = words.filter((w) => w.startsWith("#") && w.length > 1).map((w) => w.slice(1));
+	const q = words.filter((w) => !w.startsWith("#")).join(" ");
+	const matchesFilter = (v: Video) =>
+		filter === "plays" ? v.plays > 0 : filter === "likes" ? v.likes > 0 : filter === "used" ? v.usedIn.length > 0 : filter === "unused" ? v.usedIn.length === 0 : true;
+	const visible = (videos ?? []).filter((v) => {
+		const tags = (v.tags ?? []).map((t) => t.toLowerCase());
+		if (!tagWords.every((t) => tags.includes(t))) return false;
+		if (q && !(v.name.toLowerCase().includes(q) || v.uid.includes(q) || v.description.toLowerCase().includes(q))) return false;
+		return matchesFilter(v);
+	});
 	const f = status?.features ?? {};
 
 	return (
@@ -758,13 +917,39 @@ export function VideosPage() {
 					</p>
 				</div>
 				{tab === "library" && status?.configured && (
-					<div className="sm:w-72">
-						<Input
-							label="Search"
-							placeholder="Name, description or video ID"
-							value={query}
-							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
-						/>
+					<div className="flex flex-wrap items-end gap-4">
+						<div className="w-full sm:w-72">
+							<Input
+								label="Search"
+								placeholder="Name, description, video ID or #tag"
+								value={query}
+								onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
+							/>
+						</div>
+						<div className="w-full sm:w-48">
+							<Select
+								label="Show"
+								value={filter}
+								onValueChange={(value: string | null) => setFilter((value as Filter | null) ?? "all")}
+								items={[
+									{ value: "all", label: "All videos" },
+									...(f.engagement
+										? [
+												{ value: "plays", label: "With plays" },
+												{ value: "likes", label: "With likes" },
+											]
+										: []),
+									{ value: "used", label: "Used in content" },
+									{ value: "unused", label: "Not used" },
+								]}
+							/>
+						</div>
+						{storage && (
+							<p className="text-sm text-kumo-subtle sm:ms-auto">
+								{numberFormat.format(storage.videos)} {storage.videos === 1 ? "video" : "videos"} · {numberFormat.format(storage.minutes)}
+								{storage.limit ? ` of ${numberFormat.format(storage.limit)}` : ""} minutes stored
+							</p>
+						)}
 					</div>
 				)}
 			</header>
@@ -774,6 +959,26 @@ export function VideosPage() {
 				{notice && <Banner variant="default" role="status" title={notice} />}
 			</div>
 			{error && <Banner variant="error" role="alert" title="Something went wrong" description={error} />}
+			{tab === "library" && orphans.length > 0 && (
+				<Banner
+					variant="error"
+					title={`${orphans.length} embedded ${orphans.length === 1 ? "video is" : "videos are"} no longer in Cloudflare Stream`}
+					description={
+						<>
+							Deleted in Stream's dashboard, so these entries show nothing where the video was. Remove the blocks (or upload the video again and
+							choose it in the block), then rebuild the embed index under Tools.
+							<ul className="mt-1 list-disc ps-5">
+								{orphans.slice(0, 10).map((o) => (
+									<li key={o.uid}>
+										<span className="font-mono">{o.uid}</span>: {o.usedIn.map((u) => u.title ?? "(untitled)").join(", ")}
+									</li>
+								))}
+								{orphans.length > 10 && <li>and {orphans.length - 10} more</li>}
+							</ul>
+						</>
+					}
+				/>
+			)}
 
 			{status && (
 				<Tabs
@@ -845,6 +1050,21 @@ export function VideosPage() {
 									{!v.ready && <Badge variant="outline">{v.state}</Badge>}
 									{v.captions.length > 0 && <Badge variant="outline">CC</Badge>}
 								</div>
+								{(v.tags ?? []).length > 0 && (
+									<div className="mt-1 flex flex-wrap gap-1">
+										{(v.tags ?? []).map((t) => (
+											<button
+												key={t}
+												type="button"
+												className="rounded text-xs text-kumo-subtle underline-offset-2 hover:underline"
+												aria-label={`Show videos tagged ${t}`}
+												onClick={() => setQuery(`#${t}`)}
+											>
+												#{t}
+											</button>
+										))}
+									</div>
+								)}
 							</div>
 							<div className="w-16 text-end tabular-nums">{clock(v.duration)}</div>
 							<div className="hidden w-28 text-xs text-kumo-subtle lg:block">{v.created ? dateFormat.format(new Date(v.created)) : ""}</div>
@@ -889,6 +1109,13 @@ export function VideosPage() {
 											}}
 										>
 											Copy video ID
+										</DropdownMenu.Item>
+										<DropdownMenu.Item
+											className="py-1 text-kumo-danger data-highlighted:bg-kumo-fill"
+											icon={<Trash className="me-1.5 size-3.5" aria-hidden="true" />}
+											onClick={() => setDeleting(v)}
+										>
+											Delete
 										</DropdownMenu.Item>
 									</DropdownMenu.Content>
 								</DropdownMenu>
@@ -948,6 +1175,15 @@ export function VideosPage() {
 				}}
 			/>
 			<CaptionsDialog video={captioning} onClose={() => setCaptioning(null)} />
+			<DeleteDialog
+				video={deleting}
+				onClose={() => setDeleting(null)}
+				onDeleted={(message) => {
+					setDeleting(null);
+					setNotice(message);
+					void load(true);
+				}}
+			/>
 			<UploadDialog
 				open={uploading}
 				onClose={() => setUploading(false)}

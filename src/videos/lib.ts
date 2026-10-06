@@ -78,6 +78,34 @@ export function absoluteUrl(url: unknown, origin?: string | null): string | unde
 export const MAX_CAPTION_BYTES = 1_500_000;
 export const utf8Bytes = (text: string) => new TextEncoder().encode(text).byteLength;
 
+// ── Tags ─────────────────────────────────────────────────────────
+
+/** Most tags kept on a video, and the longest tag (Video Manager's limits). */
+export const MAX_TAGS = 25;
+export const MAX_TAG_LENGTH = 50;
+
+/**
+ * Tags from a comma/newline list or an array, as Video Manager keeps them in
+ * Stream's meta.tags: no leading #, spaces as hyphens, only letters, digits,
+ * _ . and -, de-duplicated without regard to case.
+ */
+export function parseTags(raw: unknown): string[] {
+	const parts = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/[,\r\n]+/) : [];
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const part of parts) {
+		let tag = String(part ?? "").trim().replace(/^#+/, "").replace(/\s+/g, "-").replace(/[^A-Za-z0-9_.-]+/g, "").replace(/^[-.]+|[-.]+$/g, "");
+		if (!tag) continue;
+		tag = tag.slice(0, MAX_TAG_LENGTH);
+		const key = tag.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(tag);
+		if (out.length >= MAX_TAGS) break;
+	}
+	return out;
+}
+
 // ── Formatting ───────────────────────────────────────────────────
 
 /** Seconds → ISO 8601 duration (PT1H2M3S). Zero or invalid → null. */
@@ -158,11 +186,26 @@ export interface VideoBlock {
 	preload?: string;
 	sizeMode?: string;
 	maxWidth?: number;
-	showName?: boolean;
-	showDescription?: boolean;
-	showPlays?: boolean;
-	showLikes?: boolean;
-	showDate?: boolean;
+	/**
+	 * Show/hide choices: "show", "hide", or empty/missing for the site default
+	 * (Videos → Settings). Booleans are from before the site defaults existed
+	 * (the old on/off toggles, and WordPress imports): kept as they were
+	 * unless the site is set to make every block follow its defaults.
+	 */
+	showName?: BlockShow;
+	showDescription?: BlockShow;
+	showPlays?: BlockShow;
+	showLikes?: BlockShow;
+	showLikeCount?: BlockShow;
+	/** Per-video look (empty/missing: the site's Appearance settings). See render.ts blockDisplay. */
+	contentAlign?: string;
+	metaAlign?: string;
+	radius?: number;
+	/** "show"/"hide" (true/false from WordPress imports). */
+	showBorder?: BlockShow;
+	borderWidth?: number;
+	borderColor?: string;
+	showDate?: BlockShow;
 	/** Legacy WordPress cloudflare-stream marker attributes (wellbeing.io). */
 	id?: string;
 	host?: string;
@@ -257,6 +300,39 @@ export function indexSource<T extends Record<string, unknown>>(event: T, live: T
 	return typeof event.data === "object" && event.data !== null ? event : null;
 }
 
+export type BlockShow = boolean | "show" | "hide" | "";
+
+/** The site-wide show/hide defaults blocks inherit (Videos → Settings → Views & likes). */
+export interface ShowDefaults {
+	showName: boolean;
+	showDescription: boolean;
+	showPlays: boolean;
+	showLikes: boolean;
+	showLikeCount: boolean;
+	showDate: boolean;
+	/** Ignore the booleans older blocks carry, so they follow the defaults above too. */
+	followSiteDefaults: boolean;
+}
+
+/** Video Manager's defaults: everything shown. */
+export const SHOW_DEFAULTS: ShowDefaults = {
+	showName: true,
+	showDescription: true,
+	showPlays: true,
+	showLikes: true,
+	showLikeCount: true,
+	showDate: true,
+	followSiteDefaults: false,
+};
+
+/** A block's show/hide choice: "show"/"hide" win; an older boolean counts unless the site follows its defaults; else the site default. */
+export function resolveShow(value: unknown, siteDefault: boolean, followSiteDefaults: boolean): boolean {
+	if (value === "show") return true;
+	if (value === "hide") return false;
+	if (typeof value === "boolean" && !followSiteDefaults) return value;
+	return siteDefault;
+}
+
 export interface PlayerConfig {
 	controls: boolean;
 	autoplay: boolean;
@@ -267,30 +343,36 @@ export interface PlayerConfig {
 	showDescription: boolean;
 	showPlays: boolean;
 	showLikes: boolean;
+	showLikeCount: boolean;
 	showDate: boolean;
 	gif: boolean;
 }
 
-/** Resolve a block's playback options, applying the GIF preset. Legacy marker blocks default to it. */
-export function playerConfig(block: VideoBlock): PlayerConfig {
+/**
+ * Resolve a block's playback options, applying the GIF preset (legacy marker
+ * blocks default to it) and the site's show/hide defaults.
+ */
+export function playerConfig(block: VideoBlock, site: ShowDefaults = SHOW_DEFAULTS): PlayerConfig {
 	const legacy = !block.uid && !!block.host;
 	const gif = block.preset === "gif" || (legacy && block.preset !== "standard");
 	if (gif) {
-		return { controls: false, autoplay: true, loop: true, muted: true, preload: "auto", showName: false, showDescription: false, showPlays: false, showLikes: false, showDate: false, gif };
+		return { controls: false, autoplay: true, loop: true, muted: true, preload: "auto", showName: false, showDescription: false, showPlays: false, showLikes: false, showLikeCount: false, showDate: false, gif };
 	}
 	const preload = block.preload === "none" || block.preload === "auto" ? block.preload : "metadata";
 	const autoplay = block.autoplay === true;
+	const show = (key: keyof Omit<ShowDefaults, "followSiteDefaults">) => resolveShow(block[key], site[key], site.followSiteDefaults);
 	return {
 		controls: block.controls !== false,
 		autoplay,
 		loop: block.loop === true,
 		muted: autoplay || block.muted === true,
 		preload,
-		showName: block.showName === true,
-		showDescription: block.showDescription === true,
-		showPlays: block.showPlays === true,
-		showLikes: block.showLikes === true,
-		showDate: block.showDate === true,
+		showName: show("showName"),
+		showDescription: show("showDescription"),
+		showPlays: show("showPlays"),
+		showLikes: show("showLikes"),
+		showLikeCount: show("showLikeCount"),
+		showDate: show("showDate"),
 		gif,
 	};
 }

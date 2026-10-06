@@ -20,7 +20,7 @@ import type { PackMiddleware } from "./core/module.js";
 import { MIDDLEWARE } from "./modules.js";
 import { ALWAYS, LIFETIME_DEFAULTS, LIFETIME_SETTINGS } from "./pageCache/pack.js";
 import { type PurgeScope, applyPageLifetime, purgePageCache, purgeScope, purgesAfter, shortenStopgapPage, watchInvalidation } from "./pageCache/lib.js";
-import { STOPGAP_HEADER, WARMER_AGENT, WARM_SETTING, WARM_STATE_OPTION, scheduleRewarm, startWarm, warmMayHaveWork, warmStep } from "./pageCache/warm.js";
+import { STOPGAP_HEADER, WARMER_AGENT, WARM_DAILY_SETTING, WARM_SETTING, WARM_STATE_OPTION, scheduleRewarm, startWarm, warmMayHaveWork, warmStep } from "./pageCache/warm.js";
 import { prefetchRedirects } from "./redirects/middleware.js";
 import { notePackMiddleware } from "./search/live-serve.js";
 import { pendingPosterRenders, renderedPendingPoster } from "./videos/poster.js";
@@ -30,14 +30,19 @@ registerSiteOption(WARM_STATE_OPTION);
 
 /**
  * False when the progress row as last read with the switches says there's
- * nothing to warm (no run, or it's done or failed, and no rewarm is due), so
+ * nothing to warm (the run is done or failed, and no rewarm or daily refresh is due), so
  * the request skips its warming step and that step's read. A run started (or
  * rewarm scheduled) in another isolate is seen on this isolate's next read of
  * the switches (FEATURES_TTL_MS at most); one started here is remembered at
  * once. True when unknown.
  */
-function warmingMayHaveWork(): boolean {
-	return warmMayHaveWork(siteOption(WARM_STATE_OPTION));
+function warmingMayHaveWork(daily: boolean): boolean {
+	return warmMayHaveWork(siteOption(WARM_STATE_OPTION), Date.now(), daily);
+}
+
+/** The daily refresh is on unless turned off (read with the switches, so no extra query). */
+async function warmDaily(database?: string): Promise<boolean> {
+	return (await siteSetting<boolean>(WARM_DAILY_SETTING, database)) !== false;
 }
 
 /** Start warming, and remember the new run in this isolate's copy of the progress row. */
@@ -148,14 +153,14 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 			context.request.headers.get("user-agent") !== WARMER_AGENT &&
 			Date.now() > warmingUntil &&
 			(await siteSetting<boolean>(WARM_SETTING, options.database)) &&
-			warmingMayHaveWork()
+			warmingMayHaveWork(await warmDaily(options.database))
 		) {
 			const self = env.SELF as { fetch(request: Request): Promise<Response> } | undefined;
 			if (db && self) {
 				warmingUntil = Date.now() + WARM_BUDGET_MS + WARM_EVERY_MS;
 				const origin = (context.site ?? context.url).origin;
 				waitUntil(
-					warmStep(db, self, origin, { budgetMs: WARM_BUDGET_MS, batchSize: 4 })
+					warmStep(db, self, origin, { budgetMs: WARM_BUDGET_MS, batchSize: 4, daily: await warmDaily(options.database) })
 						.catch((error) => console.error("coywolf-pack: cache warming failed", error))
 						.finally(() => {
 							warmingUntil = Date.now() + WARM_EVERY_MS;

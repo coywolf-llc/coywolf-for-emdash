@@ -22,6 +22,35 @@ registerFeatures(FEATURES);
 
 const toggle = (action_id: string, label: string, initial_value: boolean) => ({ type: "toggle", action_id, label, initial_value });
 
+/** Left/center/right, with the site default (Videos → Settings → Appearance) as the empty choice. */
+const alignSelect = (action_id: string, label: string) => ({
+	type: "select",
+	action_id,
+	label,
+	options: [
+		{ value: "", label: "Site default" },
+		{ value: "left", label: "Left" },
+		{ value: "center", label: "Center" },
+		{ value: "right", label: "Right" },
+	],
+});
+
+/**
+ * Show/hide with the site default (Videos → Settings) as the empty choice, so
+ * new blocks follow the settings. No initial value: a block only keeps a
+ * choice someone made. Older blocks may hold true/false (see lib.ts resolveShow).
+ */
+const showSelect = (action_id: string, label: string) => ({
+	type: "select",
+	action_id,
+	label,
+	options: [
+		{ value: "", label: "Site default" },
+		{ value: "show", label: "Show" },
+		{ value: "hide", label: "Hide" },
+	],
+});
+
 export function videosPack(options: VideosOptions): PackModule {
 	const videos = videosModule(options);
 	return {
@@ -85,11 +114,18 @@ export function videosPack(options: VideosOptions): PackModule {
 						initial_value: "responsive",
 					},
 					{ type: "number_input", action_id: "maxWidth", label: "Maximum width (px)", min: 100, max: 4000 },
-					toggle("showName", "Show the title below the video", false),
-					toggle("showDescription", "Show the description", false),
-					toggle("showPlays", "Show plays", false),
-					toggle("showLikes", "Show a like button", false),
-					toggle("showDate", "Show the upload date", false),
+					showSelect("showName", "Video name below the video"),
+					showSelect("showDescription", "Description below the video"),
+					showSelect("showPlays", "Number of views"),
+					showSelect("showLikes", "Like button"),
+					showSelect("showLikeCount", "Number of likes"),
+					showSelect("showDate", "Upload date"),
+					alignSelect("contentAlign", "Name & description alignment"),
+					alignSelect("metaAlign", "Like / views / date row alignment"),
+					{ type: "number_input", action_id: "radius", label: "Corner radius (px; empty uses the site default)", min: 0, max: 48 },
+					showSelect("showBorder", "Border around the player"),
+					{ type: "number_input", action_id: "borderWidth", label: "Border width (px; empty uses the site default)", min: 0, max: 20 },
+					{ type: "text_input", action_id: "borderColor", label: "Border color (hex; empty uses the site default)", placeholder: "#eeeeee" },
 				],
 			},
 		],

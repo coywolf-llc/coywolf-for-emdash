@@ -18,9 +18,11 @@ import {
 	MAX_CAPTION_BYTES,
 	isUid,
 	normalizeCustomerHost,
+	parseTags,
 	utf8Bytes,
 	vttToTranscript,
 } from "./lib.js";
+import { type VideoDisplay, normalizeDisplay } from "./render.js";
 import { type StreamClient, type StreamCredentials, type StreamVideo, streamClient } from "./stream.js";
 
 export const COLLECTIONS = {
@@ -48,6 +50,10 @@ export const SETTINGS = {
 	webhookSecret: "videosWebhookSecret",
 	/** Poster first, player when needed (default on; false loads the player with the page). */
 	lightEmbed: "videosLightEmbed",
+	/** Views & likes and Appearance (one object, see render.ts VideoDisplay). */
+	display: "videosDisplay",
+	/** Tags added to every upload (comma-separated). */
+	defaultTags: "videosDefaultTags",
 } as const;
 
 /**
@@ -68,13 +74,15 @@ export interface PublicConfig {
 	background: string | null;
 	/** Show the poster and load Stream's player only when it's needed. */
 	lightEmbed: boolean;
+	/** What blocks show by default, and how the figure looks. */
+	display: VideoDisplay;
 }
 
 let publicCache: { value: PublicConfig; at: number; epoch: number } | null = null;
 /** Kept until a pack settings save (here or in another isolate) or ten minutes. */
 const PUBLIC_TTL = 10 * 60_000;
 /** The player settings public pages need, read with the feature switches (no query of their own). */
-const PUBLIC_SETTINGS = [SETTINGS.host, SETTINGS.accent, SETTINGS.background, SETTINGS.lightEmbed] as const;
+const PUBLIC_SETTINGS = [SETTINGS.host, SETTINGS.accent, SETTINGS.background, SETTINGS.lightEmbed, SETTINGS.display] as const;
 for (const key of PUBLIC_SETTINGS) registerSiteSetting(key);
 
 export function invalidatePublicConfig(): void {
@@ -83,7 +91,7 @@ export function invalidatePublicConfig(): void {
 
 const HOST_KEY = "state:videos:customerHost";
 
-/** The four player settings: from the switches' cached query, else one read each through the plugin context. */
+/** The player and display settings: from the switches' cached query, else one read each through the plugin context. */
 async function playerSettings(ctx: Ctx): Promise<Array<unknown>> {
 	const shared = await Promise.all(PUBLIC_SETTINGS.map((key) => readSiteSetting(key).catch(() => null)));
 	if (shared.every(Boolean)) return shared.map((read) => read?.value ?? null);
@@ -94,12 +102,13 @@ async function playerSettings(ctx: Ctx): Promise<Array<unknown>> {
 export async function publicConfig(ctx: Ctx): Promise<PublicConfig> {
 	if (publicCache && isCurrent(publicCache, PUBLIC_TTL)) return publicCache.value;
 	const epoch = settingsEpoch();
-	const [host, accent, background, lightEmbed] = await playerSettings(ctx);
+	const [host, accent, background, lightEmbed, display] = await playerSettings(ctx);
 	const value: PublicConfig = {
 		host: normalizeCustomerHost(host as string | null) ?? normalizeCustomerHost(await ctx.kv.get<string>(HOST_KEY)),
 		accent: isHex(accent) ? accent : null,
 		background: isHex(background) ? background : null,
 		lightEmbed: lightEmbed !== false,
+		display: normalizeDisplay(display),
 	};
 	if (epoch === settingsEpoch()) publicCache = { value, at: Date.now(), epoch };
 	return value;
@@ -133,13 +142,15 @@ export async function credentials(ctx: Ctx): Promise<StreamCredentials | null> {
 
 /** The saved settings for the Videos page's Settings tab (the token only as set / not set). */
 export async function adminSettings(ctx: Ctx) {
-	const [accountId, token, host, accent, background, lightEmbed] = await Promise.all([
+	const [accountId, token, host, accent, background, lightEmbed, display, defaultTags] = await Promise.all([
 		ctx.settings.get<string>(SETTINGS.accountId),
 		ctx.settings.get<string>(SETTINGS.token).catch(() => null),
 		ctx.settings.get<string>(SETTINGS.host),
 		ctx.settings.get<string>(SETTINGS.accent),
 		ctx.settings.get<string>(SETTINGS.background),
 		ctx.settings.get<boolean>(SETTINGS.lightEmbed),
+		ctx.settings.get<unknown>(SETTINGS.display),
+		ctx.settings.get<string>(SETTINGS.defaultTags),
 	]);
 	let env: Record<string, unknown> = {};
 	try {
@@ -154,6 +165,8 @@ export async function adminSettings(ctx: Ctx) {
 		accentColor: accent ?? "",
 		backgroundColor: background ?? "",
 		lightEmbed: lightEmbed !== false,
+		display: normalizeDisplay(display),
+		defaultTags: defaultTags ?? "",
 		/** Worker variables used when the settings are empty. */
 		envAccountId: Boolean(secret(env, "CF_ACCOUNT_ID")),
 		envToken: Boolean(secret(env, "CF_STREAM_TOKEN")),
@@ -178,10 +191,13 @@ export interface LibraryVideo {
 	ready: boolean;
 	size: number;
 	allowedOrigins: string[];
+	/** From Stream's meta.tags (Video Manager's tags). */
+	tags: string[];
+	creator: string;
 	meta: Record<string, unknown>;
 }
 
-const LIST_KEY = "cache:videos:list";
+const LIST_KEY = "cache:videos:list:v2";
 const LIST_TTL = 5 * 60_000;
 let listMemo: { items: LibraryVideo[]; at: number } | null = null;
 
@@ -203,6 +219,8 @@ function slim(v: StreamVideo): LibraryVideo {
 		ready: v.readyToStream === true,
 		size: v.size ?? 0,
 		allowedOrigins: v.allowedOrigins ?? [],
+		tags: parseTags(v.meta?.tags),
+		creator: typeof v.creator === "string" ? v.creator : "",
 		meta: v.meta ?? {},
 	};
 }
