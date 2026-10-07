@@ -1,0 +1,58 @@
+{
+	"Q90": {
+		"p31": [
+			"Q484170",
+			"Q22923920",
+			"Q200250",
+			"Q1200957",
+			"Q208511",
+			"Q174844",
+			"Q51929311",
+			"Q1187811",
+			"Q1549591",
+			"Q1422929",
+			"Q108178728",
+			"Q1066984",
+			"Q11418818",
+			"Q134445478",
+			"Q2240381"
+		],
+		"wikipedia": "https://en.wikipedia.org/wiki/Paris",
+		"website": "https://www.paris.fr/"
+	},
+	"Q42": {
+		"p31": [
+			"Q5"
+		],
+		"wikipedia": "https://en.wikipedia.org/wiki/Douglas_Adams",
+		"website": "https://douglasadams.com"
+	},
+	"Q95": {
+		"p31": [
+			"Q4830453",
+			"Q18388277",
+			"Q5988403",
+			"Q891723",
+			"Q19967801"
+		],
+		"wikipedia": "https://en.wikipedia.org/wiki/Google",
+		"website": "https://about.google/"
+	},
+	"Q1": {
+		"p31": [
+			"Q36906466",
+			"Q67518978"
+		],
+		"wikipedia": "https://en.wikipedia.org/wiki/Universe",
+		"website": ""
+	},
+	"Q2": {
+		"p31": [
+			"Q3504248",
+			"Q2221906",
+			"Q82794"
+		],
+		"wikipedia": "https://en.wikipedia.org/wiki/Earth",
+		"website": ""
+	}
+}

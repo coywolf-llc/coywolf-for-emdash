@@ -21,6 +21,7 @@ import type { PackModule } from "./core/module.js";
 import { secretSettingsSchema } from "./core/secrets.js";
 import { MODULES } from "./modules.js";
 import type { CoywolfOptions } from "./options.js";
+import { VERSION } from "./version.js";
 
 export type { BackupsOptions } from "./backups/module.js";
 export type { RedirectsOptions } from "./redirects/module.js";
@@ -31,7 +32,6 @@ export type { PrivateFormUploadsOptions } from "./formUploads/pack.js";
 export { privateFormUploads } from "./formUploads/pack.js";
 export type { ContentUrlOptions, TrailingSlash } from "./core/content-url.js";
 
-const VERSION = "0.28.1";
 const PACKAGE = "@coywolf/emdash";
 
 const FEATURES_PAGE = { path: "/features", label: "Coywolf Pack", icon: "toggle-right" };

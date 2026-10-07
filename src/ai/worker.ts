@@ -47,7 +47,8 @@ import {
 	takeCall,
 	withLock,
 } from "./store.js";
-import { entityDetails, searchCandidates } from "./wikidata.js";
+import { WikidataBusyError, entityDetails, searchCandidates } from "./wikidata.js";
+import { VERSION } from "../version.js";
 
 type Settings = AiSettings & { apiKey: string };
 
@@ -106,7 +107,8 @@ export async function entryText(ctx: PluginContext, collection: string, data: Re
 }
 
 const language = (ctx: PluginContext) => (ctx.site?.locale || "en").slice(0, 2).toLowerCase() || "en";
-const userAgent = (ctx: PluginContext) => `CoywolfPack/1 (EmDash plugin; ${ctx.site?.url || "unknown site"})`;
+/** Wikimedia User-Agent policy format: client/version (contact) library. */
+const userAgent = (ctx: PluginContext) => `CoywolfPack/${VERSION} (${ctx.site?.url || "unknown site"}) EmDash`;
 /**
  * Outbound requests (model calls and Wikidata lookups) per invocation. The
  * Workers Free plan allows 50 subrequests; this leaves room for the host's own.
@@ -166,11 +168,9 @@ async function groundEntities(ctx: PluginContext, options: AiOptions, s: Setting
 	const lang = language(ctx);
 	const f = fetcher(ctx, budget);
 	const ua = userAgent(ctx);
-	// Stage 2: real candidates, a few lookups at a time.
+	// Stage 2: real candidates, one lookup at a time (Wikimedia's API etiquette).
 	const candidates = [];
-	for (let i = 0; i < mentions.length; i += 4) {
-		candidates.push(...(await Promise.all(mentions.slice(i, i + 4).map((m) => searchCandidates(f, m.name, lang, ua)))));
-	}
+	for (const m of mentions) candidates.push(await searchCandidates(f, m.name, lang, ua));
 	let { mentions: grounded, ambiguous } = attachCandidates(mentions, candidates);
 	// Stage 3: the model chooses among real candidates only.
 	if (ambiguous.length) {
@@ -433,6 +433,8 @@ export async function tick(ctx: PluginContext, options: AiOptions, opts: { maxJo
 		const pages = await Promise.all(kinds.map((kind) => queue.query({ where: { kind, due: { lte: Date.now() } }, orderBy: { due: "asc" }, limit: 25 })));
 		const runnable = pages.flatMap((p) => p.items);
 		const budget: Budget = { used: 0, max: SUBREQUEST_BUDGET };
+		// Set when Wikidata asks to slow down: the rest of this tick's entry jobs wait for a later tick.
+		let wikidataBusy = false;
 		const batch = planBatch(runnable, {
 			now: Date.now(),
 			perTick: opts.maxJobs ?? s.jobsPerTick,
@@ -446,6 +448,7 @@ export async function tick(ctx: PluginContext, options: AiOptions, opts: { maxJo
 		for (const { id, data: job } of batch) {
 			if (Date.now() - started > opts.budgetMs) break;
 			if (budget.used + WORST_CASE_SUBREQUESTS[job.kind] > budget.max) break;
+			if (wikidataBusy && job.kind === "entry") continue;
 			try {
 				const status = job.kind === "media" ? await analyzeMedia(ctx, options, s, job, budget) : await analyzeEntry(ctx, options, s, features, job, budget);
 				await queue.delete(id);
@@ -456,6 +459,13 @@ export async function tick(ctx: PluginContext, options: AiOptions, opts: { maxJo
 					out.stoppedForLimit = true;
 					await queue.put(id, job); // Stays queued for tomorrow, with any outputs already paid for.
 					break;
+				}
+				if (error instanceof WikidataBusyError) {
+					// Not a failure: run again once Wikidata's Retry-After has passed, without using up an attempt.
+					wikidataBusy = true;
+					ctx.log.warn("AI job deferred: Wikidata asked to slow down", { job: id, retryAfterMs: error.retryAfterMs });
+					await queue.put(id, { ...job, due: Date.now() + error.retryAfterMs, lastError: error.message });
+					continue;
 				}
 				out.failed++;
 				const message = String((error as Error)?.message ?? error).slice(0, 500);

@@ -266,28 +266,59 @@ export function parseSearch(body: unknown): Candidate[] {
 	return out;
 }
 
-/** Parse a wbgetentities (claims|sitelinks) response: P31 values, the Wikipedia sitelink, and P856 (official website). */
-export function parseDetails(body: unknown, language: string): Record<string, WikidataDetails> {
-	const entities = (body as { entities?: unknown })?.entities;
-	if (!entities || typeof entities !== "object") return {};
-	const wiki = `${language}wiki`;
+/** The Wikipedia article URL for a sitelink title. */
+export function wikipediaUrl(language: string, title: string): string {
+	return `https://${language}.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, "_")).replace(/%2F/g, "/").replace(/%3A/g, ":")}`;
+}
+
+/**
+ * One Wikidata Query Service request for what verification needs: each item's
+ * P31 (instance of) and P856 (official website) values, deprecated statements
+ * excluded, and its `<language>wiki` sitelink title. Only Q-ids get in; items
+ * that don't exist (or are redirects) return no rows. The empty last branch
+ * keeps an item with none of these in the results.
+ */
+export function detailsQuery(qids: string[], language: string): string {
+	const ids = [...new Set(qids.filter((q) => /^Q\d+$/.test(q)))];
+	const wiki = /^[a-z]{2,3}$/.test(language) ? `https://${language}.wikipedia.org/` : null;
+	return [
+		"SELECT ?item ?class ?website ?title WHERE {",
+		`  VALUES ?item { ${ids.map((q) => `wd:${q}`).join(" ")} }`,
+		"  ?item wikibase:sitelinks [] .",
+		"  { ?item p:P31 ?s . ?s ps:P31 ?class ; wikibase:rank ?r . FILTER(?r != wikibase:DeprecatedRank) }",
+		"  UNION { ?item p:P856 ?s . ?s ps:P856 ?website ; wikibase:rank ?r . FILTER(?r != wikibase:DeprecatedRank) }",
+		...(wiki ? [`  UNION { ?article schema:about ?item ; schema:isPartOf <${wiki}> ; schema:name ?title . }`] : []),
+		"  UNION {}",
+		"}",
+	].join("\n");
+}
+
+const ENTITY_IRI = "http://www.wikidata.org/entity/";
+const entityId = (iri: unknown) => (typeof iri === "string" && iri.startsWith(ENTITY_IRI) && /^Q\d+$/.test(iri.slice(ENTITY_IRI.length)) ? iri.slice(ENTITY_IRI.length) : "");
+
+/**
+ * Parse the detailsQuery results (SPARQL JSON): P31 values, the first P856 that
+ * is an http(s) URL, and the Wikipedia sitelink. null when the body isn't a
+ * SPARQL result.
+ */
+export function parseSparqlDetails(body: unknown, language: string): Record<string, WikidataDetails> | null {
+	const rows = (body as { results?: { bindings?: unknown } })?.results?.bindings;
+	if (!Array.isArray(rows)) return null;
 	const out: Record<string, WikidataDetails> = {};
-	for (const [qid, raw] of Object.entries(entities as Record<string, unknown>)) {
-		const entity = raw as { claims?: Record<string, unknown[]>; sitelinks?: Record<string, { title?: string }> };
-		const claimValues = (prop: string) =>
-			(Array.isArray(entity?.claims?.[prop]) ? entity.claims[prop] : [])
-				.filter((c) => (c as { rank?: string })?.rank !== "deprecated")
-				.map((c) => (c as { mainsnak?: { datavalue?: { value?: unknown } } })?.mainsnak?.datavalue?.value);
-		const p31 = claimValues("P31")
-			.map((v) => (v as { id?: unknown })?.id)
-			.filter((id): id is string => typeof id === "string");
-		const website = claimValues("P856").find((v): v is string => typeof v === "string" && /^https?:\/\//i.test(v)) ?? "";
-		const title = entity?.sitelinks?.[wiki]?.title;
-		const wikipedia =
-			typeof title === "string" && title
-				? `https://${language}.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, "_")).replace(/%2F/g, "/").replace(/%3A/g, ":")}`
-				: "";
-		out[qid] = { p31, wikipedia, website };
+	for (const row of rows) {
+		const value = (key: string) => {
+			const v = (row as Record<string, { value?: unknown } | undefined>)?.[key]?.value;
+			return typeof v === "string" ? v : "";
+		};
+		const qid = entityId(value("item"));
+		if (!qid) continue;
+		const details = (out[qid] ??= { p31: [], wikipedia: "", website: "" });
+		const instanceOf = entityId(value("class"));
+		if (instanceOf && !details.p31.includes(instanceOf)) details.p31.push(instanceOf);
+		const website = value("website");
+		if (!details.website && /^https?:\/\//i.test(website)) details.website = website;
+		const title = value("title");
+		if (!details.wikipedia && title) details.wikipedia = wikipediaUrl(language, title);
 	}
 	return out;
 }
