@@ -177,7 +177,7 @@ async function sampleFile(database: string): Promise<string | null> {
 		)
 		.first<{ storage_key: string }>()
 		.catch(() => null);
-	return row?.storage_key && /^[A-Za-z0-9_-]+\.[a-z0-9]{2,5}$/i.test(row.storage_key) ? row.storage_key : null;
+	return row?.storage_key && /^[A-Za-z0-9_.-]+\.[a-z0-9]{2,5}$/i.test(row.storage_key) ? row.storage_key : null;
 }
 
 async function runCheck(host: string, database: string) {

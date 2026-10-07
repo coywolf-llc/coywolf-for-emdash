@@ -279,17 +279,18 @@ export async function imageInfo(srcs: Iterable<string | null | undefined>, datab
 	for (let i = 0; i < keys.length; i += 90) {
 		const batch = keys.slice(i, i + 90);
 		type Row = { id: string; storage_key: string; width: number | null; height: number | null; mime_type: string | null; size: number | null; data: string | null };
-		// Looked up by id (the primary key; storage_key has no index) and matched back by storage_key,
-		// so a file that was renamed in the bucket isn't mistaken for the one the page shows.
+		// By storage_key: the file name in a media URL is the bucket key's stem, not the media id
+		// (EmDash names files with their own ULID, and uploads since 1.1 as <stem>.<attempt>.<ext>).
+		// storage_key has no index, so this is one scan of the media table per uncached page.
 		const rows = await batchedAll<Row>(
 			db,
 			db
 				.prepare(
 					`SELECT m.id, m.storage_key, m.width, m.height, m.mime_type, m.size, s.data FROM media AS m
 					LEFT JOIN _plugin_storage AS s ON s.plugin_id = 'coywolf-pack' AND s.collection = '${VARIANTS_COLLECTION}' AND s.id = m.id
-					WHERE m.id IN (${batch.map(() => "?").join(",")})`,
+					WHERE m.storage_key IN (${batch.map(() => "?").join(",")})`,
 				)
-				.bind(...batch.map((key) => wanted.get(key)!.id)),
+				.bind(...batch),
 		);
 		const found = new Map(rows.map((r) => [r.storage_key, r]));
 		if (infoCache.size > 5000) infoCache.clear();
