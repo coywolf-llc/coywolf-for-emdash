@@ -1,5 +1,5 @@
 {
-"head": {"vars": ["item", "class", "website", "title"]},
+"head": {"vars": ["item", "class", "website", "rank", "title"]},
 "results": { "bindings": [
 {"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q1"}},
 {"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q2"}},
@@ -32,10 +32,10 @@
 {"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q90"}, "class": {"type": "uri", "value": "http://www.wikidata.org/entity/Q2240381"}},
 {"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q2"}, "class": {"type": "uri", "value": "http://www.wikidata.org/entity/Q82794"}},
 {"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q1"}, "class": {"type": "uri", "value": "http://www.wikidata.org/entity/Q67518978"}},
-{"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q42"}, "website": {"type": "uri", "value": "https://douglasadams.com"}},
-{"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q90"}, "website": {"type": "uri", "value": "https://www.paris.fr/"}},
-{"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q90"}, "website": {"type": "uri", "value": "http://www.villedeparis.fr/"}},
-{"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q95"}, "website": {"type": "uri", "value": "https://about.google/"}},
+{"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q42"}, "website": {"type": "uri", "value": "https://douglasadams.com"}, "rank": {"type": "uri", "value": "http://wikiba.se/ontology#NormalRank"}},
+{"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q90"}, "website": {"type": "uri", "value": "http://www.villedeparis.fr/"}, "rank": {"type": "uri", "value": "http://wikiba.se/ontology#NormalRank"}},
+{"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q90"}, "website": {"type": "uri", "value": "https://www.paris.fr/"}, "rank": {"type": "uri", "value": "http://wikiba.se/ontology#NormalRank"}},
+{"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q95"}, "website": {"type": "uri", "value": "https://about.google/"}, "rank": {"type": "uri", "value": "http://wikiba.se/ontology#NormalRank"}},
 {"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q2"}, "title": {"xml:lang": "en", "type": "literal", "value": "Earth"}},
 {"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q1"}, "title": {"xml:lang": "en", "type": "literal", "value": "Universe"}},
 {"item": {"type": "uri", "value": "http://www.wikidata.org/entity/Q90"}, "title": {"xml:lang": "en", "type": "literal", "value": "Paris"}},

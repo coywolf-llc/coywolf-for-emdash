@@ -844,7 +844,7 @@ Set `ai: false` in `coywolfPlugin()` to leave the module out entirely. The modul
 
 - Only published entries are analyzed. Change the model or switch features and entries are re-analyzed the next time they're saved (or with **Re-analyze unchanged entries**).
 - The daily limit is counted in UTC days. Each call's token usage is in the usage log; costs depend on your provider.
-- Wikidata lookups are cached per Worker isolate and made one at a time, with `maxlag=5`. If Wikidata doesn't answer, the item is retried rather than saved unverified; if it asks to slow down (HTTP 429 or maxlag), the item waits for its `Retry-After` without counting as a failed attempt.
+- Wikidata lookups are cached per Worker isolate and made one at a time, with `maxlag=5`. If Wikidata doesn't answer, the item is retried rather than saved unverified; if it asks to slow down (HTTP 429 or maxlag), every entity job waits for its `Retry-After` without counting as a failed attempt (after 10 waits in a row, the next counts as one). When an item lists several official websites, the preferred-rank one is kept, then https over http, then the first alphabetically.
 ## Discovery
 
 Help search engines and AI agents find your content. Ported from Coywolf SEO for WordPress. Everything is off until you turn it on under **Plugins → Coywolf Pack**: the **Discovery** switch, then any of its three parts. Settings and status are under **Plugins → Coywolf Pack → Discovery**.

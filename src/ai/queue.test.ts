@@ -40,6 +40,17 @@ test("planBatch respects the daily call budget and keeps each kind in order", ()
 	assert.deepEqual(logic.planBatch(jobs, { now: 10, perTick: 10, remainingCalls: -5, callsPerJob: cost }), []);
 });
 
+test("deferJob pushes the job to Retry-After without an attempt, and gives up deferring after MAX_DEFERRALS in a row", () => {
+	const j = job("a", 0).data;
+	const once = logic.deferJob(j, 1_000, 30_000);
+	assert.deepEqual(once, { ...j, deferrals: 1, due: 31_000 });
+	assert.equal(once!.attempts, 0);
+	const tenth = logic.deferJob({ ...j, deferrals: logic.MAX_DEFERRALS - 1 }, 1_000, 30_000);
+	assert.equal(tenth?.deferrals, logic.MAX_DEFERRALS);
+	assert.equal(logic.deferJob({ ...j, deferrals: logic.MAX_DEFERRALS }, 1_000, 30_000), null, "the next one counts as a failed attempt");
+	assert.equal(logic.MAX_DEFERRALS, 10);
+});
+
 test("retryAt backs off and gives up after MAX_ATTEMPTS", () => {
 	const j = job("a", 0).data;
 	assert.equal(logic.retryAt({ ...j, attempts: 0 }, 0), 5 * 60_000);

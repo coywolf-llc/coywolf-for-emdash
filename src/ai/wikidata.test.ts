@@ -51,6 +51,8 @@ test("detailsQuery takes only Q-ids, once each, and the sitelink only for a plai
 	assert.doesNotMatch(q, /\?x|P31 \}|q5/);
 	assert.match(q, /schema:isPartOf <https:\/\/en\.wikipedia\.org\/>/);
 	assert.match(q, /FILTER\(\?r != wikibase:DeprecatedRank\)/);
+	assert.match(q, /SELECT \?item \?class \?website \?rank \?title/);
+	assert.match(q, /ps:P856 \?website ; wikibase:rank \?rank \. FILTER\(\?rank != wikibase:DeprecatedRank\)/);
 	assert.doesNotMatch(logic.detailsQuery(["Q1"], "e>n"), /wikipedia/);
 });
 
@@ -88,6 +90,33 @@ test("parseSparqlDetails keeps Q-ids and http(s) websites only, and rejects non-
 	});
 	assert.equal(logic.parseSparqlDetails({ error: "nope" }, "en"), null);
 	assert.equal(logic.parseSparqlDetails(null, "en"), null);
+});
+
+test("parseSparqlDetails picks one website regardless of row order: preferred rank, then https, then the smallest URL", () => {
+	const E = "http://www.wikidata.org/entity/";
+	const R = "http://wikiba.se/ontology#";
+	const site = (qid: string, website: string, rank = "NormalRank") => ({ item: { type: "uri", value: `${E}${qid}` }, website: { type: "uri", value: website }, rank: { type: "uri", value: `${R}${rank}` } });
+	const rows = [
+		site("Q1", "https://zzz.example/"),
+		site("Q1", "http://preferred.example/", "PreferredRank"),
+		site("Q1", "https://aaa.example/"),
+		site("Q2", "http://aaa.example/"),
+		site("Q2", "https://zzz.example/"),
+		site("Q3", "https://b.example/"),
+		site("Q3", "https://a.example/"),
+	];
+	const pick = (bindings: unknown[]) => Object.fromEntries(Object.entries(logic.parseSparqlDetails({ results: { bindings } }, "en")!).map(([k, v]) => [k, v.website]));
+	const expected = { Q1: "http://preferred.example/", Q2: "https://zzz.example/", Q3: "https://a.example/" };
+	assert.deepEqual(pick(rows), expected);
+	assert.deepEqual(pick([...rows].reverse()), expected);
+	// The recorded Q90 lists two websites with the http one first: the https one is kept.
+	assert.equal(logic.parseSparqlDetails(fixture("wikidata-details.sparql.json"), "en")!.Q90.website, "https://www.paris.fr/");
+});
+
+test("userAgent follows the Wikimedia policy, with the repository as contact when the site has no URL", () => {
+	assert.equal(logic.userAgent("1.2.3", "https://example.com"), "CoywolfPack/1.2.3 (https://example.com) EmDash");
+	assert.equal(logic.userAgent("1.2.3", undefined), "CoywolfPack/1.2.3 (https://github.com/coywolf-llc/coywolf-pack) EmDash");
+	assert.equal(logic.userAgent("1.2.3", ""), "CoywolfPack/1.2.3 (https://github.com/coywolf-llc/coywolf-pack) EmDash");
 });
 
 test("entityDetails makes one SPARQL request to query.wikidata.org", async () => {

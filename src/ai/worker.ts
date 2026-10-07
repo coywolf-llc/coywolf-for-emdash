@@ -15,6 +15,7 @@ import {
 	applyChoices,
 	attachCandidates,
 	cleanDescription,
+	deferJob,
 	entryPlainText,
 	parseChoices,
 	parseImageText,
@@ -22,6 +23,7 @@ import {
 	planBatch,
 	queueId,
 	retryAt,
+	userAgent,
 	verifyEntities,
 } from "./logic.js";
 import { DESCRIBE_SYSTEM, DISAMBIGUATE_SYSTEM, EXTRACT_SYSTEM, IMAGE_SYSTEM, articlePrompt, disambiguatePrompt, imagePrompt } from "./prompts.js";
@@ -34,6 +36,7 @@ import {
 	type EntryRecord,
 	type MediaRecord,
 	type UsageRow,
+	WIKIDATA_BUSY_KEY,
 	bindings,
 	bulkKey,
 	callsToday,
@@ -107,8 +110,6 @@ export async function entryText(ctx: PluginContext, collection: string, data: Re
 }
 
 const language = (ctx: PluginContext) => (ctx.site?.locale || "en").slice(0, 2).toLowerCase() || "en";
-/** Wikimedia User-Agent policy format: client/version (contact) library. */
-const userAgent = (ctx: PluginContext) => `CoywolfPack/${VERSION} (${ctx.site?.url || "unknown site"}) EmDash`;
 /**
  * Outbound requests (model calls and Wikidata lookups) per invocation. The
  * Workers Free plan allows 50 subrequests; this leaves room for the host's own.
@@ -167,7 +168,7 @@ async function groundEntities(ctx: PluginContext, options: AiOptions, s: Setting
 	if (!mentions.length) return [];
 	const lang = language(ctx);
 	const f = fetcher(ctx, budget);
-	const ua = userAgent(ctx);
+	const ua = userAgent(VERSION, ctx.site?.url);
 	// Stage 2: real candidates, one lookup at a time (Wikimedia's API etiquette).
 	const candidates = [];
 	for (const m of mentions) candidates.push(await searchCandidates(f, m.name, lang, ua));
@@ -433,8 +434,8 @@ export async function tick(ctx: PluginContext, options: AiOptions, opts: { maxJo
 		const pages = await Promise.all(kinds.map((kind) => queue.query({ where: { kind, due: { lte: Date.now() } }, orderBy: { due: "asc" }, limit: 25 })));
 		const runnable = pages.flatMap((p) => p.items);
 		const budget: Budget = { used: 0, max: SUBREQUEST_BUDGET };
-		// Set when Wikidata asks to slow down: the rest of this tick's entry jobs wait for a later tick.
-		let wikidataBusy = false;
+		// While Wikidata asks to slow down (one Retry-After, shared by every entry job), entry jobs wait for a later tick.
+		let wikidataBusy = ((await ctx.kv.get<number>(WIKIDATA_BUSY_KEY)) ?? 0) > Date.now();
 		const batch = planBatch(runnable, {
 			now: Date.now(),
 			perTick: opts.maxJobs ?? s.jobsPerTick,
@@ -461,11 +462,16 @@ export async function tick(ctx: PluginContext, options: AiOptions, opts: { maxJo
 					break;
 				}
 				if (error instanceof WikidataBusyError) {
-					// Not a failure: run again once Wikidata's Retry-After has passed, without using up an attempt.
 					wikidataBusy = true;
-					ctx.log.warn("AI job deferred: Wikidata asked to slow down", { job: id, retryAfterMs: error.retryAfterMs });
-					await queue.put(id, { ...job, due: Date.now() + error.retryAfterMs, lastError: error.message });
-					continue;
+					await ctx.kv.set(WIKIDATA_BUSY_KEY, Date.now() + error.retryAfterMs);
+					// Not a failure: run again once Wikidata's Retry-After has passed, without using up an attempt...
+					const deferred = deferJob(job, Date.now(), error.retryAfterMs);
+					if (deferred) {
+						ctx.log.warn("AI job deferred: Wikidata asked to slow down", { job: id, retryAfterMs: error.retryAfterMs, deferrals: deferred.deferrals });
+						await queue.put(id, { ...deferred, lastError: error.message });
+						continue;
+					}
+					// ...unless it has been deferred MAX_DEFERRALS times in a row: then it counts as a failed attempt.
 				}
 				out.failed++;
 				const message = String((error as Error)?.message ?? error).slice(0, 500);
@@ -476,7 +482,7 @@ export async function tick(ctx: PluginContext, options: AiOptions, opts: { maxJo
 					await recordFailure(ctx, job, message);
 				} else {
 					// job.cache holds the stage outputs this attempt already paid for.
-					await queue.put(id, { ...job, attempts: job.attempts + 1, due: next, lastError: message });
+					await queue.put(id, { ...job, attempts: job.attempts + 1, deferrals: 0, due: next, lastError: message });
 				}
 			}
 		}
