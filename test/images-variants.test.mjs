@@ -502,3 +502,38 @@ test("renders: stopgaps only when sizes are coming; missing crops are made after
 	setImageCdn(null);
 	globalThis.__testEnv = undefined;
 });
+
+test("a run stops where it is once sizes for existing images are turned off (keepGoing)", async () => {
+	const db = d1();
+	const b = bucket();
+	for (let i = 0; i < 12; i++) {
+		const id = `01K${String(i).padStart(2, "0")}`;
+		addMedia(db, id, "jpg", "image/jpeg", 1000, 600);
+		b.objects.set(`${id}.jpg`, { body: new Uint8Array([1]).buffer, options: {} });
+	}
+	let on = true;
+	let batches = 0;
+	let upgraded = 0;
+	const deps = {
+		db,
+		bucket: b,
+		images: images(),
+		upgradePosters: async () => (upgraded++, true),
+		keepGoing: async () => (batches++ < 1 ? on : (on = false)),
+	};
+	let state = await store.backfillStep(deps, { budgetMs: 60_000 });
+	assert.equal(state.phase, "running", "stopped mid-way, not finished");
+	assert.equal(state.done, 5, "one batch was made before the switch was seen off");
+	assert.equal(upgraded, 0, "no cleanup (poster upgrades) either");
+	const calls = deps.images.calls.length;
+	state = await store.backfillStep(deps, { budgetMs: 60_000 });
+	assert.equal(deps.images.calls.length, calls, "off: nothing more is made");
+	assert.equal(state.phase, "running");
+	// Turned back on: a fresh run finishes the library.
+	on = true;
+	deps.keepGoing = async () => on;
+	await store.startVariantsRun(db, { force: true });
+	state = await store.backfillStep(deps, { budgetMs: 60_000 });
+	assert.equal(state.phase, "done");
+	assert.deepEqual(await store.variantCounts(db), { total: 12, stored: 12, skipped: 0 });
+});

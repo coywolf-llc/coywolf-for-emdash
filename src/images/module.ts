@@ -309,7 +309,8 @@ export function imagesModule(options: { database?: string; variants: VariantsHoo
 					const { start } = parseInput(z.object({ start: z.boolean().optional() }), ctx.input ?? {});
 					if (start) await startVariantsRun(deps.db, { force: true });
 					await variants.run();
-					return variantsStatus(variants, true);
+					// Read again: another admin may have turned the setting off while this call worked.
+					return variantsStatus(variants, await bulkSetting(ctx));
 				},
 			}),
 

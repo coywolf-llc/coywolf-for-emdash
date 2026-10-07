@@ -204,7 +204,7 @@ function CostEstimate({ estimate }: { estimate: Estimate }) {
 				</li>
 				<li>
 					<span className="font-medium">Then about {money(storage)} a month</span> to keep {count(estimate.files)} files (about {gb(estimate.bytes)}) in the
-					media bucket (R2 storage, $0.015 per GB a month; the first 10 GB are free). Serving them costs no transformations.
+					media bucket, at R2's $0.015 per GB a month (less while the bucket is under R2's free 10 GB). Serving them costs no transformations.
 				</li>
 				<li>
 					<span className="font-medium">Without stored sizes: up to {money(upTo)} a month.</span> Cloudflare charges for each different size of each image
@@ -261,7 +261,11 @@ function CostEstimate({ estimate }: { estimate: Estimate }) {
 					</table>
 				</div>
 			) : (
-				<p className="text-sm text-kumo-subtle">The traffic calculator needs the number of published pages, which couldn't be counted.</p>
+				<p className="text-sm text-kumo-subtle">
+					{estimate.pages === 0
+						? "The traffic calculator needs published pages; the site has none yet."
+						: "The traffic calculator needs the number of published pages, which couldn't be counted."}
+				</p>
 			)}
 
 			<details className="text-xs text-kumo-subtle">
@@ -329,6 +333,8 @@ function StoredSizes() {
 			for (let i = 0; i < 1000 && !stop.current; i++) {
 				const next = await post<VariantsStatus>("variants/run", { start }, "Couldn't make the sizes");
 				start = false;
+				// Turned off while this call worked: its status is from before, and the next call would fail.
+				if (stop.current) break;
 				setStatus(next);
 				if (!next.bulk || !next.state || next.state.phase === "done") break;
 			}
@@ -344,15 +350,18 @@ function StoredSizes() {
 		setSwitching(true);
 		setError(null);
 		if (!on) stop.current = true;
+		let turnedOn = false;
 		try {
 			setStatus(await post<VariantsStatus>("variants/bulk", { on }, "Couldn't change the setting"));
 			setConfirming(false);
-			if (on) await run();
+			turnedOn = on;
 		} catch (cause) {
 			setError(errorText(cause, "Couldn't change the setting"));
 		} finally {
 			setSwitching(false);
 		}
+		// The first run follows at once, in the background: Turn off stays usable while it works.
+		if (turnedOn) void run();
 	};
 
 	const state = status?.state;

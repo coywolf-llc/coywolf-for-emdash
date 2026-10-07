@@ -242,6 +242,12 @@ async function claim(db: Db): Promise<{ state: VariantsState; rows: MediaRow[] }
 export interface BackfillDeps extends VariantDeps {
 	/** Copy legacy video posters' sizes during cleanup; true when none are left. */
 	upgradePosters?: (deadline: number) => Promise<boolean>;
+	/**
+	 * Asked before each batch and before the cleanup: false stops the run where
+	 * it is (sizes for existing images were turned off meanwhile). The state
+	 * keeps its cursor; turning the setting back on starts over anyway.
+	 */
+	keepGoing?: () => Promise<boolean>;
 }
 
 /**
@@ -256,6 +262,8 @@ export async function backfillStep(deps: BackfillDeps, options: { budgetMs: numb
 	let state = await startVariantsRun(deps.db, { now: clock() });
 	while (clock() < deadline && handled < (options.maxImages ?? Number.POSITIVE_INFINITY)) {
 		if (state.phase === "done") break;
+		// Each batch and the cleanup cost transformations: stop as soon as the site turned them off.
+		if (deps.keepGoing && !(await deps.keepGoing())) break;
 		if (state.phase === "cleanup") {
 			const left = deadline - clock();
 			const versionsDone = await deleteVersion(deps.bucket, VARIANTS_VERSION - 1, left).catch(() => false);

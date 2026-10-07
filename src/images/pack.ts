@@ -91,7 +91,15 @@ export async function variantDeps(): Promise<BackfillDeps | null> {
 	const bucket = env[config.bucket] as VariantBucket | undefined;
 	const images = env[config.images] as ImagesBinding | undefined;
 	if (!db || !bucket || !images) return null;
-	return { db, bucket, images, upgradePosters: (deadline) => upgradeListedPosters(db as never, bucket, images, deadline) };
+	return {
+		db,
+		bucket,
+		images,
+		upgradePosters: (deadline) => upgradeListedPosters(db as never, bucket, images, deadline),
+		// Read with the feature switches (per-isolate cache, FEATURES_TTL_MS), so a run under way
+		// stops within that long of the setting being turned off; a toggle in this isolate stops it at once.
+		keepGoing: variantsBulkOn,
+	};
 }
 
 /**
