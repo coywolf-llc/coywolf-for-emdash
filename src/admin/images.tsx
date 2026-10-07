@@ -403,7 +403,7 @@ function StoredSizes() {
 								<span className="font-medium">Sizes for existing images: on.</span> An hourly job makes any that are missing (also right after a WordPress
 								media import). Turning it off stops that; sizes already made stay in use.
 							</p>
-							<Button type="button" variant="ghost" disabled={switching} onClick={() => void setBulk(false)}>
+							<Button type="button" variant="secondary" disabled={switching} onClick={() => void setBulk(false)}>
 								{switching ? "Turning off…" : "Turn off"}
 							</Button>
 						</>
@@ -424,7 +424,7 @@ function StoredSizes() {
 								<Button type="button" variant="primary" disabled={switching} onClick={() => void setBulk(true)}>
 									{switching ? "Turning on…" : "Turn on and start"}
 								</Button>
-								<Button type="button" variant="ghost" disabled={switching} onClick={() => setConfirming(false)}>
+								<Button type="button" variant="secondary" disabled={switching} onClick={() => setConfirming(false)}>
 									Cancel
 								</Button>
 							</div>
@@ -643,7 +643,7 @@ export function ImagesPage() {
 						actions={
 							<>
 								{!showHostInput && (
-									<Button type="button" variant="ghost" disabled={busy} onClick={() => setHostOpen(true)}>
+									<Button type="button" variant="secondary" disabled={busy} onClick={() => setHostOpen(true)}>
 										Change host
 									</Button>
 								)}
@@ -759,7 +759,7 @@ export function ImagesPage() {
 											<Button type="button" variant="primary" disabled={busy} onClick={() => void applySetup()}>
 												{pending === "apply" ? "Setting up…" : "Apply"}
 											</Button>
-											<Button type="button" variant="ghost" disabled={busy} onClick={() => setPlan(null)}>
+											<Button type="button" variant="secondary" disabled={busy} onClick={() => setPlan(null)}>
 												Cancel
 											</Button>
 										</div>
