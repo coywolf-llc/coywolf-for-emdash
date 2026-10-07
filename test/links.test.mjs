@@ -677,7 +677,8 @@ test("schedule: tasks run hourly and only while Scheduled link checking is on", 
 test("schedule: isRunDue for daily, weekly (default) and monthly", () => {
 	const now = Date.now();
 	for (const f of ["daily", "weekly", "monthly"]) assert.equal(isRunDue(f, null, now), true, `${f}: never ran`);
-	assert.equal(isRunDue("daily", ago(23.5 * 3_600_000), now), true, "within the hour's slack");
+	assert.equal(isRunDue("daily", ago(24 * 3_600_000 - 2 * 60_000), now), true, "within a few minutes of cron drift");
+	assert.equal(isRunDue("daily", ago(23.5 * 3_600_000), now), false, "not an hour early (daily runs don't creep earlier)");
 	assert.equal(isRunDue("daily", ago(20 * 3_600_000), now), false);
 	assert.equal(isRunDue("weekly", ago(6 * DAY), now), false);
 	assert.equal(isRunDue("weekly", ago(7 * DAY), now), true);

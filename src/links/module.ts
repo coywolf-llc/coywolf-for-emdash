@@ -98,7 +98,7 @@ export interface ScheduledRun {
 }
 
 /** Cron ticks drift by seconds to minutes, so a run is due a little before the full interval has passed. */
-const DUE_SLACK_MS = 60 * 60_000;
+const DUE_SLACK_MS = 5 * 60_000;
 
 /** Whether a new scheduled run should start: never ran, or the last one started at least `frequency` ago. */
 export function isRunDue(frequency: Frequency, lastStartedAt: string | null | undefined, now = Date.now()): boolean {
@@ -641,8 +641,11 @@ export function linksModule() {
 		if (current?.phase !== "check") return;
 		const run = await runChecks(ctx, { deadline: Date.now() + 10 * 60_000 });
 		if (run.checked) ctx.log.info("links: checked", run);
-		// Done when everything due fit in this tick; otherwise the next tick continues.
-		if (!run.exhausted && run.due < 100) await ctx.kv.set(RUN_KEY, { ...current, phase: "done", finishedAt: new Date().toISOString() } satisfies ScheduledRun);
+		// Done when everything due fit in this tick; otherwise the next tick continues, but never
+		// past the next run's start (a site with many failing links, rechecked daily, would never drain).
+		const frequency = await ctx.settings.get<string>("linksFrequency");
+		const overdue = isRunDue(isFrequency(frequency) ? frequency : LINKS_DEFAULTS.frequency, current.startedAt);
+		if ((!run.exhausted && run.due < 100) || overdue) await ctx.kv.set(RUN_KEY, { ...current, phase: "done", finishedAt: new Date().toISOString() } satisfies ScheduledRun);
 	}
 
 	return { routes, hooks, scanTask, checkTask };
