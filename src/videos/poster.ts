@@ -236,11 +236,15 @@ export async function relistPoster(db: Db, from: string, to: string | null): Pro
 		.run();
 }
 
+/** Legacy posters upgraded per call: each is ~16 subrequests, and the call shares an invocation's 1,000 with the images made before it. */
+export const POSTER_UPGRADES_PER_CALL = 10;
+
 /**
  * Make the stored sizes of posters listed before they existed (or with an
  * older version), and list them as sized. A poster whose sizes can't be made
- * is unlisted, so the next render copies it again. True when none are left;
- * false when `deadline` passed first.
+ * is unlisted, so the next render copies it again (its JPEG is still in the
+ * bucket, so that's a head request and another try). True when none are left;
+ * false when `deadline` passed or POSTER_UPGRADES_PER_CALL were done first.
  */
 export async function upgradeListedPosters(db: Db, bucket: VariantBucket, images: ImagesBinding, deadline: number): Promise<boolean> {
 	const row = await db.prepare("SELECT value FROM options WHERE name = ?1").bind(POSTERS_OPTION).first<{ value: string }>();
@@ -251,8 +255,9 @@ export async function upgradeListedPosters(db: Db, bucket: VariantBucket, images
 		return true;
 	}
 	const legacy = (Array.isArray(list) ? list : []).filter((e): e is string => typeof e === "string" && !e.endsWith(`#v${VARIANTS_VERSION}`));
+	let done = 0;
 	for (const entry of legacy) {
-		if (Date.now() > deadline) return false;
+		if (Date.now() > deadline || done++ >= POSTER_UPGRADES_PER_CALL) return false;
 		const key = entry.split("#")[0];
 		try {
 			await posterVariants(bucket, images, key);

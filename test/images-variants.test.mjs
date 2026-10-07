@@ -327,6 +327,17 @@ test("legacy listed posters are upgraded to stored sizes; ones that can't be are
 	const list = JSON.parse(db.sqlite.prepare("SELECT value FROM options WHERE name = ?").get(POSTERS_OPTION).value);
 	assert.deepEqual(list.sort(), [`cwposter-a-1.jpg#v${V.VARIANTS_VERSION}`, `cwposter-c-3.jpg#v${V.VARIANTS_VERSION}`]);
 	assert.ok(b.objects.has(`v${V.VARIANTS_VERSION}/cwposter-a-1-400.webp`));
+
+	// Many legacy posters: a bounded number per call (subrequests), the rest next time.
+	const { POSTER_UPGRADES_PER_CALL } = await import("../src/videos/poster.ts");
+	const many = Array.from({ length: POSTER_UPGRADES_PER_CALL + 2 }, (_, i) => `cwposter-m-${i}.jpg`);
+	const mb = bucket(Object.fromEntries(many.map((k) => [k, new Uint8Array([1]).buffer])));
+	db.sqlite.prepare("UPDATE options SET value = ? WHERE name = ?").run(JSON.stringify(many), POSTERS_OPTION);
+	assert.equal(await upgradeListedPosters(db, mb, images(), Date.now() + 60_000), false);
+	const after = JSON.parse(db.sqlite.prepare("SELECT value FROM options WHERE name = ?").get(POSTERS_OPTION).value);
+	assert.equal(after.filter((e) => e.endsWith(`#v${V.VARIANTS_VERSION}`)).length, POSTER_UPGRADES_PER_CALL);
+	assert.equal(after.length, many.length, "none unlisted");
+	assert.equal(await upgradeListedPosters(db, mb, images(), Date.now() + 60_000), true);
 });
 
 // ── Media writes (middleware) ──────────────────────────────────────
