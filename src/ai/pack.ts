@@ -12,7 +12,7 @@ import { getEntryEntities } from "./entities.js";
 import { PROVIDER_HOSTS } from "./providers.js";
 import { aiRoutes } from "./routes.js";
 import { type AiOptions, STORAGE, col, enqueue, entryKey, readSettings, type EntryRecord } from "./store.js";
-import { WIKIDATA_HOST } from "./wikidata.js";
+import { WIKIDATA_HOST, WIKIDATA_QUERY_HOST } from "./wikidata.js";
 import { queueId } from "./logic.js";
 import { entryText, targetCollections, tick } from "./worker.js";
 
@@ -116,6 +116,6 @@ export function aiPack(options: AiOptions = {}): PackModule {
 		adminPages: [{ path: "/ai", label: "AI Enrichment", icon: "sparkle" }],
 		storage: STORAGE,
 		capabilities: ["network:request", "content:read", "content:write", "schema:read", "media:read", "media:bytes:read", "media:metadata:write"],
-		allowedHosts: [...PROVIDER_HOSTS, WIKIDATA_HOST],
+		allowedHosts: [...PROVIDER_HOSTS, WIKIDATA_HOST, WIKIDATA_QUERY_HOST],
 	};
 }

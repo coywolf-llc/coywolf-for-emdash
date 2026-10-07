@@ -15,6 +15,7 @@ import {
 	applyChoices,
 	attachCandidates,
 	cleanDescription,
+	deferJob,
 	entryPlainText,
 	parseChoices,
 	parseImageText,
@@ -22,6 +23,7 @@ import {
 	planBatch,
 	queueId,
 	retryAt,
+	userAgent,
 	verifyEntities,
 } from "./logic.js";
 import { DESCRIBE_SYSTEM, DISAMBIGUATE_SYSTEM, EXTRACT_SYSTEM, IMAGE_SYSTEM, articlePrompt, disambiguatePrompt, imagePrompt } from "./prompts.js";
@@ -34,6 +36,7 @@ import {
 	type EntryRecord,
 	type MediaRecord,
 	type UsageRow,
+	WIKIDATA_BUSY_KEY,
 	bindings,
 	bulkKey,
 	callsToday,
@@ -47,7 +50,8 @@ import {
 	takeCall,
 	withLock,
 } from "./store.js";
-import { entityDetails, searchCandidates } from "./wikidata.js";
+import { WikidataBusyError, entityDetails, searchCandidates } from "./wikidata.js";
+import { VERSION } from "../version.js";
 
 type Settings = AiSettings & { apiKey: string };
 
@@ -106,7 +110,6 @@ export async function entryText(ctx: PluginContext, collection: string, data: Re
 }
 
 const language = (ctx: PluginContext) => (ctx.site?.locale || "en").slice(0, 2).toLowerCase() || "en";
-const userAgent = (ctx: PluginContext) => `CoywolfPack/1 (EmDash plugin; ${ctx.site?.url || "unknown site"})`;
 /**
  * Outbound requests (model calls and Wikidata lookups) per invocation. The
  * Workers Free plan allows 50 subrequests; this leaves room for the host's own.
@@ -165,12 +168,10 @@ async function groundEntities(ctx: PluginContext, options: AiOptions, s: Setting
 	if (!mentions.length) return [];
 	const lang = language(ctx);
 	const f = fetcher(ctx, budget);
-	const ua = userAgent(ctx);
-	// Stage 2: real candidates, a few lookups at a time.
+	const ua = userAgent(VERSION, ctx.site?.url);
+	// Stage 2: real candidates, one lookup at a time (Wikimedia's API etiquette).
 	const candidates = [];
-	for (let i = 0; i < mentions.length; i += 4) {
-		candidates.push(...(await Promise.all(mentions.slice(i, i + 4).map((m) => searchCandidates(f, m.name, lang, ua)))));
-	}
+	for (const m of mentions) candidates.push(await searchCandidates(f, m.name, lang, ua));
 	let { mentions: grounded, ambiguous } = attachCandidates(mentions, candidates);
 	// Stage 3: the model chooses among real candidates only.
 	if (ambiguous.length) {
@@ -433,6 +434,8 @@ export async function tick(ctx: PluginContext, options: AiOptions, opts: { maxJo
 		const pages = await Promise.all(kinds.map((kind) => queue.query({ where: { kind, due: { lte: Date.now() } }, orderBy: { due: "asc" }, limit: 25 })));
 		const runnable = pages.flatMap((p) => p.items);
 		const budget: Budget = { used: 0, max: SUBREQUEST_BUDGET };
+		// While Wikidata asks to slow down (one Retry-After, shared by every entry job), entry jobs wait for a later tick.
+		let wikidataBusy = ((await ctx.kv.get<number>(WIKIDATA_BUSY_KEY)) ?? 0) > Date.now();
 		const batch = planBatch(runnable, {
 			now: Date.now(),
 			perTick: opts.maxJobs ?? s.jobsPerTick,
@@ -446,6 +449,7 @@ export async function tick(ctx: PluginContext, options: AiOptions, opts: { maxJo
 		for (const { id, data: job } of batch) {
 			if (Date.now() - started > opts.budgetMs) break;
 			if (budget.used + WORST_CASE_SUBREQUESTS[job.kind] > budget.max) break;
+			if (wikidataBusy && job.kind === "entry") continue;
 			try {
 				const status = job.kind === "media" ? await analyzeMedia(ctx, options, s, job, budget) : await analyzeEntry(ctx, options, s, features, job, budget);
 				await queue.delete(id);
@@ -457,6 +461,18 @@ export async function tick(ctx: PluginContext, options: AiOptions, opts: { maxJo
 					await queue.put(id, job); // Stays queued for tomorrow, with any outputs already paid for.
 					break;
 				}
+				if (error instanceof WikidataBusyError) {
+					wikidataBusy = true;
+					await ctx.kv.set(WIKIDATA_BUSY_KEY, Date.now() + error.retryAfterMs);
+					// Not a failure: run again once Wikidata's Retry-After has passed, without using up an attempt...
+					const deferred = deferJob(job, Date.now(), error.retryAfterMs);
+					if (deferred) {
+						ctx.log.warn("AI job deferred: Wikidata asked to slow down", { job: id, retryAfterMs: error.retryAfterMs, deferrals: deferred.deferrals });
+						await queue.put(id, { ...deferred, lastError: error.message });
+						continue;
+					}
+					// ...unless it has been deferred MAX_DEFERRALS times in a row: then it counts as a failed attempt.
+				}
 				out.failed++;
 				const message = String((error as Error)?.message ?? error).slice(0, 500);
 				ctx.log.warn("AI job failed", { job: id, error: message });
@@ -466,7 +482,7 @@ export async function tick(ctx: PluginContext, options: AiOptions, opts: { maxJo
 					await recordFailure(ctx, job, message);
 				} else {
 					// job.cache holds the stage outputs this attempt already paid for.
-					await queue.put(id, { ...job, attempts: job.attempts + 1, due: next, lastError: message });
+					await queue.put(id, { ...job, attempts: job.attempts + 1, deferrals: 0, due: next, lastError: message });
 				}
 			}
 		}

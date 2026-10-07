@@ -297,3 +297,5 @@ export interface BulkState {
 }
 
 export const bulkKey = (kind: BulkState["kind"]) => `state:ai:bulk:${kind}`;
+/** Epoch ms until which Wikidata asked to slow down (shared by every entry job, so one Retry-After throttles them all). */
+export const WIKIDATA_BUSY_KEY = "state:ai:wikidataBusyUntil";

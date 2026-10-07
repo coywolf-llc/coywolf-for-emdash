@@ -99,24 +99,8 @@ test("verifyEntities drops disambiguation pages and Person/human mismatches", ()
 	assert.equal(out[1].website, "https://paris.fr");
 });
 
-test("parseSearch and parseDetails read Wikidata responses", () => {
+test("parseSearch reads a wbsearchentities response", () => {
 	assert.deepEqual(logic.parseSearch({ search: [{ id: "Q1", label: "Universe", description: "all" }, { id: "P31" }, {}] }), [{ id: "Q1", label: "Universe", description: "all" }]);
-	const details = logic.parseDetails(
-		{
-			entities: {
-				Q90: {
-					claims: {
-						P31: [{ mainsnak: { datavalue: { value: { id: "Q515" } } } }, { rank: "deprecated", mainsnak: { datavalue: { value: { id: "Q5" } } } }],
-						P856: [{ mainsnak: { datavalue: { value: "https://www.paris.fr/" } } }],
-					},
-					sitelinks: { enwiki: { title: "Paris Hilton Hotel" } },
-				},
-			},
-		},
-		"en",
-	);
-	assert.deepEqual(details.Q90, { p31: ["Q515"], wikipedia: "https://en.wikipedia.org/wiki/Paris_Hilton_Hotel", website: "https://www.paris.fr/" });
-	assert.deepEqual(logic.parseDetails(null, "en"), {});
 });
 
 test("entityNodes builds about/mentions with sameAs", () => {
