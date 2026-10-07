@@ -114,6 +114,13 @@ const FILTERS: Array<{ id: StatusFilter; label: string }> = [
 	{ id: "ok", label: "OK" },
 	{ id: "ignored", label: "Ignored" },
 ];
+type Frequency = "daily" | "weekly" | "monthly";
+const FREQUENCY_OPTIONS = [
+	{ value: "daily", label: "Daily" },
+	{ value: "weekly", label: "Weekly" },
+	{ value: "monthly", label: "Monthly" },
+];
+
 const RULE_TYPES = [
 	{ value: "domain", label: "Domain (and its subdomains)" },
 	{ value: "url", label: "Exact URL" },
@@ -329,11 +336,12 @@ interface LinksSettings {
 	checkBudget: number;
 	checkInternal: boolean;
 	userAgent: string;
+	frequency: Frequency;
 }
 
 /** Link checking settings (plugin settings edited here, not on the generic Settings page). */
 function SettingsDialog(props: { open: boolean; onClose: () => void; onSaved: (message: string) => void }) {
-	const [draft, setDraft] = React.useState<{ checkBudget: string; checkInternal: boolean; userAgent: string }>();
+	const [draft, setDraft] = React.useState<{ checkBudget: string; checkInternal: boolean; userAgent: string; frequency: Frequency }>();
 	const [pending, setPending] = React.useState(false);
 	const [error, setError] = React.useState<string>();
 	React.useEffect(() => {
@@ -342,7 +350,7 @@ function SettingsDialog(props: { open: boolean; onClose: () => void; onSaved: (m
 		setError(undefined);
 		apiFetch(`${API}/settings`)
 			.then((response) => parseApiResponse<LinksSettings>(response, "Could not load the settings"))
-			.then((s) => setDraft({ checkBudget: String(s.checkBudget), checkInternal: s.checkInternal, userAgent: s.userAgent }))
+			.then((s) => setDraft({ checkBudget: String(s.checkBudget), checkInternal: s.checkInternal, userAgent: s.userAgent, frequency: s.frequency }))
 			.catch((cause) => setError(errorText(cause, "Could not load the settings")));
 	}, [props.open]);
 	const save = async () => {
@@ -350,7 +358,12 @@ function SettingsDialog(props: { open: boolean; onClose: () => void; onSaved: (m
 		setPending(true);
 		setError(undefined);
 		try {
-			await post("settings/save", { checkBudget: Number(draft.checkBudget), checkInternal: draft.checkInternal, userAgent: draft.userAgent });
+			await post("settings/save", {
+				checkBudget: Number(draft.checkBudget),
+				checkInternal: draft.checkInternal,
+				userAgent: draft.userAgent,
+				frequency: draft.frequency,
+			});
 			props.onSaved("Link checking settings saved.");
 		} catch (cause) {
 			setError(errorText(cause, "Could not save the settings"));
@@ -363,7 +376,8 @@ function SettingsDialog(props: { open: boolean; onClose: () => void; onSaved: (m
 			<Dialog className="p-6" size="lg">
 				<Dialog.Title className="text-lg font-semibold">Link checking settings</Dialog.Title>
 				<Dialog.Description className="mt-1 text-sm text-kumo-subtle">
-					How the scheduled job checks links. It runs with the site's scheduled jobs (every 5 minutes, or less often if the site's cron runs less often) while Scheduled link checking is on under Plugins → Coywolf Pack.
+					Nothing runs in the background until Scheduled link checking is on under Plugins → Coywolf Pack. Then a scheduled run scans your content
+					and checks the links that are due (broken links daily, the rest weekly), continuing hourly until it's done.
 				</Dialog.Description>
 				{!draft && !error ? (
 					<div className="py-8 text-center">
@@ -377,6 +391,13 @@ function SettingsDialog(props: { open: boolean; onClose: () => void; onSaved: (m
 							void save();
 						}}
 					>
+						<Select
+							label="How often"
+							description="How often a scheduled run starts. Weekly by default."
+							value={draft.frequency}
+							onValueChange={(v: string | null) => setDraft({ ...draft, frequency: (v ?? "weekly") as Frequency })}
+							items={FREQUENCY_OPTIONS}
+						/>
 						<Input
 							type="number"
 							min={10}
@@ -536,7 +557,7 @@ export function LinksPage() {
 	}, [load]);
 	React.useEffect(() => setCursors([null]), [status, scope, deferredHost, deferredQuery]);
 
-	/** Keep a running scan moving while the page is open (the scheduled job continues it otherwise). */
+	/** Keep a running scan moving while the page is open (otherwise it continues the next time the page is open, or in a scheduled run). */
 	const scan = React.useCallback(
 		async (restart: boolean) => {
 			if (scanning.current) return;
@@ -575,7 +596,7 @@ export function LinksPage() {
 		try {
 			const run = await post<{ checked: number; exhausted: boolean }>("recheck", ids ? { ids } : {});
 			setNotice(
-				`Checked ${plural(run.checked, "link")}.${run.exhausted ? " The rest will be checked by the scheduled job, or press Check now again." : ""}`,
+				`Checked ${plural(run.checked, "link")}.${run.exhausted ? " The rest will be checked by the next scheduled run, or press Check now again." : ""}`,
 			);
 			await load();
 		} catch (cause) {
@@ -670,7 +691,7 @@ export function LinksPage() {
 					<p className="col-span-2 text-sm leading-5 text-pretty text-kumo-subtle">
 						Every link in your content, where it's used, and whether it still works. Blocked means the destination refused a server (a bot wall such
 						as LinkedIn's 999 or Cloudflare's challenge): the link is probably fine.
-						{!data?.checking && " Turn on Scheduled link checking under Plugins → Coywolf Pack to check links."}
+						{!data?.checking && " Turn on Scheduled link checking under Plugins → Coywolf Pack to check links (weekly by default; change it in Settings)."}
 					</p>
 				</div>
 				<div className="flex flex-wrap gap-1" role="group" aria-label="Filter by status">

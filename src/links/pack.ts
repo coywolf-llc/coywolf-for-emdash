@@ -15,7 +15,8 @@ const FEATURES = [
 	{
 		id: "links.check",
 		label: "Scheduled link checking",
-		description: "Check links in the background (broken links daily, working links weekly) and flag broken, redirected and blocked ones.",
+		description:
+			"Scan content and check links on a schedule (weekly by default; daily or monthly on the Link Manager page) and flag broken, redirected and blocked ones. While off, nothing runs in the background.",
 		default: false,
 	},
 ];
@@ -30,8 +31,9 @@ export function linksPack(): PackModule {
 		routes: links.routes,
 		hooks: links.hooks,
 		tasks: [
-			{ name: LINKS_SCAN_TASK, schedule: "*/5 * * * *", handler: (ctx: PluginContext) => links.scanTask(ctx) },
-			{ name: LINKS_CHECK_TASK, schedule: "*/5 * * * *", feature: "links.check", handler: (ctx: PluginContext) => links.checkTask(ctx) },
+			// Hourly ticks continue a run in progress; a new run starts only when the chosen frequency is due.
+			{ name: LINKS_SCAN_TASK, schedule: "@hourly", feature: "links.check", handler: (ctx: PluginContext) => links.scanTask(ctx) },
+			{ name: LINKS_CHECK_TASK, schedule: "@hourly", feature: "links.check", handler: (ctx: PluginContext) => links.checkTask(ctx) },
 		],
 		adminPages: [{ path: "/links", label: "Link Manager", icon: "link" }],
 		widgets: [{ id: "links-status", title: "Links", size: "third" }],
