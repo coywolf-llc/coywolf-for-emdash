@@ -468,6 +468,9 @@ export function ImagesPage() {
 	// A working media host hides the host field and the setup form until asked for.
 	const [hostOpen, setHostOpen] = React.useState(false);
 	const [setupOpen, setSetupOpen] = React.useState(false);
+	// The check on page load runs on its own, outside `pending`: it must not lock the form (it can take a while
+	// when the host is down), only the Check button, so two checks never race.
+	const [autoChecking, setAutoChecking] = React.useState(false);
 	const autoChecked = React.useRef(false);
 
 	const apply = (s: Settings) => {
@@ -511,8 +514,11 @@ export function ImagesPage() {
 	const setupHost = draft.host.trim() || saved?.activeHost || suggestedHost;
 
 	const runCheck = async (quiet = false) => {
-		setPending("check");
-		if (!quiet) setError(null);
+		if (quiet) setAutoChecking(true);
+		else {
+			setPending("check");
+			setError(null);
+		}
 		setCheck(null);
 		try {
 			// The server picks a recent image from the media library. The loading itself is checked here, in the
@@ -524,7 +530,8 @@ export function ImagesPage() {
 			// The check on page load stays quiet: the setup form simply shows, as when the host doesn't work.
 			if (!quiet) setError(errorText(cause, "Couldn't check the media host"));
 		} finally {
-			setPending(undefined);
+			if (quiet) setAutoChecking(false);
+			else setPending(undefined);
 		}
 	};
 
@@ -575,12 +582,14 @@ export function ImagesPage() {
 
 	const bare = (host: string) => host.replace(/^https?:\/\//, "").replace(/\/+$/, "").toLowerCase();
 	const hostWorks = Boolean(saved?.activeHost && check?.ok && bare(check.host) === bare(saved.activeHost));
-	const firstCheck = Boolean(saved?.activeHost && !check && pending === "check" && !hostOpen && !setupOpen);
+	// Only the check on load collapses the setup form to "Checking…"; a Check the user asks for leaves the page as it is.
+	const firstCheck = autoChecking && !setupOpen;
 	const showHostInput = !saved?.activeHost || hostOpen || draft.host !== (saved?.host ?? "");
 	const setupDone = (hostWorks || firstCheck) && !setupOpen && !plan && !applied;
 
 	const dirty = saved ? isDirty(draft, toDraft(saved)) : false;
 	const busy = Boolean(pending);
+	const checking = pending === "check" || autoChecking;
 	const changes = plan?.plan.steps.filter((s) => s.action !== "none").length ?? 0;
 
 	return (
@@ -638,8 +647,8 @@ export function ImagesPage() {
 										Change host
 									</Button>
 								)}
-								<Button type="button" variant="secondary" icon={<MagnifyingGlass />} disabled={busy || !hostToUse} onClick={() => void runCheck()}>
-									{pending === "check" ? "Checking…" : "Check"}
+								<Button type="button" variant="secondary" icon={<MagnifyingGlass />} disabled={busy || checking || !hostToUse} onClick={() => void runCheck()}>
+									{checking ? "Checking…" : "Check"}
 								</Button>
 							</>
 						}
