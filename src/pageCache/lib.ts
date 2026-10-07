@@ -52,6 +52,16 @@ export function purgeScope(pathname: string): PurgeScope | null {
 	return { purgeEverything: true };
 }
 
+/** Release an RPC result's stubs (Symbol.dispose, where the runtime has it). Anything else is left alone. */
+export function disposeRpcResult(result: unknown): void {
+	if (typeof Symbol.dispose !== "symbol" || !result || typeof result !== "object") return;
+	try {
+		(result as { [Symbol.dispose]?: () => void })[Symbol.dispose]?.();
+	} catch {
+		// Already released.
+	}
+}
+
 /** Purge cached pages (all of them unless a scope says otherwise). False when there's no Workers Cache or the purge was refused. */
 export async function purgePageCache(scope: PurgeScope = { purgeEverything: true }): Promise<boolean> {
 	try {
@@ -60,12 +70,17 @@ export async function purgePageCache(scope: PurgeScope = { purgeEverything: true
 		};
 		if (!workers.cache?.purge) return false;
 		const result = await workers.cache.purge(scope);
-		// The purge API rate-limits (Free-tier limits for Workers Cache) and says so in the result.
-		if (result && result.success === false) {
-			console.error("coywolf-pack: page cache purge refused", result.errors);
-			return false;
+		try {
+			// The purge API rate-limits (Free-tier limits for Workers Cache) and says so in the result.
+			if (result && result.success === false) {
+				console.error("coywolf-pack: page cache purge refused", result.errors);
+				return false;
+			}
+			return true;
+		} finally {
+			// The result is an RPC result: dispose of it, or the runtime warns that it wasn't.
+			disposeRpcResult(result);
 		}
-		return true;
 	} catch (error) {
 		console.error("coywolf-pack: page cache purge failed", error);
 		return false;

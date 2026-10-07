@@ -316,3 +316,25 @@ test("redirect changes purge the redirects tag; lookups purge nothing", async ()
 	assert.equal(await purgePageCache(purgeScope(API + "redirects/save")), true);
 	assert.deepEqual(purged, [{ tags: ["coywolf-redirects"] }]);
 });
+
+test("the purge's RPC result is disposed of, whether the purge succeeded or was refused", async () => {
+	let disposed = 0;
+	const result = (fields) => ({ ...fields, [Symbol.dispose]: () => disposed++ });
+	globalThis.__purge = () => Promise.resolve(result({ success: true }));
+	assert.equal(await purgePageCache(), true);
+	assert.equal(disposed, 1);
+	const logged = console.error;
+	console.error = () => {};
+	try {
+		globalThis.__purge = () => Promise.resolve(result({ success: false, errors: [{ message: "rate limited" }] }));
+		assert.equal(await purgePageCache(), false);
+	} finally {
+		console.error = logged;
+	}
+	assert.equal(disposed, 2);
+	// Results without a disposer (or none at all) are fine.
+	globalThis.__purge = () => Promise.resolve({ success: true });
+	assert.equal(await purgePageCache(), true);
+	globalThis.__purge = () => Promise.resolve(undefined);
+	assert.equal(await purgePageCache(), true);
+});
