@@ -27,7 +27,7 @@ export const QUOTA_NOTE =
 	"Cloudflare's Free plan includes 5,000 unique image transformations a month (each new size of each image counts once a month; repeat views are served from the cache). Stored sizes are made once per image (each width and crop, as WebP and AVIF) and then served as plain files, so they don't count again. Beyond the free amount, transformations need a paid Cloudflare Images plan; without one, new sizes stop being made until the next month while existing ones keep working.";
 
 export const VARIANTS_FALLBACK_NOTE =
-	"New uploads get their sizes right away. Images without stored sizes (existing images until you turn them on below, and images over 20 MB, GIFs and SVGs) keep using the media host's /s/ resizing. Crops (thumbnails, avatars) are made the first time a page shows them; pages shown while sizes are being made are cached for minutes instead of days, so they pick the sizes up.";
+	"New uploads get their sizes right away. Images without stored sizes (existing images until you turn them on, and images over 20 MB, GIFs and SVGs) keep using the media host's /s/ resizing. Crops (thumbnails, avatars) are made the first time a page shows them; pages shown while sizes are being made are cached for minutes instead of days, so they pick the sizes up.";
 
 const hostInput = z
 	.string()

@@ -166,7 +166,9 @@ interface Estimate extends LibrarySummary {
 
 const count = (n: number | undefined) => (n ?? 0).toLocaleString("en-US");
 const money = (n: number) => (n > 0 && n < 0.01 ? "less than $0.01" : `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-const range = (r: { min: number; max: number }) => (money(r.min) === money(r.max) ? money(r.max) : `${money(r.min)}–${money(r.max)}`);
+const range = (r: { min: number; max: number }) => (r.max < 0.01 || money(r.min) === money(r.max) ? money(r.max) : `${money(r.min)}–${money(r.max)}`);
+/** "about $1.20", or "less than $0.01" as it is (never "about less than"). */
+const about = (s: string) => (s.startsWith("less") ? s : `about ${s}`);
 const gb = (bytes: number) => (bytes < 1e9 ? `${Math.max(1, Math.round(bytes / 1e6)).toLocaleString("en-US")} MB` : `${(bytes / 1e9).toFixed(1)} GB`);
 const payback = (months: number | null) =>
 	months === null ? "doesn't pay for itself at this traffic" : months <= 1 ? "pays for itself in the first month" : `pays for itself in about ${months} months`;
@@ -192,7 +194,7 @@ function CostEstimate({ estimate }: { estimate: Estimate }) {
 				<li>
 					{estimate.transforms ? (
 						<>
-							<span className="font-medium">One time: about {range(oneTime)}.</span> Making the missing sizes is {count(estimate.transforms)} Cloudflare image
+							<span className="font-medium">One time: {about(range(oneTime))}.</span> Making the missing sizes is {count(estimate.transforms)} Cloudflare image
 							transformations ({count(estimate.filesLeft)} files) at $0.50 per 1,000, made once. The first 5,000 each month are free, but the site may
 							already have used them this month, hence the range.
 						</>
@@ -203,7 +205,7 @@ function CostEstimate({ estimate }: { estimate: Estimate }) {
 					)}
 				</li>
 				<li>
-					<span className="font-medium">Then about {money(storage)} a month</span> to keep {count(estimate.files)} files (about {gb(estimate.bytes)}) in the
+					<span className="font-medium">Then {about(money(storage))} a month</span> to keep {count(estimate.files)} files (about {gb(estimate.bytes)}) in the
 					media bucket, at R2's $0.015 per GB a month (less while the bucket is under R2's free 10 GB). Serving them costs no transformations.
 				</li>
 				<li>
@@ -245,7 +247,7 @@ function CostEstimate({ estimate }: { estimate: Estimate }) {
 							</tr>
 							<tr className="border-b border-kumo-line">
 								<th scope="row" className="py-1.5 pr-3 text-left font-normal text-kumo-subtle">One-time fee</th>
-								<td className="py-1.5 font-medium">{estimate.transforms ? `about ${range(oneTime)}` : "none left"}</td>
+								<td className="py-1.5 font-medium">{estimate.transforms ? about(range(oneTime)) : "none left"}</td>
 							</tr>
 							<tr>
 								<th scope="row" className="py-1.5 pr-3 text-left font-normal text-kumo-subtle">Payback</th>
@@ -410,7 +412,7 @@ function StoredSizes() {
 							<p className="text-sm font-medium">
 								{estimate && oneTime
 									? estimate.transforms
-										? `Make sizes for ${count(estimate.images - estimate.done)} existing images? It's a one-time fee of about ${range(oneTime)} (${count(estimate.transforms)} transformations).`
+										? `Make sizes for ${count(estimate.images - estimate.done)} existing images? It's a one-time fee of ${about(range(oneTime))} (${count(estimate.transforms)} transformations).`
 										: "Every image already has its sizes; turning this on keeps it that way for imports."
 									: "Make sizes for existing images? It's a one-time fee for Cloudflare transformations (the estimate couldn't be loaded)."}
 							</p>
