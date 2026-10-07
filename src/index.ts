@@ -37,6 +37,14 @@ const PACKAGE = "@coywolf/emdash";
 const FEATURES_PAGE = { path: "/features", label: "Coywolf Pack", icon: "toggle-right" };
 /** Always on (not a feature), listed right below Coywolf Pack. */
 const PERFORMANCE_PAGE = { path: "/performance", label: "Performance", icon: "lightning" };
+/** Module pages listed right after Performance (when their feature is on), ahead of the rest. */
+const AFTER_PERFORMANCE = ["/images"];
+
+function sidebar(modules: PackModule[]) {
+	const pages = modules.flatMap((m) => m.adminPages ?? []);
+	const early = AFTER_PERFORMANCE.flatMap((path) => pages.filter((p) => p.path === path));
+	return [FEATURES_PAGE, PERFORMANCE_PAGE, ...early, ...pages.filter((p) => !early.includes(p))];
+}
 
 function buildModules(options: CoywolfOptions): PackModule[] {
 	// Module-level, like the search rate limit: createPlugin() runs when the Worker isolate
@@ -47,7 +55,7 @@ function buildModules(options: CoywolfOptions): PackModule[] {
 
 function surfaces(modules: PackModule[]) {
 	return {
-		pages: [FEATURES_PAGE, PERFORMANCE_PAGE, ...modules.flatMap((m) => m.adminPages ?? [])],
+		pages: sidebar(modules),
 		widgets: modules.flatMap((m) => m.widgets ?? []),
 		blocks: modules.flatMap((m) => m.portableTextBlocks ?? []),
 		settingsSchema: secretSettingsSchema(modules.map((m) => m.settingsSchema)),
@@ -89,7 +97,7 @@ function liveAdmin<T extends object>(modules: PackModule[], base: T) {
 	return Object.defineProperties(base, {
 		pages: {
 			enumerable: true,
-			get: () => [FEATURES_PAGE, PERFORMANCE_PAGE, ...modules.filter(on).flatMap((m) => m.adminPages ?? [])],
+			get: () => sidebar(modules.filter(on)),
 		},
 		widgets: {
 			enumerable: true,

@@ -8,10 +8,10 @@ import { Button, Input } from "@cloudflare/kumo";
 import { Key } from "@phosphor-icons/react";
 import * as React from "react";
 
-export function SettingsSection(props: { id: string; title: string; description?: React.ReactNode; actions?: React.ReactNode; children: React.ReactNode }) {
+export function SettingsSection(props: { id: string; title: string; description?: React.ReactNode; actions?: React.ReactNode; children?: React.ReactNode }) {
 	return (
 		<section className="rounded-lg border border-kumo-line" aria-labelledby={props.id}>
-			<div className="flex items-start justify-between gap-4 border-b border-kumo-line p-4">
+			<div className={`flex items-start justify-between gap-4 p-4${props.children ? " border-b border-kumo-line" : ""}`}>
 				<div className="min-w-0">
 					<h2 id={props.id} className="text-base font-semibold">
 						{props.title}
@@ -20,7 +20,7 @@ export function SettingsSection(props: { id: string; title: string; description?
 				</div>
 				{props.actions && <div className="flex shrink-0 gap-2">{props.actions}</div>}
 			</div>
-			<div className="space-y-4 p-4">{props.children}</div>
+			{props.children && <div className="space-y-4 p-4">{props.children}</div>}
 		</section>
 	);
 }
