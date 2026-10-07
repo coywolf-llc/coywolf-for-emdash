@@ -106,7 +106,7 @@ test("rendering never waits: an unlisted poster comes from Stream while it's cop
 	assert.equal(warmed.length, 6, "a new copy is resized at each size, AVIF and WebP");
 	const media = await mediaPoster(UID, SRC, deps);
 	assert.equal(media.full, `https://media.example.com/s/1200/${key}`);
-	assert.match(media.srcset, /\/s\/480\/.* 480w, .*\/s\/800\/.* 800w, .*\/s\/1200\/.* 1200w$/);
+	assert.match(media.srcset, /\/s\/400\/.* 400w, .*\/s\/800\/.* 800w, .*\/s\/1200\/.* 1200w$/);
 });
 
 test("a listed poster is served from the media host without touching the bucket", async () => {

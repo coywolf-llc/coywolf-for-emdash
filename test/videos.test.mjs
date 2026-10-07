@@ -251,7 +251,7 @@ test("light embed poster: Stream thumbnails in three widths; an explicit image a
 	const uid = "0123456789abcdef0123456789abcdef";
 	const p = posterImage("customer-abc.cloudflarestream.com", uid, { posterTime: 3 });
 	assert.match(p.src, /width=800/);
-	assert.deepEqual(p.srcset.split(", ").map((c) => c.split(" ")[1]), ["480w", "800w", "1200w"]);
+	assert.deepEqual(p.srcset.split(", ").map((c) => c.split(" ")[1]), ["400w", "800w", "1200w"]);
 	assert.ok(p.srcset.split(", ").every((c) => c.includes("time=3s")));
 	const own = posterImage("customer-abc.cloudflarestream.com", uid, { posterImage: "https://example.com/poster.jpg" });
 	assert.deepEqual(own, { src: "https://example.com/poster.jpg" });

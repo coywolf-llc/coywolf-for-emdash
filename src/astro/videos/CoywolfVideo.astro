@@ -142,7 +142,14 @@ if (css) locals.__cwVideoCss = true;
 	<figure class:list={["cw-video", cfg.gif && "cw-video--gif", schemeClass(display.scheme)]} style={style} data-cw-video={uid} data-cw-track={track ? "" : undefined} data-cw-autoplay={cfg.autoplay ? "" : undefined}>
 		{light && posterImg ? (
 			<div class="cw-video__frame" data-cw-player={playSrc} data-cw-title={name} data-cw-auto={cfg.autoplay ? "" : undefined}>
-				<img class="cw-video__poster" src={posterImg.src} srcset={posterImg.srcset} sizes="(min-width: 50rem) 768px, 100vw" alt="" loading={priority ? "eager" : "lazy"} fetchpriority={priority ? "high" : undefined} decoding="async" />
+				{posterImg.avif ? (
+					<picture>
+						<source type="image/avif" srcset={posterImg.avif} sizes="(min-width: 50rem) 768px, 100vw" />
+						<img class="cw-video__poster" src={posterImg.src} srcset={posterImg.srcset} sizes="(min-width: 50rem) 768px, 100vw" alt="" loading={priority ? "eager" : "lazy"} fetchpriority={priority ? "high" : undefined} decoding="async" />
+					</picture>
+				) : (
+					<img class="cw-video__poster" src={posterImg.src} srcset={posterImg.srcset} sizes="(min-width: 50rem) 768px, 100vw" alt="" loading={priority ? "eager" : "lazy"} fetchpriority={priority ? "high" : undefined} decoding="async" />
+				)}
 				{/* Autoplaying videos with controls keep this hidden unless the visitor prefers reduced motion. */}
 				{!pausable && (
 					<button type="button" class="cw-video__play" data-cw-play aria-label={`Play video: ${name}`} hidden={cfg.autoplay}>
@@ -266,7 +273,10 @@ if (css) locals.__cwVideoCss = true;
 		frameEl.querySelector("[data-cw-play]")?.remove();
 		frameEl.appendChild(frame);
 		// The poster stays underneath until the player has painted, so nothing flashes.
-		frame.addEventListener("load", () => frameEl.querySelector(".cw-video__poster")?.remove(), { once: true });
+		frame.addEventListener("load", () => {
+			const poster = frameEl.querySelector(".cw-video__poster");
+			(poster?.parentElement?.tagName === "PICTURE" ? poster.parentElement : poster)?.remove();
+		}, { once: true });
 		if (focus) frame.focus();
 		const fig = frameEl.closest<HTMLElement>("[data-cw-video]");
 		if (fig) track(fig, frame);

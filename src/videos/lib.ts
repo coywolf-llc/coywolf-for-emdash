@@ -393,7 +393,7 @@ export function posterUrl(
 }
 
 /** Poster widths for the page's poster image (the player isn't loaded until it's needed). */
-export const POSTER_WIDTHS = [480, 800, 1200] as const;
+export const POSTER_WIDTHS = [400, 800, 1200] as const;
 
 /**
  * The poster as a responsive image: Stream thumbnails in a few widths, so a

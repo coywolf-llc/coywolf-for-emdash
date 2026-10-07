@@ -7,6 +7,17 @@ export async function workerEnv(): Promise<Record<string, unknown>> {
 	return env;
 }
 
+/** Run `promise` after the response (waitUntil), or just let it run outside Workers. */
+export async function afterResponse(promise: Promise<unknown>): Promise<void> {
+	try {
+		const workers = (await import("cloudflare:workers")) as unknown as { waitUntil?: (p: Promise<unknown>) => void };
+		if (workers.waitUntil) return workers.waitUntil(promise);
+	} catch {
+		// Not in a Worker.
+	}
+	void promise;
+}
+
 /** Read a Worker secret (env binding, or process.env under nodejs_compat). */
 export function secret(env: Record<string, unknown>, name: string): string | undefined {
 	return (env[name] as string | undefined) ?? (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name];

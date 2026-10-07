@@ -5,7 +5,7 @@
  * apply). The feature itself is turned on or off on the Coywolf Pack page.
  */
 import { Banner, Button, Input, Loader } from "@cloudflare/kumo";
-import { CheckCircle, Info, MagnifyingGlass, Wrench, XCircle } from "@phosphor-icons/react";
+import { ArrowsClockwise, CheckCircle, Info, MagnifyingGlass, Wrench, XCircle } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
@@ -142,6 +142,97 @@ function CheckList({ result }: { result: CheckResult }) {
 				))}
 			</ul>
 		</div>
+	);
+}
+
+interface VariantsStatus {
+	available: boolean;
+	reason?: string;
+	total?: number;
+	stored?: number;
+	skipped?: number;
+	state?: { phase: "running" | "cleanup" | "done"; done: number; skipped: number; failed: number; finishedAt?: string } | null;
+	crops: string[];
+	fallbackNote: string;
+}
+
+const count = (n: number | undefined) => (n ?? 0).toLocaleString("en-US");
+
+/** Stored image sizes: how many images have them, and a button that makes the missing ones now. */
+function StoredSizes() {
+	const [status, setStatus] = React.useState<VariantsStatus | null>(null);
+	const [running, setRunning] = React.useState(false);
+	const [error, setError] = React.useState<string | null>(null);
+	const stop = React.useRef(false);
+
+	React.useEffect(() => {
+		void (async () => {
+			try {
+				setStatus(await parseApiResponse<VariantsStatus>(await apiFetch(`${API}/variants/settings`), "Couldn't load the stored sizes"));
+			} catch (cause) {
+				setError(errorText(cause, "Couldn't load the stored sizes"));
+			}
+		})();
+		return () => {
+			stop.current = true;
+		};
+	}, []);
+
+	const run = async () => {
+		setRunning(true);
+		setError(null);
+		stop.current = false;
+		try {
+			let start = true;
+			// Each call works for about 20 seconds; keep going until the run is done.
+			for (let i = 0; i < 1000 && !stop.current; i++) {
+				const next = await post<VariantsStatus>("variants/run", { start }, "Couldn't make the sizes");
+				start = false;
+				setStatus(next);
+				if (!next.state || next.state.phase === "done") break;
+			}
+		} catch (cause) {
+			setError(errorText(cause, "Couldn't make the sizes"));
+		} finally {
+			setRunning(false);
+		}
+	};
+
+	const state = status?.state;
+	return (
+		<SettingsSection
+			id="images-variants"
+			title="Stored image sizes"
+			description="Each image is stored once in a few widths (and the theme's crops) as AVIF and WebP on the media host, so pages load small, ready-made files instead of resizing on each visit."
+			actions={
+				status?.available ? (
+					<Button type="button" variant="secondary" icon={<ArrowsClockwise />} disabled={running} onClick={() => void run()}>
+						{running ? "Making sizes…" : "Make missing sizes now"}
+					</Button>
+				) : undefined
+			}
+		>
+			{error && <Banner variant="error" role="alert" description={error} />}
+			{!status && !error && <Loader />}
+			{status && !status.available && <p className="text-sm text-kumo-subtle">{status.reason}</p>}
+			{status?.available && (
+				<p className="text-sm" aria-live="polite">
+					<span className="font-medium">
+						{count(status.stored)} of {count(status.total)} images have stored sizes
+					</span>
+					{status.skipped ? ` · ${count(status.skipped)} skipped (no known width or over 20 MB)` : ""}
+					{state?.failed ? ` · ${count(state.failed)} failed in the last run (tried again later)` : ""}
+					{state && state.phase !== "done" ? ` · working (${count(state.done)} made so far)` : ""}
+				</p>
+			)}
+			{status && (
+				<p className="text-xs text-kumo-subtle">
+					Widths: 400, 640, 800, 1200 and 1600 pixels (only those smaller than the original).{" "}
+					{status.crops.length ? `Crops: ${status.crops.join(", ")}.` : "Crops: none (set images.crops in astro.config.mjs)."}
+				</p>
+			)}
+			{status && <p className="text-xs text-kumo-subtle">{status.fallbackNote}</p>}
+		</SettingsSection>
 	);
 }
 
@@ -421,6 +512,8 @@ export function ImagesPage() {
 					</SettingsSection>
 				</form>
 			)}
+
+			{saved && <StoredSizes />}
 
 			{saved && <SaveBar form="cw-images-form" dirty={dirty} saving={pending === "save"} canSave={!busy} onDiscard={() => apply(saved)} />}
 		</div>

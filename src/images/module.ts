@@ -16,11 +16,16 @@ import { parseInput, secret, workerEnv } from "../shared.js";
 import { CloudflareApiError, type CloudflareConfig, applySetup, checkMediaHost, planSetup, purgeHost } from "./cloudflare.js";
 import { imageCdn, imageCdnSource, normalizeMediaHost } from "./lib.js";
 import { IMAGES_SETTINGS, invalidateMediaHost, refreshMediaHost } from "./settings.js";
+import { type BackfillDeps, type VariantsState, readVariantsState, startVariantsRun, variantCounts } from "./variants-store.js";
+import { imageCrops } from "./variants.js";
 
 const F = "images";
 
 export const QUOTA_NOTE =
-	"Cloudflare's Free plan includes 5,000 unique image transformations a month (each new size of each image counts once a month; repeat views are served from the cache). Beyond that, transformations need a paid Cloudflare Images plan; without one, new sizes stop being made until the next month while existing ones keep working.";
+	"Cloudflare's Free plan includes 5,000 unique image transformations a month (each new size of each image counts once a month; repeat views are served from the cache). Stored sizes are made once per image (each width and crop, as WebP and AVIF) and then served as plain files, so they don't count again. Beyond the free amount, transformations need a paid Cloudflare Images plan; without one, new sizes stop being made until the next month while existing ones keep working.";
+
+export const VARIANTS_FALLBACK_NOTE =
+	"Images without stored sizes yet (new uploads for a minute or so, and images over 20 MB, GIFs and SVGs) keep using the media host's /s/ resizing, and pages that show one are cached for minutes instead of days until the sizes exist. New uploads get their sizes right away; anything missed (such as media imported from WordPress) is picked up by an hourly job or this button.";
 
 const hostInput = z
 	.string()
@@ -182,8 +187,31 @@ async function runCheck(host: string, database: string) {
 	return { host, file, ok: items.filter((i) => i.id !== "cached").every((i) => i.ok), items, quotaNote: QUOTA_NOTE };
 }
 
-export function imagesModule(options: { database?: string }) {
+interface VariantsHooks {
+	/** Run the backfill for one admin request. */
+	run(): Promise<VariantsState | null>;
+	/** The bindings, or null when something is missing. */
+	deps(): Promise<BackfillDeps | null>;
+}
+
+/** The stored-sizes status for the admin. */
+async function variantsStatus(variants: VariantsHooks) {
+	const deps = await variants.deps();
+	if (!deps) {
+		return {
+			available: false,
+			reason: "Stored sizes need a media host, and the MEDIA bucket, IMAGES and DB bindings.",
+			crops: imageCrops(),
+			fallbackNote: VARIANTS_FALLBACK_NOTE,
+		};
+	}
+	const [counts, { state }] = await Promise.all([variantCounts(deps.db), readVariantsState(deps.db)]);
+	return { available: true, ...counts, state, crops: imageCrops(), fallbackNote: VARIANTS_FALLBACK_NOTE };
+}
+
+export function imagesModule(options: { database?: string; variants: VariantsHooks }) {
 	const database = options.database ?? "DB";
+	const variants = options.variants;
 	return {
 		routes: {
 			"images/settings": {
@@ -222,6 +250,30 @@ export function imagesModule(options: { database?: string }) {
 					const target = host || imageCdn();
 					if (!target) throw PluginRouteError.badRequest("Enter a media host to check.");
 					return runCheck(target, database);
+				},
+			}),
+
+			"images/variants/settings": {
+				permission: "plugins:manage" as const,
+				handler: async (ctx: PluginContext) => {
+					await requireFeature(ctx, F);
+					return variantsStatus(variants);
+				},
+			},
+
+			/** One step of "Make missing sizes now": starts a run if none is under way, works ~20 s, reports. The page calls it until done. */
+			"images/variants/run": definePluginRoute({
+				permission: "plugins:manage",
+				methods: ["POST"],
+				request: { body: "json" },
+				handler: async (ctx) => {
+					await requireFeature(ctx, F);
+					const deps = await variants.deps();
+					if (!deps) throw PluginRouteError.badRequest("Stored sizes need a media host, and the MEDIA bucket, IMAGES and DB bindings.");
+					const { start } = parseInput(z.object({ start: z.boolean().optional() }), ctx.input ?? {});
+					if (start) await startVariantsRun(deps.db, { force: true });
+					await variants.run();
+					return variantsStatus(variants);
 				},
 			}),
 

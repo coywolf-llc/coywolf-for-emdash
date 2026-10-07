@@ -8,7 +8,7 @@
  * aren't stripped by EmDash's HTML sanitizer.
  */
 import { siteFeatureOn } from "../../core/features.js";
-import { cleanImageUrl } from "../../images/pack.js";
+import { cleanImageUrl, croppedImage } from "../../images/pack.js";
 import {
 	CUSTOM_BLOCKS_CSS,
 	blockId,
@@ -47,9 +47,11 @@ if (node && (await siteFeatureOn(`customBlocks.${kind}`))) {
 	else if (kind === "disclosure") html = renderDisclosureHtml(normalizeDisclosure(node), await siteDisclosureSettings());
 	else if (kind === "testimonial") {
 		// The photo shows at 64px: small squares from the media host (2x for sharp screens), not the original.
+		// Stored crops (64x64 and 128x128 in the site's images.crops) when they exist, else resized by the host.
 		const t = normalizeTestimonial(node);
-		const [x1, x2] = t.photo ? await Promise.all([cleanImageUrl(t.photo, { width: 64, height: 64 }), cleanImageUrl(t.photo, { width: 128, height: 128 })]) : [null, null];
-		html = renderTestimonialHtml(t, x1 ? { src: x1, srcset: x2 ? `${x1} 1x, ${x2} 2x` : undefined } : null);
+		const stored = t.photo ? await croppedImage(t.photo, [[64, 64, "1x"], [128, 128, "2x"]], { locals }) : null;
+		const [x1, x2] = t.photo && !stored ? await Promise.all([cleanImageUrl(t.photo, { width: 64, height: 64 }), cleanImageUrl(t.photo, { width: 128, height: 128 })]) : [null, null];
+		html = renderTestimonialHtml(t, stored ? { src: stored.src, srcset: stored.webp, avif: stored.avif } : x1 ? { src: x1, srcset: x2 ? `${x1} 1x, ${x2} 2x` : undefined } : null);
 	}
 	else if (kind === "podcast") html = renderPodcastHtml(normalizePodcast(node), await sitePodcastSettings(), blockId("cw-podcast", node._key));
 	else html = renderQuoteHtml(normalizeQuote(node));

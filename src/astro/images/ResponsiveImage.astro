@@ -1,0 +1,60 @@
+---
+/**
+ * A media-library image at the width it's shown: its stored sizes as a
+ * <picture> (AVIF, then WebP, the original as the largest candidate), or,
+ * until they exist, sizes resized by the media host (/s/). Anything that isn't
+ * a media-library image (or with Clean image URLs off) is a plain <img>.
+ *
+ * <ResponsiveImage src={image.src} alt={image.alt} sizes="(min-width: 50rem) 768px, 100vw" />
+ */
+import { cleanImageUrl, imageInfo, originalImageUrl, responsiveImage } from "../../images/pack.js";
+import { VARIANT_WIDTHS } from "../../images/variants.js";
+
+interface Props {
+	src: string;
+	alt?: string;
+	sizes?: string;
+	/** Defaults to the media library's size. */
+	width?: number;
+	height?: number;
+	/** Above the fold (LCP): load eagerly with high priority. */
+	priority?: boolean;
+	class?: string;
+	/** Sets data-full to the original (for a lightbox). */
+	dataFull?: boolean;
+}
+
+const { src, alt = "", sizes = "100vw", priority = false, class: className, dataFull = false } = Astro.props;
+const stored = await responsiveImage(src, { locals: Astro.locals });
+const info = stored ? null : (await imageInfo([src])).get(src);
+const width = Astro.props.width ?? stored?.width ?? info?.width ?? undefined;
+const height = Astro.props.height ?? stored?.height ?? info?.height ?? undefined;
+const original = stored?.full ?? (await originalImageUrl(src));
+let fallback: { src: string; srcset?: string } = { src: original };
+if (!stored && width) {
+	const widths = VARIANT_WIDTHS.filter((w) => w < width);
+	const urls = await Promise.all(widths.map((w) => cleanImageUrl(src, { width: w })));
+	if (urls.length && urls.every(Boolean)) {
+		fallback = { src: urls[Math.min(2, urls.length - 1)] as string, srcset: [...urls.map((u, i) => `${u} ${widths[i]}w`), `${original} ${width}w`].join(", ") };
+	}
+}
+const common = {
+	alt,
+	width,
+	height,
+	class: className,
+	loading: priority ? ("eager" as const) : ("lazy" as const),
+	fetchpriority: priority ? ("high" as const) : undefined,
+	decoding: "async" as const,
+	"data-full": dataFull ? original : undefined,
+};
+---
+
+{stored ? (
+	<picture>
+		<source type="image/avif" srcset={stored.avif} sizes={sizes} />
+		<img src={stored.src} srcset={stored.webp} sizes={sizes} {...common} />
+	</picture>
+) : (
+	<img src={fallback.src} srcset={fallback.srcset} sizes={fallback.srcset ? sizes : undefined} {...common} />
+)}

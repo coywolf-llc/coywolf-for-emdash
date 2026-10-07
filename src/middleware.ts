@@ -23,7 +23,8 @@ import { type PurgeScope, applyPageLifetime, purgePageCache, purgeScope, purgesA
 import { STOPGAP_HEADER, WARMER_AGENT, WARM_DAILY_SETTING, WARM_SETTING, WARM_STATE_OPTION, scheduleRewarm, startWarm, warmMayHaveWork, warmStep } from "./pageCache/warm.js";
 import { prefetchRedirects } from "./redirects/middleware.js";
 import { notePackMiddleware } from "./search/live-serve.js";
-import { pendingPosterRenders, renderedPendingPoster } from "./videos/poster.js";
+import { pendingMediaRenders, renderedPendingMedia } from "./images/pending.js";
+import { variantsAfterMediaWrite } from "./images/pack.js";
 
 // The warming progress row is read with the feature switches, so requests can skip an idle warmer without a query.
 registerSiteOption(WARM_STATE_OPTION);
@@ -113,6 +114,11 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 				? watchInvalidation((context as unknown as { cache?: Parameters<typeof watchInvalidation>[0] }).cache)
 				: null;
 		const afterWrite = (response: Response): Response => {
+			// Stored image sizes follow media deletes, confirmed uploads, replaced files and WordPress media imports.
+			if (method !== "GET" && method !== "HEAD" && response.status < 400) {
+				const work = variantsAfterMediaWrite(method, context.url.pathname, isOn(features, "images"));
+				if (work) waitUntil(work.catch((error) => console.error("coywolf-pack images: stored sizes after a media change failed", error)));
+			}
 			if (invalidated?.() && response.status < 400 && db) {
 				waitUntil(
 					(async () => {
@@ -183,16 +189,16 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 				console.error(`coywolf-pack: ${handler.module} middleware failed`, error);
 			}
 		}
-		// A page that showed a video's Stream poster while its media-host copy is made
-		// (src/videos/poster.ts) is cached for minutes, not days, so the next render uses the copy.
+		// A page that showed a video's Stream poster or an image's /s/ size while its stored copy is
+		// made (src/images/pending.ts) is cached for minutes, not days, so the next render uses the copy.
 		// The cache warmer's render of such a page isn't cached; it's told so (STOPGAP_HEADER) and visits again.
 		if (context.request.method === "GET" && isOn(features, "images")) {
-			const before = pendingPosterRenders();
+			const before = pendingMediaRenders();
 			const response = await next();
 			return shortenStopgapPage(
 				(context as unknown as { cache?: Parameters<typeof shortenStopgapPage>[0] }).cache,
 				response,
-				() => renderedPendingPoster(context.locals, before),
+				() => renderedPendingMedia(context.locals, before),
 				context.request.headers.get("user-agent") === WARMER_AGENT ? STOPGAP_HEADER : undefined,
 			);
 		}

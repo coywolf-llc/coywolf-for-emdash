@@ -11,15 +11,27 @@
  *  - Worker route: /media/<id>-<w>x<h>.<format>, read from the media bucket,
  *    resized by the Images binding, cached at the edge for a year. With a
  *    media host set, these old URLs 301 to the media host.
+ *
+ * Stored image sizes (with a media host): WebP and AVIF copies of each image
+ * at fixed widths and at the site's crops, made once when the image is
+ * uploaded (or by the backfill) and served as plain files. responsiveImage()
+ * and croppedImage() give themes their srcsets; until an image's copies exist
+ * they return null and themes use cleanImageUrl() (/s/). See variants.ts.
  */
+import type { PluginContext } from "emdash";
+
 import { batchedAll } from "../core/d1-batch.js";
-import { registerFeatures, siteFeatureOn } from "../core/features.js";
+import { isCurrent, registerFeatures, settingsEpoch, siteFeatureOn } from "../core/features.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { CLOUDFLARE_API_HOST } from "./cloudflare.js";
-import { workerEnv } from "../shared.js";
+import { afterResponse, workerEnv } from "../shared.js";
 import { FORMATS, IMAGE_PATH, cdnOriginalUrl, cdnRedirectUrl, cleanImagePath, imageCdn, mediaFile, parseImagePath, parseCdnUrl, setImageCdn, snappedImagePath } from "./lib.js";
 import { imagesModule } from "./module.js";
+import { markPendingMedia } from "./pending.js";
 import { configureMediaHostDatabase, refreshMediaHost } from "./settings.js";
+import { type ImagesBinding, type VariantBucket, type VariantDoc, type Crop, VARIANTS_VERSION, cropSrcsets, cropState, currentDoc, eligible, parseDoc, setImageCrops, variantSrcsets } from "./variants.js";
+import { type BackfillDeps, type Db, VARIANTS_COLLECTION, backfillStep, forgetMedia, mediaRow, processMedia, startVariantsRun } from "./variants-store.js";
+import { upgradeListedPosters } from "../videos/poster.js";
 
 export const F = { main: "images" } as const;
 export const FEATURES = [
@@ -46,12 +58,98 @@ export interface ImagesOptions {
 	cdn?: string;
 	/** D1 binding of the site database (for the saved media host). Default "DB". */
 	database?: string;
+	/**
+	 * Cropped sizes the theme shows, as [width, height] pairs (e.g. list
+	 * thumbnails and avatars at 1x and 2x). Each image gets these stored as
+	 * WebP and AVIF too (when it's at least that large); see croppedImage().
+	 */
+	crops?: Array<Crop>;
 }
 
-let config: { bucket: string; images: string } = { bucket: "MEDIA", images: "IMAGES" };
+let config: { bucket: string; images: string; database: string } = { bucket: "MEDIA", images: "IMAGES", database: "DB" };
+
+/** Scheduled job that makes missing stored sizes. */
+export const VARIANTS_TASK = "images-variants";
+/** Time and image limits for one run of the backfill (scheduled job; admin route; after an import). */
+export const CRON_BUDGET = { budgetMs: 10 * 60_000, maxImages: 40 };
+export const ROUTE_BUDGET = { budgetMs: 20_000, maxImages: 25 };
+
+/** The bindings stored sizes need, or null when one is missing (or there's no media host). */
+export async function variantDeps(): Promise<BackfillDeps | null> {
+	await refreshMediaHost();
+	if (!imageCdn()) return null;
+	const env: Record<string, unknown> = await workerEnv().catch(() => ({}));
+	const db = env[config.database] as Db | undefined;
+	const bucket = env[config.bucket] as VariantBucket | undefined;
+	const images = env[config.images] as ImagesBinding | undefined;
+	if (!db || !bucket || !images) return null;
+	return { db, bucket, images, upgradePosters: (deadline) => upgradeListedPosters(db as never, bucket, images, deadline) };
+}
+
+/** Run the backfill for a while (no-op without the bindings or a media host). */
+export async function runVariantsBackfill(budget: { budgetMs: number; maxImages?: number }) {
+	const deps = await variantDeps();
+	return deps ? backfillStep(deps, budget) : null;
+}
+
+/** Make one uploaded image's stored sizes (after the response). */
+async function variantsForUpload(id: string): Promise<void> {
+	const deps = await variantDeps();
+	if (!deps) return;
+	const row = await mediaRow(deps.db, id);
+	if (row) await processMedia(deps, row);
+	forgetInfo(id);
+}
+
+const MEDIA_ITEM = /^\/_emdash\/api\/media\/([A-Za-z0-9_-]+)(?:\/(confirm|replace))?$/;
+const WP_MEDIA_IMPORT = "/_emdash/api/import/wordpress/media";
+
+/**
+ * Keep stored sizes in step with media-library writes the hooks don't cover,
+ * after a successful response (null when the request isn't one):
+ * - a deleted image: its copies and record go (whether or not the feature is on);
+ * - a confirmed direct upload: its sizes are made (the upload hook ran before the file existed);
+ * - a replaced file (same key): its sizes are made again;
+ * - a WordPress media import (EmDash's importer doesn't notify plugins): the backfill runs for a while.
+ */
+export function variantsAfterMediaWrite(method: string, pathname: string, featureOn: boolean): Promise<void> | null {
+	if (pathname === WP_MEDIA_IMPORT && method === "POST") {
+		if (!featureOn) return null;
+		return (async () => {
+			const deps = await variantDeps();
+			if (!deps) return;
+			await startVariantsRun(deps.db, { force: true });
+			await backfillStep(deps, ROUTE_BUDGET);
+		})();
+	}
+	const m = MEDIA_ITEM.exec(pathname);
+	if (!m) return null;
+	const [, id, action] = m;
+	if (method === "DELETE" && !action) {
+		return (async () => {
+			const env: Record<string, unknown> = await workerEnv().catch(() => ({}));
+			const db = env[config.database] as Db | undefined;
+			const bucket = env[config.bucket] as VariantBucket | undefined;
+			if (db && bucket) await forgetMedia({ db, bucket }, id);
+			forgetInfo(id);
+		})();
+	}
+	if (method === "POST" && action && featureOn) {
+		return (async () => {
+			const deps = await variantDeps();
+			if (!deps) return;
+			if (action === "replace") await forgetMedia(deps, id);
+			const row = await mediaRow(deps.db, id);
+			if (row) await processMedia(deps, row);
+			forgetInfo(id);
+		})();
+	}
+	return null;
+}
 
 export function imagesPack(options: ImagesOptions = {}): PackModule {
-	config = { bucket: options.bucket ?? "MEDIA", images: options.images ?? "IMAGES" };
+	config = { bucket: options.bucket ?? "MEDIA", images: options.images ?? "IMAGES", database: options.database ?? "DB" };
+	setImageCrops(options.crops);
 	if (options.cdn && !/^https:\/\//i.test(options.cdn.trim())) console.warn("coywolf-pack images: images.cdn must be an https origin like https://media.example.com; ignored.");
 	setImageCdn(options.cdn);
 	configureMediaHostDatabase(options.database);
@@ -59,8 +157,25 @@ export function imagesPack(options: ImagesOptions = {}): PackModule {
 		id: "images",
 		label: "Clean Image URLs",
 		features: FEATURES,
-		routes: imagesModule({ database: options.database }).routes,
+		routes: imagesModule({ database: options.database, variants: { run: () => runVariantsBackfill(ROUTE_BUDGET), deps: variantDeps } }).routes,
 		adminPages: [{ path: "/images", label: "Clean Image URLs", icon: "image" }],
+		storage: { [VARIANTS_COLLECTION]: { indexes: [] } },
+		hooks: {
+			// Quick: the sizes are made after the upload's response (waitUntil), not during it.
+			"media:afterUpload": async (event: { media: { id: string; mimeType?: string } }) => {
+				if (!eligible(event.media.mimeType, 1, 0)) return;
+				await afterResponse(variantsForUpload(event.media.id).catch((error) => console.error("coywolf-pack images: stored sizes failed", error)));
+			},
+		},
+		tasks: [
+			{
+				name: VARIANTS_TASK,
+				schedule: "@hourly",
+				handler: async (_ctx: PluginContext) => {
+					await runVariantsBackfill(CRON_BUDGET);
+				},
+			},
+		],
 		capabilities: ["network:request"],
 		allowedHosts: [CLOUDFLARE_API_HOST],
 	};
@@ -96,61 +211,164 @@ export interface ImageDimensions {
 	height: number;
 }
 
-const dimensionCache = new Map<string, ImageDimensions | null>();
+/** A media-library image as pages need it: its size, focal point, and stored sizes (if any). */
+export interface ImageInfo {
+	/** Media id. */
+	id: string;
+	width: number | null;
+	height: number | null;
+	mimeType: string | null;
+	size: number | null;
+	/** Its stored-sizes record, any version (null when there's none). */
+	variants: VariantDoc | null;
+}
 
-/** The media library's storage key (<id>.<ext>) of a media-library or media-host URL. */
-function storageKey(src: string): string | null {
+/** Per isolate, by media id: dropped when settings change (settingsEpoch) or after INFO_TTL_MS. */
+const infoCache = new Map<string, { info: ImageInfo | null; epoch: number; at: number }>();
+const INFO_TTL_MS = 10 * 60_000;
+
+/** Forget one image (its sizes were just made or removed in this isolate). */
+export function forgetInfo(id: string): void {
+	infoCache.delete(id);
+}
+
+/** The media id and bucket key (<id>.<ext>) of a media-library or media-host URL. */
+function mediaRef(src: string): { id: string; key: string } | null {
 	const file = mediaFile(src) ?? parseCdnUrl(src.trim());
-	return file ? `${file.id}.${file.ext}` : null;
+	return file ? { id: file.id, key: `${file.id}.${file.ext}` } : null;
 }
 
 /**
- * Width and height of media-library images, from the media library itself.
- * For images whose Portable Text block has none (WordPress imports don't record
- * them), so themes can still build responsive srcsets and set width/height.
- * One query for the whole list; answers are remembered per isolate. Works
+ * Facts about media-library images (size, focal point, stored sizes) for the
+ * given sources, in one D1 statement for the whole list (batched with the
+ * page's other pack reads of this tick); remembered per isolate for a few
+ * minutes. Call it once per page with every image the page shows, then
+ * responsiveImage()/croppedImage() for each answer from the cache. Works
  * whether or not Clean image URLs is on. Unknown sources are left out.
  */
-export async function imageDimensions(srcs: Iterable<string | null | undefined>, database = "DB"): Promise<Map<string, ImageDimensions>> {
-	const result = new Map<string, ImageDimensions>();
-	const wanted = new Map<string, string[]>();
+export async function imageInfo(srcs: Iterable<string | null | undefined>, database = config.database): Promise<Map<string, ImageInfo>> {
+	const result = new Map<string, ImageInfo>();
+	const wanted = new Map<string, { id: string; srcs: string[] }>();
 	for (const src of srcs) {
 		if (!src) continue;
-		const key = storageKey(src);
-		if (!key) continue;
-		if (dimensionCache.has(key)) {
-			const hit = dimensionCache.get(key);
-			if (hit) result.set(src, hit);
+		const ref = mediaRef(src);
+		if (!ref) continue;
+		const hit = infoCache.get(ref.id);
+		if (hit && isCurrent(hit, INFO_TTL_MS)) {
+			if (hit.info) result.set(src, hit.info);
 			continue;
 		}
-		wanted.set(key, [...(wanted.get(key) ?? []), src]);
+		const entry = wanted.get(ref.key) ?? { id: ref.id, srcs: [] };
+		entry.srcs.push(src);
+		wanted.set(ref.key, entry);
 	}
 	if (!wanted.size) return result;
 	const env: Record<string, unknown> = await workerEnv().catch(() => ({}));
 	const db = env[database] as D1Database | undefined;
 	if (!db) return result;
 	const keys = [...wanted.keys()];
+	const epoch = settingsEpoch();
 	// D1 allows at most 100 bound parameters per query.
 	for (let i = 0; i < keys.length; i += 90) {
 		const batch = keys.slice(i, i + 90);
-		// With the page's other pack reads of this tick (one D1 batch).
-		const results = await batchedAll<{ storage_key: string; width: number | null; height: number | null }>(
+		type Row = { id: string; storage_key: string; width: number | null; height: number | null; mime_type: string | null; size: number | null; data: string | null };
+		const rows = await batchedAll<Row>(
 			db,
-			db.prepare(`SELECT storage_key, width, height FROM media WHERE storage_key IN (${batch.map(() => "?").join(",")})`).bind(...batch),
+			db
+				.prepare(
+					`SELECT m.id, m.storage_key, m.width, m.height, m.mime_type, m.size, s.data FROM media AS m
+					LEFT JOIN _plugin_storage AS s ON s.plugin_id = 'coywolf-pack' AND s.collection = '${VARIANTS_COLLECTION}' AND s.id = m.id
+					WHERE m.storage_key IN (${batch.map(() => "?").join(",")})`,
+				)
+				.bind(...batch),
 		);
-		const found = new Map(results.map((r) => [r.storage_key, r.width && r.height ? { width: r.width, height: r.height } : null]));
-		if (dimensionCache.size > 5000) dimensionCache.clear();
+		const found = new Map(rows.map((r) => [r.storage_key, r]));
+		if (infoCache.size > 5000) infoCache.clear();
 		for (const key of batch) {
-			const dims = found.get(key) ?? null;
-			dimensionCache.set(key, dims);
-			if (dims) for (const src of wanted.get(key)!) result.set(src, dims);
+			const row = found.get(key);
+			const { id, srcs: sources } = wanted.get(key)!;
+			const info: ImageInfo | null = row
+				? { id: row.id, width: row.width, height: row.height, mimeType: row.mime_type, size: row.size, variants: parseDoc(row.data) }
+				: null;
+			infoCache.set(id, { info, epoch, at: Date.now() });
+			if (info) for (const src of sources) result.set(src, info);
 		}
 	}
 	return result;
 }
 
-interface ImagesBinding {
-	input(stream: ReadableStream): { transform(options: Record<string, unknown>): { output(options: { format: string; quality?: number }): Promise<{ response(): Response }> } };
+/**
+ * Width and height of media-library images, from the media library itself.
+ * For images whose Portable Text block has none (WordPress imports don't record
+ * them), so themes can still build responsive srcsets and set width/height.
+ * Same single read and cache as imageInfo. Unknown sources are left out.
+ */
+export async function imageDimensions(srcs: Iterable<string | null | undefined>, database = config.database): Promise<Map<string, ImageDimensions>> {
+	const result = new Map<string, ImageDimensions>();
+	for (const [src, info] of await imageInfo(srcs, database)) if (info.width && info.height) result.set(src, { width: info.width, height: info.height });
+	return result;
+}
+
+/** An image's stored sizes as srcsets for a <picture>: AVIF and WebP (the original is the largest candidate). */
+export interface ResponsiveImage {
+	avif: string;
+	webp: string;
+	src: string;
+	full: string;
+	width: number;
+	height: number;
+}
+
+/** Whether a stored size of this image could exist but doesn't yet (so the page is a stopgap). */
+function pending(info: ImageInfo): boolean {
+	return eligible(info.mimeType, info.width, info.size) && !(info.variants?.v === VARIANTS_VERSION && info.variants.skip);
+}
+
+/**
+ * The image's stored widths as AVIF and WebP srcsets (and the original), or
+ * null when there are none (the feature is off, there's no media host, the
+ * image isn't a media-library file, or its sizes aren't made yet): use
+ * cleanImageUrl() then. Pass `locals` (Astro.locals) so a page shown before
+ * the sizes exist is cached for minutes, not days.
+ */
+export async function responsiveImage(src: string | null | undefined, options: { locals?: object | null } = {}): Promise<ResponsiveImage | null> {
+	if (!src || !(await siteFeatureOn(F.main))) return null;
+	await refreshMediaHost();
+	const cdn = imageCdn();
+	const original = cdnOriginalUrl(src);
+	if (!cdn || !original) return null;
+	const info = (await imageInfo([src])).get(src);
+	if (!info?.width || !info.height) return null;
+	if (!currentDoc(info.variants)) {
+		if (pending(info)) markPendingMedia(options.locals);
+		return null;
+	}
+	return { ...variantSrcsets(cdn, info.id, info.variants, original, info.width), width: info.width, height: info.height };
+}
+
+/**
+ * Stored crops of an image (sizes from the site's `images.crops`) as AVIF and
+ * WebP srcsets: `crops` are [width, height, descriptor] such as
+ * [600, 315, "600w"] or [50, 50, "1x"]; `src` is the WebP of `srcIndex`. Null
+ * when any of them isn't stored (use cleanImageUrl() then); a page shown
+ * while they're being made is marked as a stopgap through `locals`.
+ */
+export async function croppedImage(
+	src: string | null | undefined,
+	crops: Array<readonly [number, number, string]>,
+	options: { locals?: object | null; srcIndex?: number } = {},
+): Promise<{ avif: string; webp: string; src: string } | null> {
+	if (!src || !crops.length || !(await siteFeatureOn(F.main))) return null;
+	await refreshMediaHost();
+	const cdn = imageCdn();
+	if (!cdn || !cdnOriginalUrl(src)) return null;
+	const info = (await imageInfo([src])).get(src);
+	if (!info) return null;
+	const names = crops.map(([w, h]) => `${Math.round(w)}x${Math.round(h)}`);
+	const states = names.map((name) => cropState(info.variants, name));
+	if (states.every((s) => s === "stored")) return cropSrcsets(cdn, info.id, info.variants as VariantDoc, names.map((n, i) => [n, crops[i][2]]), options.srcIndex);
+	if (states.includes("pending") && pending(info)) markPendingMedia(options.locals);
+	return null;
 }
 
 const listCache = new Map<string, string | null>();
