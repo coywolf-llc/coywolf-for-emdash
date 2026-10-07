@@ -70,9 +70,15 @@ let config: { bucket: string; images: string; database: string } = { bucket: "ME
 
 /** Scheduled job that makes missing stored sizes. */
 export const VARIANTS_TASK = "images-variants";
-/** Time and image limits for one run of the backfill (scheduled job; admin route; after an import). */
-export const CRON_BUDGET = { budgetMs: 10 * 60_000, maxImages: 40 };
-export const ROUTE_BUDGET = { budgetMs: 20_000, maxImages: 25 };
+/**
+ * Time and image limits for one run of the backfill (scheduled job; admin
+ * route; after an import). Each image costs up to ~60 subrequests (a list, a
+ * read, and for each of up to 14 sizes a transform and a put per format), and
+ * a Worker invocation (cron or request) gets 1,000, so a run handles a few
+ * images at a time; the hourly job and the admin's repeated calls cover the rest.
+ */
+export const CRON_BUDGET = { budgetMs: 10 * 60_000, maxImages: 15 };
+export const ROUTE_BUDGET = { budgetMs: 20_000, maxImages: 10 };
 
 /** The bindings stored sizes need, or null when one is missing (or there's no media host). */
 export async function variantDeps(): Promise<BackfillDeps | null> {
@@ -108,8 +114,8 @@ const WP_MEDIA_IMPORT = "/_emdash/api/import/wordpress/media";
  * Keep stored sizes in step with media-library writes the hooks don't cover,
  * after a successful response (null when the request isn't one):
  * - a deleted image: its copies and record go (whether or not the feature is on);
- * - a confirmed direct upload: its sizes are made (the upload hook ran before the file existed);
- * - a replaced file (same key): its sizes are made again;
+ * - a confirmed direct upload (POST …/confirm): its sizes are made (the upload hook ran before the file existed);
+ * - a replaced file (PUT …/replace, same key): its sizes are made again;
  * - a WordPress media import (EmDash's importer doesn't notify plugins): the backfill runs for a while.
  */
 export function variantsAfterMediaWrite(method: string, pathname: string, featureOn: boolean): Promise<void> | null {
@@ -134,7 +140,8 @@ export function variantsAfterMediaWrite(method: string, pathname: string, featur
 			forgetInfo(id);
 		})();
 	}
-	if (method === "POST" && action && featureOn) {
+	// EmDash 1.1: POST /media/<id>/confirm, PUT /media/<id>/replace.
+	if (((method === "POST" && action === "confirm") || (method === "PUT" && action === "replace")) && featureOn) {
 		return (async () => {
 			const deps = await variantDeps();
 			if (!deps) return;
@@ -272,15 +279,17 @@ export async function imageInfo(srcs: Iterable<string | null | undefined>, datab
 	for (let i = 0; i < keys.length; i += 90) {
 		const batch = keys.slice(i, i + 90);
 		type Row = { id: string; storage_key: string; width: number | null; height: number | null; mime_type: string | null; size: number | null; data: string | null };
+		// Looked up by id (the primary key; storage_key has no index) and matched back by storage_key,
+		// so a file that was renamed in the bucket isn't mistaken for the one the page shows.
 		const rows = await batchedAll<Row>(
 			db,
 			db
 				.prepare(
 					`SELECT m.id, m.storage_key, m.width, m.height, m.mime_type, m.size, s.data FROM media AS m
 					LEFT JOIN _plugin_storage AS s ON s.plugin_id = 'coywolf-pack' AND s.collection = '${VARIANTS_COLLECTION}' AND s.id = m.id
-					WHERE m.storage_key IN (${batch.map(() => "?").join(",")})`,
+					WHERE m.id IN (${batch.map(() => "?").join(",")})`,
 				)
-				.bind(...batch),
+				.bind(...batch.map((key) => wanted.get(key)!.id)),
 		);
 		const found = new Map(rows.map((r) => [r.storage_key, r]));
 		if (infoCache.size > 5000) infoCache.clear();

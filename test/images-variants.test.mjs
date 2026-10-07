@@ -353,6 +353,13 @@ test("after media writes: a delete removes copies and record; uploads confirmed 
 	await variantsAfterMediaWrite("POST", "/_emdash/api/media/01F/confirm", true);
 	assert.ok(b.objects.has(`${v}/01F-640.avif`));
 	assert.deepEqual(V.parseDoc(db.sqlite.prepare("SELECT data FROM _plugin_storage WHERE id = '01F'").get().data).w, [400, 640]);
+	assert.equal(variantsAfterMediaWrite("POST", "/_emdash/api/media/01F/replace", true), null, "EmDash replaces with PUT, not POST");
+	assert.equal(variantsAfterMediaWrite("PUT", "/_emdash/api/media/01F/confirm", true), null);
+	// A replaced file (PUT …/replace): the old copies go and the new file's sizes are made.
+	db.sqlite.prepare("UPDATE media SET width = 500, height = 300 WHERE id = '01F'").run();
+	await variantsAfterMediaWrite("PUT", "/_emdash/api/media/01F/replace", true);
+	assert.ok(!b.objects.has(`${v}/01F-640.avif`), "sizes the smaller replacement doesn't have are gone");
+	assert.deepEqual(V.parseDoc(db.sqlite.prepare("SELECT data FROM _plugin_storage WHERE id = '01F'").get().data).w, [400]);
 
 	addMedia(db, "01G", "png", "image/png", 900, 500);
 	b.objects.set("01G.png", { body: new Uint8Array([1]).buffer, options: {} });
