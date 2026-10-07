@@ -609,3 +609,150 @@ test("scan: bounded steps resume mid-page, stale refs are dropped, one scan at a
 	assert.equal(ctx.storage.links_urls.rows.size, 5, "gone.test dropped");
 	assert.ok(![...ctx.storage.links_urls.rows.values()].some((r) => r.url.includes("gone")));
 });
+
+// ── Schedule (off by default; daily / weekly / monthly runs) ─────
+
+const { linksModule, isRunDue, RUN_KEY } = await import("../src/links/module.ts");
+const { linksPack } = await import("../src/links/pack.ts");
+const { composeHooks } = await import("../src/core/compose.ts");
+
+const DAY = 86_400_000;
+const ago = (ms) => new Date(Date.now() - ms).toISOString();
+
+/** fakeCtx plus settings, with every storage/KV/settings read counted. */
+function scheduleCtx({ features = { links: true, "links.check": true }, frequency, entries } = {}) {
+	const ctx = fakeCtx({ entries });
+	const reads = [];
+	const values = new Map([["features", features]]);
+	if (frequency) values.set("linksFrequency", frequency);
+	ctx.settings = {
+		async get(k) {
+			reads.push(`settings:${k}`);
+			return values.get(k) ?? null;
+		},
+		async set(k, v) {
+			values.set(k, v);
+		},
+	};
+	const count = (name, target) =>
+		new Proxy(target, {
+			get(t, prop) {
+				const v = t[prop];
+				if (typeof v !== "function") return v;
+				return (...args) => {
+					reads.push(`${name}.${String(prop)}`);
+					return v.apply(t, args);
+				};
+			},
+		});
+	ctx.kv = count("kv", ctx.kv);
+	ctx.storage = { links_urls: count("urls", ctx.storage.links_urls), links_refs: count("refs", ctx.storage.links_refs) };
+	ctx.reads = reads;
+	return ctx;
+}
+
+const cron = (name, ctx) => {
+	const { hooks } = composeHooks([linksPack()], { tasks: [] });
+	return hooks.cron.handler({ name }, ctx);
+};
+
+test("schedule: tasks run hourly and only while Scheduled link checking is on", async () => {
+	const pack = linksPack();
+	assert.deepEqual(
+		pack.tasks.map((t) => [t.name, t.schedule, t.feature]),
+		[
+			["links-scan", "@hourly", "links.check"],
+			["links-check", "@hourly", "links.check"],
+		],
+	);
+	assert.equal(pack.features.find((f) => f.id === "links.check").default, false);
+	for (const features of [{ links: true }, { links: true, "links.check": false }, { links: false, "links.check": true }]) {
+		const ctx = scheduleCtx({ features, entries: [{ id: "a", data: { title: "A", body: [block("1", "https://x.test/")] } }] });
+		await cron("links-scan", ctx);
+		await cron("links-check", ctx);
+		assert.deepEqual(ctx.reads, ["settings:features", "settings:features"], "off: nothing but the switch is read");
+	}
+});
+
+test("schedule: isRunDue for daily, weekly (default) and monthly", () => {
+	const now = Date.now();
+	for (const f of ["daily", "weekly", "monthly"]) assert.equal(isRunDue(f, null, now), true, `${f}: never ran`);
+	assert.equal(isRunDue("daily", ago(24 * 3_600_000 - 2 * 60_000), now), true, "within a few minutes of cron drift");
+	assert.equal(isRunDue("daily", ago(23.5 * 3_600_000), now), false, "not an hour early (daily runs don't creep earlier)");
+	assert.equal(isRunDue("daily", ago(20 * 3_600_000), now), false);
+	assert.equal(isRunDue("weekly", ago(6 * DAY), now), false);
+	assert.equal(isRunDue("weekly", ago(7 * DAY), now), true);
+	assert.equal(isRunDue("monthly", ago(8 * DAY), now), false);
+	assert.equal(isRunDue("monthly", ago(30 * DAY), now), true);
+});
+
+test("schedule: a weekly run that isn't due reads one state row and the frequency, nothing else", async () => {
+	const ctx = scheduleCtx();
+	await ctx.kv.set(RUN_KEY, { startedAt: ago(2 * DAY), phase: "done" });
+	ctx.reads.length = 0;
+	await cron("links-scan", ctx);
+	await cron("links-check", ctx);
+	assert.deepEqual(ctx.reads, ["settings:features", "kv.get", "settings:linksFrequency", "settings:features", "kv.get"]);
+});
+
+test("schedule: a due run scans, then checks due links over the next ticks, then waits for the next one", async () => {
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async () => new Response(null, { status: 200 });
+	try {
+		const entries = [{ id: "a", slug: "a", status: "published", data: { title: "A", body: [block("1", "https://x.test/"), block("2", "https://y.test/")] } }];
+		const ctx = scheduleCtx({ entries }); // No frequency saved: weekly.
+		await ctx.kv.set(RUN_KEY, { startedAt: ago(8 * DAY), phase: "done" });
+		await cron("links-check", ctx);
+		assert.equal(ctx.storage.links_urls.rows.size, 0, "checking waits for the scan");
+		await cron("links-scan", ctx);
+		assert.equal(ctx.storage.links_urls.rows.size, 2, "scanned");
+		assert.equal((await ctx.kv.get(RUN_KEY)).phase, "check");
+		await cron("links-check", ctx);
+		const rows = [...ctx.storage.links_urls.rows.values()];
+		assert.ok(rows.every((r) => r.status === "ok" && r.checkedAt), "checked");
+		const run = await ctx.kv.get(RUN_KEY);
+		assert.equal(run.phase, "done");
+		assert.ok(Date.now() - Date.parse(run.startedAt) < 60_000, "the new run's start is recorded");
+		// Next tick: not due again for a week.
+		ctx.reads.length = 0;
+		await cron("links-scan", ctx);
+		assert.ok(!ctx.reads.some((r) => r.startsWith("urls.") || r.startsWith("refs.")), "no link reads between runs");
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
+test("schedule: daily and monthly frequencies", async () => {
+	const daily = scheduleCtx({ frequency: "daily", entries: [] });
+	await daily.kv.set(RUN_KEY, { startedAt: ago(25 * 3_600_000), phase: "done" });
+	await cron("links-scan", daily);
+	assert.notEqual((await daily.kv.get(RUN_KEY)).phase, "done", "daily: a day later a run starts");
+
+	const monthly = scheduleCtx({ frequency: "monthly", entries: [] });
+	await monthly.kv.set(RUN_KEY, { startedAt: ago(10 * DAY), phase: "done" });
+	await cron("links-scan", monthly);
+	assert.equal((await monthly.kv.get(RUN_KEY)).phase, "done", "monthly: not after 10 days");
+	await monthly.kv.set(RUN_KEY, { startedAt: ago(31 * DAY), phase: "done" });
+	await cron("links-scan", monthly);
+	assert.notEqual((await monthly.kv.get(RUN_KEY)).phase, "done", "monthly: after 30 days");
+});
+
+test("schedule: Scan content and Check now still work on demand", async () => {
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async () => new Response(null, { status: 200 });
+	try {
+		const entries = [{ id: "a", slug: "a", status: "published", data: { title: "A", body: [block("1", "https://x.test/")] } }];
+		const ctx = scheduleCtx({ entries });
+		const { routes } = linksModule();
+		ctx.input = { restart: true };
+		const scan = await routes["links/scan"].handler(ctx);
+		assert.equal(scan.status, "idle");
+		assert.equal(ctx.storage.links_urls.rows.size, 1);
+		ctx.input = {};
+		const run = await routes["links/recheck"].handler(ctx);
+		assert.equal(run.checked, 1);
+		assert.equal(await ctx.kv.get(RUN_KEY), null, "manual actions don't start a scheduled run");
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
