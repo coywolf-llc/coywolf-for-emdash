@@ -194,7 +194,7 @@ function ServedFile(props: { text: string; emdash: PageData["emdash"]; config: R
 					<p className="font-medium">
 						{props.config.importedAt ? `Set up from EmDash's robots.txt on ${dateTimeFormat.format(new Date(props.config.importedAt))}` : "What's new"}
 					</p>
-					<ul className="mt-1 list-disc space-y-0.5 pl-5 text-kumo-subtle">
+					<ul className="mt-1 list-disc space-y-0.5 ps-5 text-kumo-subtle">
 						{props.config.importNotes.map((n) => (
 							<li key={n}>{n}</li>
 						))}
@@ -227,7 +227,7 @@ function SitemapOption(props: { config: RobotsConfig; siteUrl: string; busy: boo
 				disabled={props.busy}
 				onCheckedChange={(on: boolean) => props.onChange(on)}
 			/>
-			<p className="pl-6 text-xs text-kumo-subtle">A Sitemap line tells every search engine where your sitemap is. Turn it off if you'd rather submit sitemaps yourself, for example in Google Search Console.</p>
+			<p className="ps-6 text-xs text-kumo-subtle">A Sitemap line tells every search engine where your sitemap is. Turn it off if you'd rather submit sitemaps yourself, for example in Google Search Console.</p>
 			{!props.config.includeSitemap && !props.noteDismissed && (
 				<div className="flex items-start gap-2 rounded bg-kumo-tint/40 px-3 py-2 text-sm" role="note">
 					<Info className="mt-0.5 shrink-0 text-kumo-subtle" aria-hidden="true" />
@@ -414,7 +414,7 @@ function SettingsTab(props: {
 					checked={draft.inheritGeneral}
 					onCheckedChange={(on: boolean) => update({ inheritGeneral: on })}
 				/>
-				<p className="-mt-2 pl-6 text-xs text-kumo-subtle">
+				<p className="-mt-2 ps-6 text-xs text-kumo-subtle">
 					In robots.txt, a crawler that's named anywhere ignores every rule for “all crawlers” (RFC 9309). With this on, Coywolf Pack copies those rules into its group, except where its own
 					rules say otherwise.
 				</p>
@@ -682,7 +682,7 @@ export function RobotsPage() {
 					variant="alert"
 					title="Check your Extra lines"
 					description={
-						<ul className="list-disc pl-5">
+						<ul className="list-disc ps-5">
 							{data.warnings.map((w, i) => (
 								<li key={`${w.code}-${i}`}>{w.message}</li>
 							))}

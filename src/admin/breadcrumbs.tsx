@@ -119,7 +119,7 @@ function Code({ code, label }: { code: string; label: string }) {
 	}
 	return (
 		<div className="relative min-w-0">
-			<pre className="overflow-x-auto rounded-md border border-kumo-line bg-kumo-tint p-3 pr-24 text-xs leading-5" aria-label={label}>
+			<pre className="overflow-x-auto rounded-md border border-kumo-line bg-kumo-tint p-3 pe-24 text-xs leading-5" aria-label={label}>
 				<code>{code}</code>
 			</pre>
 			<div className="absolute right-2 top-2 flex items-center gap-2">
@@ -439,13 +439,13 @@ export function BreadcrumbsPage() {
 						<Code label="Post page example" code={TRAIL_CODE} />
 						<p>If your layout builds the context, pass the trail to it as a prop instead:</p>
 						<Code label="Layout prop example" code={LAYOUT_PROP_CODE} />
-						<ul className="list-disc space-y-1 pl-5">
+						<ul className="list-disc space-y-1 ps-5">
 							<li>
 								<C>breadcrumbs: []</C> hides the trail on that page (the home page, a landing page):
 							</li>
 						</ul>
 						<Code label="Hide example" code={HIDE_CODE} />
-						<ul className="list-disc space-y-1 pl-5">
+						<ul className="list-disc space-y-1 ps-5">
 							<li>Leave <C>breadcrumbs</C> out to derive the trail from the URL.</li>
 							<li>URLs can be root-relative (<C>/breakfast/</C>) or absolute.</li>
 							<li>“Start with the home page” and “End with the current page” trim or add those crumbs when the trail renders.</li>
@@ -513,7 +513,7 @@ export function BreadcrumbsPage() {
 							With Schema &amp; Social's <strong>Breadcrumb schema</strong> feature on, the page's <C>BreadcrumbList</C> is built from the
 							same <C>page.breadcrumbs</C>, so passing the trail once (step 3) keeps the visible nav and the structured data in agreement.
 						</p>
-						<ul className="list-disc space-y-1 pl-5">
+						<ul className="list-disc space-y-1 ps-5">
 							<li>The schema uses the trail as given (relative URLs made absolute), so include Home first and the current page last.</li>
 							<li><C>breadcrumbs: []</C> removes both the nav and the BreadcrumbList on that page.</li>
 							<li>

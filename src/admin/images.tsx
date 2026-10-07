@@ -190,7 +190,7 @@ function CostEstimate({ estimate }: { estimate: Estimate }) {
 			<p className="text-sm font-medium">
 				What it costs: {count(estimate.images)} images, {count(estimate.done)} with their sizes
 			</p>
-			<ul className="list-disc space-y-1.5 pl-5 text-sm">
+			<ul className="list-disc space-y-1.5 ps-6 text-sm">
 				<li>
 					{estimate.transforms ? (
 						<>
@@ -465,6 +465,10 @@ export function ImagesPage() {
 	const [check, setCheck] = React.useState<CheckResult | null>(null);
 	const [plan, setPlan] = React.useState<Plan | null>(null);
 	const [applied, setApplied] = React.useState<Applied | null>(null);
+	// A working media host hides the host field and the setup form until asked for.
+	const [hostOpen, setHostOpen] = React.useState(false);
+	const [setupOpen, setSetupOpen] = React.useState(false);
+	const autoChecked = React.useRef(false);
 
 	const apply = (s: Settings) => {
 		setSaved(s);
@@ -506,9 +510,9 @@ export function ImagesPage() {
 	const suggestedHost = saved?.siteHost ? `media.${saved.siteHost}` : "media.example.com";
 	const setupHost = draft.host.trim() || saved?.activeHost || suggestedHost;
 
-	const runCheck = async () => {
+	const runCheck = async (quiet = false) => {
 		setPending("check");
-		setError(null);
+		if (!quiet) setError(null);
 		setCheck(null);
 		try {
 			// The server picks a recent image from the media library. The loading itself is checked here, in the
@@ -517,7 +521,8 @@ export function ImagesPage() {
 			const result = await post<CheckResult>("check", { host: hostToUse }, "Couldn't check the media host");
 			setCheck(await browserCheck(result));
 		} catch (cause) {
-			setError(errorText(cause, "Couldn't check the media host"));
+			// The check on page load stays quiet: the setup form simply shows, as when the host doesn't work.
+			if (!quiet) setError(errorText(cause, "Couldn't check the media host"));
 		} finally {
 			setPending(undefined);
 		}
@@ -560,6 +565,19 @@ export function ImagesPage() {
 			setPending(undefined);
 		}
 	};
+
+	// Check the media host once on load, so a working setup can be shown as done.
+	React.useEffect(() => {
+		if (!saved?.activeHost || autoChecked.current) return;
+		autoChecked.current = true;
+		void runCheck(true);
+	}, [saved?.activeHost]);
+
+	const bare = (host: string) => host.replace(/^https?:\/\//, "").replace(/\/+$/, "").toLowerCase();
+	const hostWorks = Boolean(saved?.activeHost && check?.ok && bare(check.host) === bare(saved.activeHost));
+	const firstCheck = Boolean(saved?.activeHost && !check && pending === "check" && !hostOpen && !setupOpen);
+	const showHostInput = !saved?.activeHost || hostOpen || draft.host !== (saved?.host ?? "");
+	const setupDone = (hostWorks || firstCheck) && !setupOpen && !plan && !applied;
 
 	const dirty = saved ? isDirty(draft, toDraft(saved)) : false;
 	const busy = Boolean(pending);
@@ -614,122 +632,153 @@ export function ImagesPage() {
 							)
 						}
 						actions={
-							<Button type="button" variant="secondary" icon={<MagnifyingGlass />} disabled={busy || !hostToUse} onClick={() => void runCheck()}>
-								{pending === "check" ? "Checking…" : "Check"}
-							</Button>
-						}
-					>
-						<Input
-							label="Media host"
-							placeholder={`https://${suggestedHost}`}
-							description={
-								saved.optionHost
-									? `Leave empty to use the one in astro.config.mjs (${saved.optionHost}). Check it before saving: images switch to it right away.`
-									: "An https address like https://media.example.com. Check it before saving: images switch to it right away."
-							}
-							value={draft.host}
-							disabled={busy}
-							onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ host: e.target.value })}
-						/>
-						{check && <CheckList result={check} />}
-						<p className="text-xs text-kumo-subtle">{saved.quotaNote}</p>
-						<CredentialGuide id="media-host" />
-					</SettingsSection>
-
-					<SettingsSection
-						id="images-setup"
-						title="Set up media host"
-						description={
 							<>
-								Optional: does the Cloudflare setup for you, for <span className="font-medium">{setupHost.replace(/^https?:\/\//, "")}</span>. It turns
-								on Image Transformations for the zone, connects the host to the media bucket, and adds the two URL rewrite rules,
-								skipping anything already done. You'll see the plan before anything changes.
+								{!showHostInput && (
+									<Button type="button" variant="ghost" disabled={busy} onClick={() => setHostOpen(true)}>
+										Change host
+									</Button>
+								)}
+								<Button type="button" variant="secondary" icon={<MagnifyingGlass />} disabled={busy || !hostToUse} onClick={() => void runCheck()}>
+									{pending === "check" ? "Checking…" : "Check"}
+								</Button>
 							</>
 						}
-						actions={
-							<Button type="button" variant="secondary" icon={<Wrench />} disabled={busy} onClick={() => void review()}>
-								{pending === "plan" ? "Reading…" : "Review setup"}
-							</Button>
-						}
 					>
-						<div className="grid gap-4 sm:grid-cols-2">
+						{showHostInput && (
 							<Input
-								label="Cloudflare account ID"
-								description={saved.envAccountId ? "CF_ACCOUNT_ID is set; it's used when this is empty." : undefined}
-								value={draft.accountId}
-								disabled={busy}
-								onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ accountId: e.target.value })}
-							/>
-							<Input
-								label="R2 bucket name"
-								description="The bucket bound as MEDIA in wrangler.jsonc (its bucket_name)."
-								value={draft.bucket}
-								disabled={busy}
-								onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ bucket: e.target.value })}
-							/>
-							<SecretField
-								label="Cloudflare API token"
-								saved={saved.tokenSet}
-								value={draft.token}
-								onChange={(value) => set({ token: value })}
+								label="Media host"
+								placeholder={`https://${suggestedHost}`}
 								description={
-									saved.envToken
-										? "A Worker secret (IMAGES_API_TOKEN or CLOUDFLARE_API_TOKEN) is set; it's used when no token is saved here."
-										: "Used only for this setup. Saving it is optional (stored encrypted)."
+									saved.optionHost
+										? `Leave empty to use the one in astro.config.mjs (${saved.optionHost}). Check it before saving: images switch to it right away.`
+										: "An https address like https://media.example.com. Check it before saving: images switch to it right away."
 								}
-								onClear={() => void save(true)}
-								clearing={pending === "clear"}
+								value={draft.host}
 								disabled={busy}
+								onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ host: e.target.value })}
 							/>
-						</div>
-						<CredentialGuide id="images-token" />
-
-						{plan && (
-							<div className="space-y-3 rounded-md border border-kumo-line p-3" aria-live="polite">
-								<p className="text-sm font-medium">
-									{plan.plan.done ? `Everything is already set up on ${plan.zone}.` : `Plan for ${plan.zone} (${changes} change${changes === 1 ? "" : "s"}):`}
-								</p>
-								<ul className="space-y-1.5">
-									{plan.plan.steps.map((step) => (
-										<li key={step.id} className="flex items-start gap-2 text-sm">
-											{step.action === "none" ? <StatusIcon ok /> : <Wrench size={18} style={{ flexShrink: 0 }} aria-label="Will change" />}
-											<span className={step.action === "none" ? "text-kumo-subtle" : undefined}>{step.label}</span>
-										</li>
-									))}
-								</ul>
-								{!plan.plan.done && (
-									<div className="flex flex-wrap gap-2">
-										<Button type="button" variant="primary" disabled={busy} onClick={() => void applySetup()}>
-											{pending === "apply" ? "Setting up…" : "Apply"}
-										</Button>
-										<Button type="button" variant="ghost" disabled={busy} onClick={() => setPlan(null)}>
-											Cancel
-										</Button>
-									</div>
-								)}
-							</div>
 						)}
-
-						{applied && (
-							<div className="space-y-2" aria-live="polite">
-								<ul className="space-y-1.5">
-									{applied.results.map((r) => (
-										<li key={r.id} className="flex items-start gap-2 text-sm">
-											<StatusIcon ok={r.ok} />
-											<span>{r.message}</span>
-										</li>
-									))}
-								</ul>
-								{applied.results.every((r) => r.ok) && (
-									<p className="text-sm text-kumo-subtle">
-										{applied.check?.ok
-											? "The media host works. Save to start using it."
-											: "Done. A new custom domain can take a few minutes to get its certificate: select Check again shortly, then save."}
-									</p>
-								)}
-							</div>
-						)}
+						{check && <CheckList result={check} />}
+						<p className="text-xs text-kumo-subtle">{saved.quotaNote}</p>
+						{!hostWorks && <CredentialGuide id="media-host" />}
 					</SettingsSection>
+
+					{setupDone ? (
+						<SettingsSection
+							id="images-setup"
+							title="Set up media host"
+							description={
+								firstCheck ? (
+									"Checking the media host…"
+								) : (
+									<>
+										Done: <span className="font-medium">{bare(saved.activeHost)}</span> serves the media bucket and resizes images (checked just
+										now). Run the setup again only to repair it or to set up a different host.
+									</>
+								)
+							}
+							actions={
+								<Button type="button" variant="secondary" icon={<Wrench />} disabled={busy} onClick={() => setSetupOpen(true)}>
+									Run setup again
+								</Button>
+							}
+						/>
+					) : (
+						<SettingsSection
+							id="images-setup"
+							title="Set up media host"
+							description={
+								<>
+									Optional: does the Cloudflare setup for you, for <span className="font-medium">{setupHost.replace(/^https?:\/\//, "")}</span>. It turns
+									on Image Transformations for the zone, connects the host to the media bucket, and adds the two URL rewrite rules,
+									skipping anything already done. You'll see the plan before anything changes.
+								</>
+							}
+							actions={
+								<Button type="button" variant="secondary" icon={<Wrench />} disabled={busy} onClick={() => void review()}>
+									{pending === "plan" ? "Reading…" : "Review setup"}
+								</Button>
+							}
+						>
+							<div className="grid gap-4 sm:grid-cols-2">
+								<Input
+									label="Cloudflare account ID"
+									description={saved.envAccountId ? "CF_ACCOUNT_ID is set; it's used when this is empty." : undefined}
+									value={draft.accountId}
+									disabled={busy}
+									onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ accountId: e.target.value })}
+								/>
+								<Input
+									label="R2 bucket name"
+									description="The bucket bound as MEDIA in wrangler.jsonc (its bucket_name)."
+									value={draft.bucket}
+									disabled={busy}
+									onChange={(e: React.ChangeEvent<HTMLInputElement>) => set({ bucket: e.target.value })}
+								/>
+								<SecretField
+									label="Cloudflare API token"
+									saved={saved.tokenSet}
+									value={draft.token}
+									onChange={(value) => set({ token: value })}
+									description={
+										saved.envToken
+											? "A Worker secret (IMAGES_API_TOKEN or CLOUDFLARE_API_TOKEN) is set; it's used when no token is saved here."
+											: "Used only for this setup. Saving it is optional (stored encrypted)."
+									}
+									onClear={() => void save(true)}
+									clearing={pending === "clear"}
+									disabled={busy}
+								/>
+							</div>
+							<CredentialGuide id="images-token" />
+
+							{plan && (
+								<div className="space-y-3 rounded-md border border-kumo-line p-3" aria-live="polite">
+									<p className="text-sm font-medium">
+										{plan.plan.done ? `Everything is already set up on ${plan.zone}.` : `Plan for ${plan.zone} (${changes} change${changes === 1 ? "" : "s"}):`}
+									</p>
+									<ul className="space-y-1.5">
+										{plan.plan.steps.map((step) => (
+											<li key={step.id} className="flex items-start gap-2 text-sm">
+												{step.action === "none" ? <StatusIcon ok /> : <Wrench size={18} style={{ flexShrink: 0 }} aria-label="Will change" />}
+												<span className={step.action === "none" ? "text-kumo-subtle" : undefined}>{step.label}</span>
+											</li>
+										))}
+									</ul>
+									{!plan.plan.done && (
+										<div className="flex flex-wrap gap-2">
+											<Button type="button" variant="primary" disabled={busy} onClick={() => void applySetup()}>
+												{pending === "apply" ? "Setting up…" : "Apply"}
+											</Button>
+											<Button type="button" variant="ghost" disabled={busy} onClick={() => setPlan(null)}>
+												Cancel
+											</Button>
+										</div>
+									)}
+								</div>
+							)}
+
+							{applied && (
+								<div className="space-y-2" aria-live="polite">
+									<ul className="space-y-1.5">
+										{applied.results.map((r) => (
+											<li key={r.id} className="flex items-start gap-2 text-sm">
+												<StatusIcon ok={r.ok} />
+												<span>{r.message}</span>
+											</li>
+										))}
+									</ul>
+									{applied.results.every((r) => r.ok) && (
+										<p className="text-sm text-kumo-subtle">
+											{applied.check?.ok
+												? "The media host works. Save to start using it."
+												: "Done. A new custom domain can take a few minutes to get its certificate: select Check again shortly, then save."}
+										</p>
+									)}
+								</div>
+							)}
+						</SettingsSection>
+					)}
 				</form>
 			)}
 
