@@ -229,6 +229,55 @@ const full = await originalImageUrl(src);
 - `originalImageUrl(src)` (also exported as `mediaUrl`): the original file on the media host; returns `src` unchanged when the feature is off, no media host is set, or `src` isn't a media-library file.
 - `imageDimensions(srcs)`: a `Map` of `src` → `{ width, height }` from the media library, for images whose Portable Text block has no size (WordPress imports don't record one). One query for a whole page, remembered per isolate; works whether or not the feature is on. Use it to build `srcset` and set `width`/`height` on content images.
 
+### Stored image sizes
+
+With a media host, each image is also stored, once, in a few sizes as AVIF and WebP, next to the original in the media bucket, and pages use those files instead of resizing on each visit:
+
+```
+https://media.example.com/v1/<id>-<w>.avif|.webp          widths 400, 640, 800, 1200, 1600 (keeps the ratio)
+https://media.example.com/v1/<id>-<w>x<h>.avif|.webp      the site's crops (fit: cover, around the image's focal point)
+```
+
+- **What's made.** Each width smaller than the original (the original is always the largest candidate; images under 400 pixels have none and render as a plain `<img>`), and, when a page first shows it, each crop in `images.crops` that fits inside the original (never upscaled). JPEG, PNG and WebP originals up to 20 MB; GIFs, SVGs, AVIF originals and larger files keep using `/s/`. WebP is made at quality 85, AVIF at 80; Cloudflare doesn't encode AVIF beyond 1200 pixels on a side, so those sizes are stored as WebP under the `.avif` name too (with their real `Content-Type: image/webp`; a `<source type="image/avif">` only picks the candidate list, and every browser that takes AVIF also decodes WebP). Files are stored with `Cache-Control: public, max-age=31536000, immutable`.
+- **Crops** are the exact sizes the theme shows (list thumbnails, avatars at 1x and 2x, the Testimonial block's 64×64 and 128×128 photo). They're made **on first use**: when `croppedImage()` finds an image's widths stored but a listed crop missing, it makes just that crop after the response (one at a time per isolate, at most 6 images queued; a failure waits an hour before it's tried again), merges it into the record in SQL (crops added meanwhile by another isolate are kept), and marks the page as a stopgap so its next render uses it. So avatars and testimonial crops are made only for the images that are shown that way, and list crops only for featured images. A size not in `images.crops` always uses `/s/`.
+
+  ```js
+  coywolfPlugin({ images: { cdn: "https://media.example.com", crops: [[400, 210], [600, 315], [900, 473], [50, 50], [100, 100], [64, 64], [128, 128]] } })
+  ```
+
+  Adding crops later is fine: they're made as pages show them. Removed crops' files stay until the image is deleted.
+- **When.** New images: right after an upload (in the background; the upload doesn't wait), after a direct upload is confirmed or a file is replaced. These always run (one image's widths cost a few cents at most).
+- **Existing images are opt-in.** Making sizes for a whole library (for example after a WordPress import) is a one-time Cloudflare fee, so it doesn't start on its own. Until an admin turns on **Sizes for existing images** on the Clean Image URLs page (setting `imagesVariantsBulk`, read with the feature switches, so checking it adds no query), the hourly job, the step after a WordPress media import and legacy video-poster upgrades do nothing, and existing images keep using `/s/`. Turning it on takes a confirmation that shows the estimate (below) and starts a run; then the hourly job (15 images per run, since each image costs up to about 22 of a run's 1,000 subrequests), the import step and **Make missing sizes now** (it keeps going until every image is done) make the missing widths. A finished run starts over a day later to retry failures. Turning it off stops further work, including a run under way (it checks the setting before each batch of five images and before the cleanup, so within the switches' 30-second cache); sizes already made stay in use. Turning it back on starts a fresh run.
+- **Until an image's sizes exist** (and for images that can't have them), `responsiveImage()` and `croppedImage()` return `null` and themes use `cleanImageUrl()` (`/s/`). A page that showed such a stopgap is cached for minutes instead of days, so its next render uses the stored files, but only when the sizes are actually on their way: the image was uploaded in the last 15 minutes (`created_at` comes with the media row `imageInfo()` already reads), sizes for existing images are on, or a crop was just queued. An older image with the setting off, an image that can't have sizes, or a crop that failed recently uses `/s/` and the page is cached normally.
+- **Records.** Each image's sizes are recorded in plugin storage (`imageVariants`, by media id) once all its files are in the bucket; pages read them with the media rows in one query per page (`imageInfo()`), remembered per isolate for up to 10 minutes.
+- **Deleting** an image from the media library deletes its stored sizes and record. A replaced file gets new sizes (the media host may keep serving cached old ones, as it does for the original).
+- **Changing the widths or quality** (in `src/images/variants.ts`) means bumping `VARIANTS_VERSION`: renders treat older records as missing, the backfill makes the new set (with sizes for existing images on; otherwise those images use `/s/`), and its cleanup deletes the previous version's files.
+- **Cost.** Each stored file is one transformation, made once (Free plan: 5,000 a month; beyond that $0.50 per 1,000 on a paid Images plan): a size is two (WebP and AVIF), or one above 1,200 pixels. An image with 4 widths is about 7, so a 2,000-image library is about 14,000 once. After that, visits cost nothing but R2 storage and reads. Without stored sizes, `/s/` costs one transformation per size of each image asked for, **every month** (the AVIF and WebP a visitor gets from one `/s/` URL count once).
+- **Estimate.** The Clean Image URLs page shows, from one scan of the media table and a count of published entries (admin only, `images/variants/estimate`): the one-time fee as a range (the site may already have used the month's free 5,000), storage a month (rough per-width file sizes; R2 at $0.015 per GB-month), the most `/s/` could cost a month (every size of every image asked for once) and when the fee pays for itself, and a **traffic calculator** (page views a month; pages seen = P × (1 − e^(−V/P)), at least 80% with search engines crawling; about 3 sizes per image shown; one Open Graph `/s/` image per page either way). The math is in `src/images/variants-estimate.ts`.
+- **Video posters** get stored sizes too (400, 800 and 1200 wide); posters copied before 0.30.0 keep using `/s/` until the backfill's cleanup makes theirs (only with sizes for existing images on).
+- **Open Graph** images stay on `/s/1200x630/` (crawlers that don't ask for WebP get the original's format there).
+
+In theme code, read every image of the page once, then build each `<picture>`:
+
+```astro
+---
+import { croppedImage, imageInfo, responsiveImage, cleanImageUrl } from "@coywolf/emdash/astro";
+await imageInfo(allImageSrcsOnThePage); // one query; later calls come from the cache
+const r = await responsiveImage(src, { locals: Astro.locals });
+const thumb = await croppedImage(src, [[400, 210, "400w"], [600, 315, "600w"], [900, 473, "900w"]], { locals: Astro.locals, srcIndex: 1 });
+---
+{r ? (
+	<picture>
+		<source type="image/avif" srcset={r.avif} sizes="(min-width: 50rem) 768px, 100vw" />
+		<img src={r.src} srcset={r.webp} sizes="(min-width: 50rem) 768px, 100vw" width={r.width} height={r.height} alt="" />
+	</picture>
+) : (
+	<img src={await cleanImageUrl(src, { width: 800 })} alt="" />
+)}
+```
+
+Or use the `ResponsiveImage` component (`src`, `alt`, `sizes`, `width`, `height`, `priority`, `class`, `dataFull`), which renders the `<picture>` or the `/s/` fallback.
+
 ## Page cache
 
 For sites that put Cloudflare's [Workers Cache](https://developers.cloudflare.com/workers/cache/) in front of the Worker, which serves cached pages without running the Worker. That's what makes first visits fast: a cold Worker spends a second or more starting up and querying D1. Turn it on in the site, as in EmDash's Cloudflare guide:

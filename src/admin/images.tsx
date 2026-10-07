@@ -4,11 +4,12 @@
  * media host, which does the same through the Cloudflare API (review, then
  * apply). The feature itself is turned on or off on the Coywolf Pack page.
  */
-import { Banner, Button, Input, Loader } from "@cloudflare/kumo";
-import { CheckCircle, Info, MagnifyingGlass, Wrench, XCircle } from "@phosphor-icons/react";
+import { Banner, Button, Checkbox, Input, Loader } from "@cloudflare/kumo";
+import { ArrowsClockwise, CheckCircle, Info, MagnifyingGlass, Wrench, XCircle } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
+import { type LibrarySummary, monthlyWithoutMax, oneTimeCost, paybackMonths, storageCost, trafficEstimate } from "../images/variants-estimate.js";
 import { CredentialGuide } from "./guides.js";
 import { SaveBar, isDirty } from "./save-bar.js";
 import { SecretField, SettingsSection, errorText } from "./settings-ui.js";
@@ -142,6 +143,316 @@ function CheckList({ result }: { result: CheckResult }) {
 				))}
 			</ul>
 		</div>
+	);
+}
+
+interface VariantsStatus {
+	available: boolean;
+	reason?: string;
+	/** Sizes for existing images (the backfill) are on. */
+	bulk?: boolean;
+	total?: number;
+	stored?: number;
+	skipped?: number;
+	state?: { phase: "running" | "cleanup" | "done"; done: number; skipped: number; failed: number; finishedAt?: string } | null;
+	crops: string[];
+	fallbackNote: string;
+}
+
+interface Estimate extends LibrarySummary {
+	/** Published pages; null when they couldn't be counted. */
+	pages: number | null;
+}
+
+const count = (n: number | undefined) => (n ?? 0).toLocaleString("en-US");
+const money = (n: number) => (n > 0 && n < 0.01 ? "less than $0.01" : `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+const range = (r: { min: number; max: number }) => (r.max < 0.01 || money(r.min) === money(r.max) ? money(r.max) : `${money(r.min)}–${money(r.max)}`);
+/** "about $1.20", or "less than $0.01" as it is (never "about less than"). */
+const about = (s: string) => (s.startsWith("less") ? s : `about ${s}`);
+const gb = (bytes: number) => (bytes < 1e9 ? `${Math.max(1, Math.round(bytes / 1e6)).toLocaleString("en-US")} MB` : `${(bytes / 1e9).toFixed(1)} GB`);
+const payback = (months: number | null) =>
+	months === null ? "doesn't pay for itself at this traffic" : months <= 1 ? "pays for itself in the first month" : `pays for itself in about ${months} months`;
+
+/** What stored sizes cost, what they save, and a traffic calculator (all computed here from one fetch). */
+function CostEstimate({ estimate }: { estimate: Estimate }) {
+	const [views, setViews] = React.useState("10000");
+	const [crawlers, setCrawlers] = React.useState(true);
+	const oneTime = oneTimeCost(estimate.transforms);
+	const storage = storageCost(estimate.bytes);
+	const upTo = monthlyWithoutMax(estimate.sizes);
+	const viewsNumber = Math.max(0, Number(views) || 0);
+	const traffic = estimate.pages
+		? trafficEstimate({ views: viewsNumber, pages: estimate.pages, images: estimate.images, sizes: estimate.sizes, bytes: estimate.bytes, crawlers })
+		: null;
+	if (!estimate.images) return <p className="text-sm text-kumo-subtle">The media library has no images that can get stored sizes yet.</p>;
+	return (
+		<div className="space-y-3 rounded-md border border-kumo-line p-3">
+			<p className="text-sm font-medium">
+				What it costs: {count(estimate.images)} images, {count(estimate.done)} with their sizes
+			</p>
+			<ul className="list-disc space-y-1.5 pl-5 text-sm">
+				<li>
+					{estimate.transforms ? (
+						<>
+							<span className="font-medium">One time: {about(range(oneTime))}.</span> Making the missing sizes is {count(estimate.transforms)} Cloudflare image
+							transformations ({count(estimate.filesLeft)} files) at $0.50 per 1,000, made once. The first 5,000 each month are free, but the site may
+							already have used them this month, hence the range.
+						</>
+					) : (
+						<>
+							<span className="font-medium">One time: nothing left to pay.</span> Every image has its sizes.
+						</>
+					)}
+				</li>
+				<li>
+					<span className="font-medium">Then {about(money(storage))} a month</span> to keep {count(estimate.files)} files (about {gb(estimate.bytes)}) in the
+					media bucket, at R2's $0.015 per GB a month (less while the bucket is under R2's free 10 GB). Serving them costs no transformations.
+				</li>
+				<li>
+					<span className="font-medium">Without stored sizes: up to {money(upTo)} a month.</span> Cloudflare charges for each different size of each image
+					that's asked for, every month (AVIF and WebP of one size count once). That's if all {count(estimate.sizes)} sizes are asked for in a month, after
+					the free 5,000.{" "}
+					{upTo > storage
+						? `At that most, making them ${payback(paybackMonths(oneTime.max, upTo - storage))}.`
+						: "That fits in the free 5,000, so here stored sizes are about faster pages, not savings."}
+				</li>
+				<li>Crops (thumbnails, avatars) are made as pages first show them, only for the images that use them: usually a few cents.</li>
+			</ul>
+
+			{traffic ? (
+				<div className="space-y-2">
+					<div className="grid gap-3 sm:grid-cols-2 sm:items-end">
+						<Input
+							type="number"
+							min={0}
+							label="Page views per month"
+							value={views}
+							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setViews(e.target.value)}
+						/>
+						<Checkbox label="Search engines crawl the site" checked={crawlers} onCheckedChange={(checked: boolean) => setCrawlers(checked)} />
+					</div>
+					<table className="w-full text-sm" aria-live="polite">
+						<tbody>
+							<tr className="border-b border-kumo-line">
+								<th scope="row" className="py-1.5 pr-3 text-left font-normal text-kumo-subtle">Without stored sizes</th>
+								<td className="py-1.5 font-medium">
+									{money(traffic.withoutCost)} a month <span className="font-normal text-kumo-subtle">({count(traffic.withoutTransforms)} transformations)</span>
+								</td>
+							</tr>
+							<tr className="border-b border-kumo-line">
+								<th scope="row" className="py-1.5 pr-3 text-left font-normal text-kumo-subtle">With stored sizes</th>
+								<td className="py-1.5 font-medium">
+									{money(traffic.withCost)} a month <span className="font-normal text-kumo-subtle">(storage, plus {count(traffic.withTransforms)} Open Graph images)</span>
+								</td>
+							</tr>
+							<tr className="border-b border-kumo-line">
+								<th scope="row" className="py-1.5 pr-3 text-left font-normal text-kumo-subtle">One-time fee</th>
+								<td className="py-1.5 font-medium">{estimate.transforms ? about(range(oneTime)) : "none left"}</td>
+							</tr>
+							<tr>
+								<th scope="row" className="py-1.5 pr-3 text-left font-normal text-kumo-subtle">Payback</th>
+								<td className="py-1.5 font-medium">
+									{!estimate.transforms
+										? "—"
+										: traffic.withoutCost === 0
+											? "no savings: at this traffic, /s/ stays within the free 5,000 a month"
+											: payback(paybackMonths(oneTime.max, traffic.savings))}
+								</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			) : (
+				<p className="text-sm text-kumo-subtle">
+					{estimate.pages === 0
+						? "The traffic calculator needs published pages; the site has none yet."
+						: "The traffic calculator needs the number of published pages, which couldn't be counted."}
+				</p>
+			)}
+
+			<details className="text-xs text-kumo-subtle">
+				<summary className="cursor-pointer" style={{ display: "list-item" }}>
+					How this is estimated
+				</summary>
+				<div className="mt-2 space-y-1.5">
+					<p>
+						Counts come from the media library: each JPEG, PNG or WebP image up to 20 MB gets the widths 400, 640, 800, 1200 and 1600 that are smaller than
+						the original, each as WebP and AVIF (two transformations; one above 1,200 pixels, where Cloudflare stores WebP for both). File sizes are rough
+						averages per width.
+					</p>
+					<p>
+						Traffic: {estimate.pages ? count(estimate.pages) : "the"} published pages, with the images spread evenly over them. With V page views spread evenly
+						over P pages, about P × (1 − e^(−V/P)) different pages are seen in a month; real traffic favors some pages, so it's usually fewer. With search
+						engines crawling, at least 80% of pages are assumed to be fetched each month. Each image shown is asked for in about 3 sizes (phones, tablets,
+						desktops), fewer when it has fewer. Each page's Open Graph image stays a /s/ transformation either way. Monthly costs subtract the free 5,000.
+					</p>
+				</div>
+			</details>
+		</div>
+	);
+}
+
+/** Stored image sizes: how many images have them, the cost estimate, and the opt-in for existing images. */
+function StoredSizes() {
+	const [status, setStatus] = React.useState<VariantsStatus | null>(null);
+	const [estimate, setEstimate] = React.useState<Estimate | null>(null);
+	const [running, setRunning] = React.useState(false);
+	const [confirming, setConfirming] = React.useState(false);
+	const [switching, setSwitching] = React.useState(false);
+	const [error, setError] = React.useState<string | null>(null);
+	const stop = React.useRef(false);
+
+	const loadEstimate = async () => {
+		try {
+			setEstimate(await parseApiResponse<Estimate>(await apiFetch(`${API}/variants/estimate`), "Couldn't load the estimate"));
+		} catch {
+			setEstimate(null);
+		}
+	};
+
+	React.useEffect(() => {
+		void (async () => {
+			try {
+				const next = await parseApiResponse<VariantsStatus>(await apiFetch(`${API}/variants/settings`), "Couldn't load the stored sizes");
+				setStatus(next);
+				if (next.available) await loadEstimate();
+			} catch (cause) {
+				setError(errorText(cause, "Couldn't load the stored sizes"));
+			}
+		})();
+		return () => {
+			stop.current = true;
+		};
+	}, []);
+
+	const run = async () => {
+		setRunning(true);
+		setError(null);
+		stop.current = false;
+		try {
+			let start = true;
+			// Each call works for about 20 seconds; keep going until the run is done.
+			for (let i = 0; i < 1000 && !stop.current; i++) {
+				const next = await post<VariantsStatus>("variants/run", { start }, "Couldn't make the sizes");
+				start = false;
+				// Turned off while this call worked: its status is from before, and the next call would fail.
+				if (stop.current) break;
+				setStatus(next);
+				if (!next.bulk || !next.state || next.state.phase === "done") break;
+			}
+		} catch (cause) {
+			setError(errorText(cause, "Couldn't make the sizes"));
+		} finally {
+			setRunning(false);
+			void loadEstimate();
+		}
+	};
+
+	const setBulk = async (on: boolean) => {
+		setSwitching(true);
+		setError(null);
+		if (!on) stop.current = true;
+		let turnedOn = false;
+		try {
+			setStatus(await post<VariantsStatus>("variants/bulk", { on }, "Couldn't change the setting"));
+			setConfirming(false);
+			turnedOn = on;
+		} catch (cause) {
+			setError(errorText(cause, "Couldn't change the setting"));
+		} finally {
+			setSwitching(false);
+		}
+		// The first run follows at once, in the background: Turn off stays usable while it works.
+		if (turnedOn) void run();
+	};
+
+	const state = status?.state;
+	const oneTime = estimate ? oneTimeCost(estimate.transforms) : null;
+	return (
+		<SettingsSection
+			id="images-variants"
+			title="Stored image sizes"
+			description="Each image is stored once in a few widths (and the theme's crops) as AVIF and WebP on the media host, so pages load small, ready-made files instead of resizing on each visit."
+			actions={
+				status?.available && status.bulk ? (
+					<Button type="button" variant="secondary" icon={<ArrowsClockwise />} disabled={running || switching} onClick={() => void run()}>
+						{running ? "Making sizes…" : "Make missing sizes now"}
+					</Button>
+				) : undefined
+			}
+		>
+			{error && <Banner variant="error" role="alert" description={error} />}
+			{!status && !error && <Loader />}
+			{status && !status.available && <p className="text-sm text-kumo-subtle">{status.reason}</p>}
+			{status?.available && (
+				<p className="text-sm" aria-live="polite">
+					<span className="font-medium">
+						{count(status.stored)} of {count(status.total)} images have stored sizes
+					</span>
+					{status.skipped ? ` · ${count(status.skipped)} skipped (no known width or over 20 MB)` : ""}
+					{status.bulk && state?.failed ? ` · ${count(state.failed)} failed in the last run (tried again later)` : ""}
+					{status.bulk && state && state.phase !== "done" ? ` · working (${count(state.done)} made so far)` : ""}
+				</p>
+			)}
+
+			{status?.available && (
+				<div className="space-y-2 rounded-md border border-kumo-line p-3">
+					{status.bulk ? (
+						<>
+							<p className="text-sm">
+								<span className="font-medium">Sizes for existing images: on.</span> An hourly job makes any that are missing (also right after a WordPress
+								media import). Turning it off stops that; sizes already made stay in use.
+							</p>
+							<Button type="button" variant="ghost" disabled={switching} onClick={() => void setBulk(false)}>
+								{switching ? "Turning off…" : "Turn off"}
+							</Button>
+						</>
+					) : confirming ? (
+						<>
+							<p className="text-sm font-medium">
+								{estimate && oneTime
+									? estimate.transforms
+										? `Make sizes for ${count(estimate.images - estimate.done)} existing images? It's a one-time fee of ${about(range(oneTime))} (${count(estimate.transforms)} transformations).`
+										: "Every image already has its sizes; turning this on keeps it that way for imports."
+									: "Make sizes for existing images? It's a one-time fee for Cloudflare transformations (the estimate couldn't be loaded)."}
+							</p>
+							<p className="text-xs text-kumo-subtle">
+								On Cloudflare's Free plan, transformations beyond 5,000 a month aren't charged; they stop until the next month, and the job picks up where it
+								left off.
+							</p>
+							<div className="flex flex-wrap gap-2">
+								<Button type="button" variant="primary" disabled={switching} onClick={() => void setBulk(true)}>
+									{switching ? "Turning on…" : "Turn on and start"}
+								</Button>
+								<Button type="button" variant="ghost" disabled={switching} onClick={() => setConfirming(false)}>
+									Cancel
+								</Button>
+							</div>
+						</>
+					) : (
+						<>
+							<p className="text-sm">
+								<span className="font-medium">Sizes for existing images: off.</span> New uploads always get their sizes. Images that were already in the
+								library (including WordPress imports) keep using the media host's /s/ resizing until you turn this on.
+							</p>
+							<Button type="button" variant="secondary" onClick={() => setConfirming(true)}>
+								Make sizes for existing images…
+							</Button>
+						</>
+					)}
+				</div>
+			)}
+
+			{status?.available && estimate && <CostEstimate estimate={estimate} />}
+
+			{status && (
+				<p className="text-xs text-kumo-subtle">
+					Widths: 400, 640, 800, 1200 and 1600 pixels (only those smaller than the original).{" "}
+					{status.crops.length ? `Crops, made when first shown: ${status.crops.join(", ")}.` : "Crops: none (set images.crops in astro.config.mjs)."}
+				</p>
+			)}
+			{status && <p className="text-xs text-kumo-subtle">{status.fallbackNote}</p>}
+		</SettingsSection>
 	);
 }
 
@@ -421,6 +732,8 @@ export function ImagesPage() {
 					</SettingsSection>
 				</form>
 			)}
+
+			{saved && <StoredSizes />}
 
 			{saved && <SaveBar form="cw-images-form" dirty={dirty} saving={pending === "save"} canSave={!busy} onDiscard={() => apply(saved)} />}
 		</div>

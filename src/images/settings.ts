@@ -4,7 +4,7 @@
  * feature switches' query, sharing their per-isolate cache. Applied to the
  * pure helpers in lib.ts, where it overrides the astro.config.mjs option.
  */
-import { invalidateFeatures, readSiteSetting, registerSiteSetting, rememberSiteSetting } from "../core/features.js";
+import { invalidateFeatures, readSiteSetting, registerSiteSetting, rememberSiteSetting, siteSetting } from "../core/features.js";
 import { setSavedImageCdn } from "./lib.js";
 
 /** Plain settings (edited on the Clean Image URLs page). The API token is a secret, declared in src/core/secrets.ts. */
@@ -13,9 +13,12 @@ export const IMAGES_SETTINGS = {
 	accountId: "imagesAccountId",
 	bucket: "imagesBucketName",
 	token: "imagesApiToken",
+	/** Make stored sizes for existing images too (the backfill). Off until an admin turns it on: it costs transformations. */
+	bulk: "imagesVariantsBulk",
 } as const;
 
 registerSiteSetting(IMAGES_SETTINGS.host);
+registerSiteSetting(IMAGES_SETTINGS.bulk);
 let database = "DB";
 
 export function configureMediaHostDatabase(name: string | undefined): void {
@@ -37,4 +40,9 @@ export async function refreshMediaHost(): Promise<void> {
 	const read = await readSiteSetting(IMAGES_SETTINGS.host, database).catch(() => null);
 	// Not on Cloudflare, or no database: the option (if any) stays in use.
 	if (read) setSavedImageCdn(typeof read.value === "string" ? read.value : null);
+}
+
+/** Whether the site turned on stored sizes for existing images (read with the feature switches: no extra query). */
+export async function variantsBulkOn(): Promise<boolean> {
+	return (await siteSetting<boolean>(IMAGES_SETTINGS.bulk, database).catch(() => null)) === true;
 }

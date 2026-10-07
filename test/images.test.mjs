@@ -10,6 +10,10 @@ test("builds clean paths for media-library files", () => {
 	assert.equal(cleanImagePath("/_emdash/api/media/file/01M44MRR9G4JZH2SQTGN4Y4G0D.webp", { width: 600, height: 320 }), "/media/01M44MRR9G4JZH2SQTGN4Y4G0D-600x320.webp");
 	assert.equal(cleanImagePath("https://example.com/_emdash/api/media/file/ABC.jpeg", { width: 400 }), "/media/ABC-400w.webp");
 	assert.equal(cleanImagePath("/_emdash/api/media/file/ABC.png", { width: 800, height: 420, format: "avif" }), "/media/ABC-800x420.avif");
+	// EmDash 1.1 upload keys carry an attempt ULID: <stem>.<attempt>.<ext>.
+	assert.equal(cleanImagePath("/_emdash/api/media/file/01M4526PHAXT6EAJARYNFEQXF4.01M4526PN8A8K4RASN2MDPCEBP.png", { width: 400 }), "/media/01M4526PHAXT6EAJARYNFEQXF4.01M4526PN8A8K4RASN2MDPCEBP-400w.webp");
+	assert.deepEqual(mediaFile("/_emdash/api/media/file/A.B.jpeg"), { id: "A.B", ext: "jpeg" });
+	assert.deepEqual(parseImagePath("/media/A.B-400w.webp"), { id: "A.B", width: 400, height: undefined, format: "webp" });
 });
 
 test("refuses anything else", () => {

@@ -68,4 +68,15 @@ export { reviewFromAttrs } from "../reviews/lib.js";
  */
 export { cleanImageUrl, imageDimensions, mediaUrl, originalImageUrl } from "../images/pack.js";
 export type { ImageDimensions } from "../images/pack.js";
+/**
+ * Stored image sizes: imageInfo reads every image of a page in one query
+ * (call it once with all of them); responsiveImage (widths) and croppedImage
+ * (the site's crops) then give AVIF and WebP srcsets for a <picture>, or null
+ * until they exist (fall back to cleanImageUrl). markPendingMedia marks a
+ * page that showed a stopgap so it's cached briefly.
+ */
+export { croppedImage, imageInfo, responsiveImage } from "../images/pack.js";
+export type { ImageInfo, ResponsiveImage as ResponsiveImageSources } from "../images/pack.js";
+export { markPendingMedia } from "../images/pending.js";
+export { default as ResponsiveImage } from "./images/ResponsiveImage.astro";
 export { cleanImagePath, mediaFile } from "../images/lib.js";

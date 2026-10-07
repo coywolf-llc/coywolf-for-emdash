@@ -229,13 +229,15 @@ export function normalizeTestimonial(node: Record<string, unknown>): Testimonial
  * rich results. `photoSrc` replaces the photo's URL with resized copies (the
  * media host's 64px and 128px squares) when the caller has them.
  */
-export function renderTestimonialHtml(t: Testimonial, photoSrc?: { src: string; srcset?: string } | null): string {
+export function renderTestimonialHtml(t: Testimonial, photoSrc?: { src: string; srcset?: string; avif?: string } | null): string {
 	const body = renderRich(t.quote);
 	if (!body) return "";
 	const link = (url: string, text: string) => (url ? `<a href="${escapeHtml(url)}">${text}</a>` : text);
 	const src = photoSrc?.src || t.photo;
 	const srcset = photoSrc?.src && photoSrc.srcset ? ` srcset="${escapeHtml(photoSrc.srcset)}"` : "";
-	const photo = t.photo ? `<img class="cw-testimonial__photo" src="${escapeHtml(src)}"${srcset} alt="" width="64" height="64" loading="lazy" decoding="async">` : "";
+	const img = t.photo ? `<img class="cw-testimonial__photo" src="${escapeHtml(src)}"${srcset} alt="" width="64" height="64" loading="lazy" decoding="async">` : "";
+	// Stored sizes: AVIF first for browsers that take it.
+	const photo = img && photoSrc?.avif ? `<picture><source type="image/avif" srcset="${escapeHtml(photoSrc.avif)}">${img}</picture>` : img;
 	const who =
 		t.name || t.title
 			? `<span class="cw-testimonial__who">${t.name ? `<span class="cw-testimonial__name">${link(t.nameUrl, escapeHtml(t.name))}</span>` : ""}${
@@ -375,6 +377,7 @@ export const CUSTOM_BLOCKS_CSS = `.cw-note,.cw-details,.cw-disclosure,.cw-quote,
 .cw-testimonial .cw-testimonial__quote>:first-child::before{content:"\\201C";content:"\\201C"/""}
 .cw-testimonial .cw-testimonial__quote>:last-child::after{content:"\\201D";content:"\\201D"/""}
 .cw-testimonial .cw-testimonial__person{display:flex;align-items:center;gap:.75em;margin:0 0 0 1em;font-size:.9em;line-height:1.35}
+.cw-testimonial .cw-testimonial__person picture{display:contents}
 .cw-testimonial .cw-testimonial__photo{flex:none;width:3.5em;height:3.5em;margin:0;border-radius:50%;object-fit:cover;background:color-mix(in srgb,currentColor 12%,transparent)}
 .cw-testimonial .cw-testimonial__name{display:block;font-weight:700;text-transform:uppercase;letter-spacing:.02em}
 .cw-testimonial .cw-testimonial__title{display:block;color:color-mix(in srgb,currentColor 82%,transparent)}

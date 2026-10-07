@@ -20,9 +20,14 @@
  */
 
 export const IMAGE_PATH = "/media/";
-/** Media library files: /_emdash/api/media/file/<id>.<ext> (EmDash's media route). */
-const MEDIA_FILE = /^(?:https?:\/\/[^/]+)?\/_emdash\/api\/media\/file\/([A-Za-z0-9_-]+)\.([a-z0-9]{2,5})(?:[?#].*)?$/i;
-const CLEAN = /^\/media\/([A-Za-z0-9_-]+)-(?:(\d{1,4})x(\d{1,4})|(\d{1,4})w)\.(webp|avif|jpe?g|png)$/i;
+/**
+ * Media library files: /_emdash/api/media/file/<key> (EmDash's media route),
+ * where the key is <stem>.<ext>. The stem is EmDash's file ULID (not the media
+ * id), and since EmDash 1.1 uploads it can hold a dot (<ulid>.<attempt ulid>),
+ * so a stem is anything up to the last dot.
+ */
+const MEDIA_FILE = /^(?:https?:\/\/[^/]+)?\/_emdash\/api\/media\/file\/([A-Za-z0-9_.-]+)\.([a-z0-9]{2,5})(?:[?#].*)?$/i;
+const CLEAN = /^\/media\/([A-Za-z0-9_.-]+)-(?:(\d{1,4})x(\d{1,4})|(\d{1,4})w)\.(webp|avif|jpe?g|png)$/i;
 export const MAX_DIMENSION = 2560;
 /**
  * Worker-route sizes are multiples of this many pixels, so anyone requesting
@@ -169,7 +174,7 @@ export function parseCdnUrl(url: string | null | undefined): { id: string; ext: 
 	const value = String(url ?? "");
 	if (!cdn || !value.startsWith(`${cdn}/`)) return null;
 	const path = value.slice(cdn.length).split(/[?#]/)[0];
-	const m = /^\/(?:s\/(\d{1,4})(?:x(\d{1,4}))?\/)?([A-Za-z0-9_-]+)\.([a-z0-9]{2,5})$/i.exec(path);
+	const m = /^\/(?:s\/(\d{1,4})(?:x(\d{1,4}))?\/)?([A-Za-z0-9_.-]+)\.([a-z0-9]{2,5})$/i.exec(path);
 	if (!m) return null;
 	const width = m[1] ? Number(m[1]) : undefined;
 	const height = m[2] ? Number(m[2]) : undefined;
@@ -178,7 +183,7 @@ export function parseCdnUrl(url: string | null | undefined): { id: string; ext: 
 }
 
 /** A media-library file's bucket key as stored by EmDash (<id>.<ext>). */
-const KEY = /^[A-Za-z0-9_-]+\.[a-z0-9]{2,5}$/i;
+const KEY = /^[A-Za-z0-9_.-]+\.[a-z0-9]{2,5}$/i;
 
 /**
  * Where an old Worker-route URL (/media/<id>-<w>x<h>.<format>) lives on the
