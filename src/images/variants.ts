@@ -6,9 +6,12 @@
  *   v<VARIANTS_VERSION>/<id>-<width>.webp|.avif           (keeps the ratio)
  *   v<VARIANTS_VERSION>/<id>-<width>x<height>.webp|.avif  (cropped to fill, around the focal point)
  *
- * The widths are fixed here; the crops are the site's (`images.crops` in
+ * The widths are fixed here and made for every image (on upload, or by the
+ * opt-in backfill). The crops are the site's (`images.crops` in
  * astro.config.mjs: the exact sizes its theme shows, such as list thumbnails
- * and avatars).
+ * and avatars) and are made on first use: when a page asks for a crop an
+ * image doesn't have yet (croppedImage in pack.ts), so only crops pages
+ * actually show cost a transformation.
  *
  * The media host serves them as plain files: no transformation per visit, no
  * Accept-based variation, and a year-long immutable cache. Each image gets a
@@ -17,9 +20,7 @@
  *
  * The widths and quality are fixed here. Changing them means bumping
  * VARIANTS_VERSION: renders then treat older records as missing, the backfill
- * makes the new set, and its cleanup removes the previous version's files. A
- * changed crop list only adds crops: records made for another list are
- * completed by the backfill (existing files are kept).
+ * makes the new set, and its cleanup removes the previous version's files.
  *
  * Pure helpers plus generateVariants() (no imports), so tests can load them.
  */
@@ -62,11 +63,6 @@ export function imageCrops(): string[] {
 	return crops;
 }
 
-/** The crop list's signature, stored with each record ("" for none). */
-export function cropsKey(list: string[] = crops): string {
-	return list.join(",");
-}
-
 const cropSize = (name: string): [number, number] => name.split("x").map(Number) as [number, number];
 
 /** What's stored for an image: the widths and crops in the bucket (WebP and AVIF each), or why there are none. */
@@ -75,10 +71,8 @@ export interface VariantDoc {
 	v: number;
 	/** Widths stored as both .webp and .avif. Empty when the original is already small. */
 	w: number[];
-	/** Crops ("<w>x<h>") stored as both .webp and .avif: those of `k` that fit inside the original. */
+	/** Crops ("<w>x<h>") stored as both .webp and .avif (added as pages first use them). */
 	c?: string[];
-	/** The crop list (cropsKey) the record was made for. */
-	k?: string;
 	/** Set when the image can't have stored sizes (pages keep using /s/ for it, without retrying). */
 	skip?: string;
 	/** When the record was written (ISO). */
@@ -107,6 +101,16 @@ export function plannedWidths(width: number, widths: readonly number[] = VARIANT
 	return widths.filter((w) => w < width);
 }
 
+/** Whether Cloudflare encodes AVIF at this output size (otherwise the WebP is stored under the .avif key too). */
+export function avifEncoded(outW: number, outH: number): boolean {
+	return outW <= AVIF_MAX_DIMENSION && outH <= AVIF_MAX_DIMENSION;
+}
+
+/** Output height of a width copy (0 when the original's height is unknown). */
+export function scaledHeight(w: number, width: number, height: number | null | undefined): number {
+	return height ? Math.round((height * w) / width) : 0;
+}
+
 /** The crops of `list` that fit inside a `width` x `height` original (never upscaled). */
 export function plannedCrops(width: number, height: number | null | undefined, list: string[] = crops): string[] {
 	if (!height) return [];
@@ -121,21 +125,25 @@ export function currentDoc(doc: VariantDoc | null | undefined): doc is VariantDo
 	return Boolean(doc && doc.v === VARIANTS_VERSION && !doc.skip && Array.isArray(doc.w));
 }
 
-/** A record that's complete for the current widths and crop list (the backfill leaves it alone). */
-export function completeDoc(doc: VariantDoc | null | undefined): boolean {
-	return Boolean(doc && doc.v === VARIANTS_VERSION && (doc.skip || (doc.k ?? "") === cropsKey()));
-}
-
 /**
- * Whether a crop is stored ("stored"), can't be made for this image because it's
- * larger than the original or the image is skipped ("never": use /s/ for good),
- * or isn't made yet ("pending").
+ * A crop of an image: stored ("stored"); can't be made, because the image is
+ * skipped, the crop is larger than the original or isn't one of the site's
+ * crops ("never": use /s/ for good); the image's widths are made but this
+ * crop isn't yet ("missing": make it now); or the image has no current
+ * record at all ("none").
  */
-export function cropState(doc: VariantDoc | null | undefined, name: string): "stored" | "never" | "pending" {
-	if (!doc || doc.v !== VARIANTS_VERSION) return "pending";
+export function cropState(
+	doc: VariantDoc | null | undefined,
+	name: string,
+	width: number | null | undefined,
+	height: number | null | undefined,
+	list: string[] = crops,
+): "stored" | "never" | "missing" | "none" {
+	if (!doc || doc.v !== VARIANTS_VERSION) return "none";
 	if (doc.skip) return "never";
 	if (doc.c?.includes(name)) return "stored";
-	return (doc.k ?? "").split(",").includes(name) ? "never" : "pending";
+	if (!list.includes(name) || !width || !plannedCrops(width, height, [name]).length) return "never";
+	return "missing";
 }
 
 /** Parse a stored record; null when it isn't one. */
@@ -154,7 +162,6 @@ export function parseDoc(raw: unknown): VariantDoc | null {
 		v: doc.v,
 		w: doc.w.filter((n): n is number => typeof n === "number"),
 		...(Array.isArray(doc.c) ? { c: doc.c.filter((n): n is string => typeof n === "string") } : {}),
-		...(typeof doc.k === "string" ? { k: doc.k } : {}),
 		at: String(doc.at ?? ""),
 		...(doc.skip ? { skip: String(doc.skip) } : {}),
 	};
@@ -238,18 +245,17 @@ export async function generateVariants(options: {
 	/** Focal point (0–1 each) the crops keep in view; the center when unset. */
 	focal?: { x: number; y: number } | null;
 	widths?: readonly number[];
-	/** Crop names ("<w>x<h>"); the site's crop list by default. */
+	/** Crop names ("<w>x<h>") to make; none by default (crops are made on first use). */
 	crops?: string[];
 	now?: () => Date;
 }): Promise<VariantDoc> {
 	const { bucket, images, key, id, width } = options;
-	const list = options.crops ?? crops;
 	const widths = plannedWidths(width, options.widths);
-	const cropNames = plannedCrops(width, options.height, list);
-	const doc: VariantDoc = { v: VARIANTS_VERSION, w: widths, c: cropNames, k: cropsKey(list), at: (options.now?.() ?? new Date()).toISOString() };
+	const cropNames = plannedCrops(width, options.height, options.crops ?? []);
+	const doc: VariantDoc = { v: VARIANTS_VERSION, w: widths, c: cropNames, at: (options.now?.() ?? new Date()).toISOString() };
 	type Job = { size: number | string; transform: Record<string, unknown>; outW: number; outH: number };
 	const jobs: Job[] = [
-		...widths.map((w) => ({ size: w, transform: { width: w }, outW: w, outH: options.height ? Math.round((options.height * w) / width) : 0 })),
+		...widths.map((w) => ({ size: w, transform: { width: w }, outW: w, outH: scaledHeight(w, width, options.height) })),
 		...cropNames.map((name) => {
 			const [w, h] = cropSize(name);
 			const gravity = options.focal && Number.isFinite(options.focal.x) && Number.isFinite(options.focal.y) ? { gravity: { x: options.focal.x, y: options.focal.y } } : {};
@@ -273,7 +279,7 @@ export async function generateVariants(options: {
 	const put = (k: string, file: { body: ArrayBuffer; type: string }) => bucket.put(k, file.body, { httpMetadata: { contentType: file.type, cacheControl: VARIANT_CACHE_CONTROL } });
 	// One size at a time (memory), both formats together.
 	for (const job of missing) {
-		const avifOk = job.outW <= AVIF_MAX_DIMENSION && job.outH <= AVIF_MAX_DIMENSION;
+		const avifOk = avifEncoded(job.outW, job.outH);
 		const [webp, avif] = await Promise.all([
 			encode(images, bytes, job.transform, "image/webp", WEBP_QUALITY),
 			avifOk ? encode(images, bytes, job.transform, "image/avif", AVIF_QUALITY).catch(() => null) : Promise.resolve(null),

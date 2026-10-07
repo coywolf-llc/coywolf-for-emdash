@@ -15,8 +15,10 @@ import { requireFeature } from "../core/features.js";
 import { parseInput, secret, workerEnv } from "../shared.js";
 import { CloudflareApiError, type CloudflareConfig, applySetup, checkMediaHost, planSetup, purgeHost } from "./cloudflare.js";
 import { imageCdn, imageCdnSource, normalizeMediaHost } from "./lib.js";
+import { rememberSiteSetting } from "../core/features.js";
 import { IMAGES_SETTINGS, invalidateMediaHost, refreshMediaHost } from "./settings.js";
-import { type BackfillDeps, type VariantsState, readVariantsState, startVariantsRun, variantCounts } from "./variants-store.js";
+import { type BackfillDeps, type VariantsState, estimateRows, publishedCount, readVariantsState, startVariantsRun, variantCounts } from "./variants-store.js";
+import { summarizeLibrary } from "./variants-estimate.js";
 import { imageCrops } from "./variants.js";
 
 const F = "images";
@@ -25,7 +27,7 @@ export const QUOTA_NOTE =
 	"Cloudflare's Free plan includes 5,000 unique image transformations a month (each new size of each image counts once a month; repeat views are served from the cache). Stored sizes are made once per image (each width and crop, as WebP and AVIF) and then served as plain files, so they don't count again. Beyond the free amount, transformations need a paid Cloudflare Images plan; without one, new sizes stop being made until the next month while existing ones keep working.";
 
 export const VARIANTS_FALLBACK_NOTE =
-	"Images without stored sizes yet (new uploads for a minute or so, and images over 20 MB, GIFs and SVGs) keep using the media host's /s/ resizing, and pages that show one are cached for minutes instead of days until the sizes exist. New uploads get their sizes right away; anything missed (such as media imported from WordPress) is picked up by an hourly job or this button.";
+	"New uploads get their sizes right away. Images without stored sizes (existing images until you turn them on below, and images over 20 MB, GIFs and SVGs) keep using the media host's /s/ resizing. Crops (thumbnails, avatars) are made the first time a page shows them; pages shown while sizes are being made are cached for minutes instead of days, so they pick the sizes up.";
 
 const hostInput = z
 	.string()
@@ -194,20 +196,23 @@ interface VariantsHooks {
 	deps(): Promise<BackfillDeps | null>;
 }
 
-/** The stored-sizes status for the admin. */
-async function variantsStatus(variants: VariantsHooks) {
+/** The stored-sizes status for the admin; `bulk`: sizes for existing images are on. */
+async function variantsStatus(variants: VariantsHooks, bulk: boolean) {
 	const deps = await variants.deps();
 	if (!deps) {
 		return {
 			available: false,
 			reason: "Stored sizes need a media host, and the MEDIA bucket, IMAGES and DB bindings.",
+			bulk,
 			crops: imageCrops(),
 			fallbackNote: VARIANTS_FALLBACK_NOTE,
 		};
 	}
 	const [counts, { state }] = await Promise.all([variantCounts(deps.db), readVariantsState(deps.db)]);
-	return { available: true, ...counts, state, crops: imageCrops(), fallbackNote: VARIANTS_FALLBACK_NOTE };
+	return { available: true, bulk, ...counts, state, crops: imageCrops(), fallbackNote: VARIANTS_FALLBACK_NOTE };
 }
+
+const bulkSetting = async (ctx: PluginContext) => (await ctx.settings.get<boolean>(IMAGES_SETTINGS.bulk)) === true;
 
 export function imagesModule(options: { database?: string; variants: VariantsHooks }) {
 	const database = options.database ?? "DB";
@@ -257,11 +262,41 @@ export function imagesModule(options: { database?: string; variants: VariantsHoo
 				permission: "plugins:manage" as const,
 				handler: async (ctx: PluginContext) => {
 					await requireFeature(ctx, F);
-					return variantsStatus(variants);
+					return variantsStatus(variants, await bulkSetting(ctx));
 				},
 			},
 
-			/** One step of "Make missing sizes now": starts a run if none is under way, works ~20 s, reports. The page calls it until done. */
+			/** What stored sizes for the existing library would take: counts for the page's cost estimate (computed there). */
+			"images/variants/estimate": {
+				permission: "plugins:manage" as const,
+				handler: async (ctx: PluginContext) => {
+					await requireFeature(ctx, F);
+					const deps = await variants.deps();
+					if (!deps) throw PluginRouteError.badRequest("Stored sizes need a media host, and the MEDIA bucket, IMAGES and DB bindings.");
+					const [rows, pages] = await Promise.all([estimateRows(deps.db), publishedCount(deps.db)]);
+					return { ...summarizeLibrary(rows), pages };
+				},
+			},
+
+			/** Turn stored sizes for existing images on (after the page showed the estimate) or off. On starts a run. */
+			"images/variants/bulk": definePluginRoute({
+				permission: "plugins:manage",
+				methods: ["POST"],
+				request: { body: "json" },
+				handler: async (ctx) => {
+					await requireFeature(ctx, F);
+					const { on } = parseInput(z.object({ on: z.boolean() }), ctx.input ?? {});
+					const deps = await variants.deps();
+					if (on && !deps) throw PluginRouteError.badRequest("Stored sizes need a media host, and the MEDIA bucket, IMAGES and DB bindings.");
+					await ctx.settings.set(IMAGES_SETTINGS.bulk, on);
+					rememberSiteSetting(IMAGES_SETTINGS.bulk, on);
+					if (on && deps) await startVariantsRun(deps.db, { force: true });
+					ctx.log.info(on ? "Stored sizes for existing images turned on" : "Stored sizes for existing images turned off");
+					return variantsStatus(variants, on);
+				},
+			}),
+
+			/** One step of "Make missing sizes now" (only with sizes for existing images on): starts a run if none is under way, works ~20 s, reports. The page calls it until done. */
 			"images/variants/run": definePluginRoute({
 				permission: "plugins:manage",
 				methods: ["POST"],
@@ -270,10 +305,11 @@ export function imagesModule(options: { database?: string; variants: VariantsHoo
 					await requireFeature(ctx, F);
 					const deps = await variants.deps();
 					if (!deps) throw PluginRouteError.badRequest("Stored sizes need a media host, and the MEDIA bucket, IMAGES and DB bindings.");
+					if (!(await bulkSetting(ctx))) throw PluginRouteError.badRequest("Turn on stored sizes for existing images first.");
 					const { start } = parseInput(z.object({ start: z.boolean().optional() }), ctx.input ?? {});
 					if (start) await startVariantsRun(deps.db, { force: true });
 					await variants.run();
-					return variantsStatus(variants);
+					return variantsStatus(variants, true);
 				},
 			}),
 

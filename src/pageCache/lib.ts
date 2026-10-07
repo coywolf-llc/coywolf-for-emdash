@@ -47,7 +47,7 @@ export function purgeScope(pathname: string): PurgeScope | null {
 	if (/^redirects\/(?!(list|test|removed)$)|^backups\/(rewind|undo)$/.test(route)) return { tags: [REDIRECTS_TAG] };
 	if (/^(redirects|backups|links)\//.test(route) || /^cache\/(media|warm|purge)(\/|$)/.test(route)) return null;
 	// Stored image sizes: pages pick them up as they're made (pages shown without them are cached briefly).
-	if (/^images\/variants\/(settings|run)$/.test(route)) return null;
+	if (/^images\/variants\/(settings|run|bulk|estimate)$/.test(route)) return null;
 	// Videos admin reads (library, details, status, storage, settings, captions list) change nothing.
 	if (/^videos\/(list|status|detail|options|storage|test|settings|captions\/list)$/.test(route)) return null;
 	if (/^robots\//.test(route)) return { pathPrefixes: ["/robots.txt"] };

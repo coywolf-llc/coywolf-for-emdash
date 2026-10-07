@@ -105,18 +105,17 @@ test("srcsets list the stored widths and the original last; crops by descriptor"
 	assert.equal(c.src, `https://m/${v}/ID-50x50.webp`);
 });
 
-test("crop states: stored, never (too big or skipped), pending (not made or another list/version)", () => {
-	V.setImageCrops([[50, 50], [900, 473]]);
-	const doc = { v: V.VARIANTS_VERSION, w: [400], c: ["50x50"], k: V.cropsKey(), at: "" };
-	assert.equal(V.cropState(doc, "50x50"), "stored");
-	assert.equal(V.cropState(doc, "900x473"), "never");
-	assert.equal(V.cropState(doc, "64x64"), "pending");
-	assert.equal(V.cropState({ ...doc, v: V.VARIANTS_VERSION + 1 }, "50x50"), "pending");
-	assert.equal(V.cropState({ v: V.VARIANTS_VERSION, w: [], skip: "type", at: "" }, "50x50"), "never");
-	assert.equal(V.cropState(null, "50x50"), "pending");
-	assert.ok(V.completeDoc(doc));
+test("crop states: stored, never (too big, not a site crop, skipped), missing (widths stored, crop not yet), none (no current record)", () => {
 	V.setImageCrops([[50, 50], [900, 473], [64, 64]]);
-	assert.equal(V.completeDoc(doc), false, "a new crop makes the record incomplete");
+	const doc = { v: V.VARIANTS_VERSION, w: [400], c: ["50x50"], at: "" };
+	assert.equal(V.cropState(doc, "50x50", 800, 600), "stored");
+	assert.equal(V.cropState(doc, "900x473", 800, 600), "never", "larger than the original");
+	assert.equal(V.cropState(doc, "64x64", 800, 600), "missing");
+	assert.equal(V.cropState(doc, "70x70", 800, 600), "never", "not one of the site's crops");
+	assert.equal(V.cropState(doc, "64x64", 800, null), "never", "unknown height");
+	assert.equal(V.cropState({ ...doc, v: V.VARIANTS_VERSION + 1 }, "50x50", 800, 600), "none");
+	assert.equal(V.cropState({ v: V.VARIANTS_VERSION, w: [], skip: "type", at: "" }, "50x50", 800, 600), "never");
+	assert.equal(V.cropState(null, "50x50", 800, 600), "none");
 	V.setImageCrops([]);
 });
 
@@ -124,7 +123,7 @@ test("generateVariants stores WebP and AVIF for each width and crop, with the ri
 	const b = bucket({ "ID.jpg": new Uint8Array([1, 2, 3]).buffer });
 	const img = images();
 	const doc = await V.generateVariants({ bucket: b, images: img, key: "ID.jpg", id: "ID", width: 1000, height: 800, focal: { x: 0.25, y: 0.75 }, crops: ["600x315", "1200x630"], now: () => new Date(0) });
-	assert.deepEqual(doc, { v: V.VARIANTS_VERSION, w: [400, 640, 800], c: ["600x315"], k: "600x315,1200x630", at: "1970-01-01T00:00:00.000Z" });
+	assert.deepEqual(doc, { v: V.VARIANTS_VERSION, w: [400, 640, 800], c: ["600x315"], at: "1970-01-01T00:00:00.000Z" });
 	const v = `v${V.VARIANTS_VERSION}`;
 	for (const size of [400, 640, 800, "600x315"]) {
 		for (const ext of ["webp", "avif"]) {
@@ -181,7 +180,7 @@ function d1() {
 	db.exec(`
 		CREATE TABLE options (name TEXT PRIMARY KEY, value TEXT NOT NULL, revision TEXT DEFAULT '0' NOT NULL);
 		CREATE TABLE _plugin_storage (plugin_id TEXT NOT NULL, collection TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT, updated_at TEXT, revision TEXT DEFAULT '0' NOT NULL, PRIMARY KEY (plugin_id, collection, id));
-		CREATE TABLE media (id TEXT PRIMARY KEY, filename TEXT, mime_type TEXT, size INTEGER, width INTEGER, height INTEGER, storage_key TEXT, status TEXT, focal_x REAL, focal_y REAL);
+		CREATE TABLE media (id TEXT PRIMARY KEY, filename TEXT, mime_type TEXT, size INTEGER, width INTEGER, height INTEGER, storage_key TEXT, status TEXT, focal_x REAL, focal_y REAL, created_at TEXT DEFAULT '2020-01-01 00:00:00');
 	`);
 	const wrap = {
 		sqlite: db,
@@ -209,7 +208,7 @@ function addMedia(db, id, ext, mime, width, height, size = 1000) {
 	db.sqlite.prepare("INSERT INTO media (id, filename, mime_type, size, width, height, storage_key, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready')").run(id, `${id}.${ext}`, mime, size, width, height, `${id}.${ext}`);
 }
 
-test("the backfill makes missing sizes, skips what can't have them, records failures for later, and finishes", async () => {
+test("the backfill makes missing widths (no crops), skips what can't have them, records failures for later, and finishes", async () => {
 	V.setImageCrops([[400, 210]]);
 	const db = d1();
 	const b = bucket();
@@ -234,7 +233,8 @@ test("the backfill makes missing sizes, skips what can't have them, records fail
 	assert.equal(upgraded, 1, "legacy posters were upgraded during cleanup");
 	assert.deepEqual(await store.variantCounts(db), { total: 14, stored: 12, skipped: 1 });
 	const doc = V.parseDoc(db.sqlite.prepare("SELECT data FROM _plugin_storage WHERE id = '01M00'").get().data);
-	assert.deepEqual(doc.c, ["400x210"]);
+	assert.deepEqual(doc, { v: V.VARIANTS_VERSION, w: [400, 640, 800], c: [], at: doc.at }, "widths only: crops are made on first use");
+	assert.ok(!deps.images.calls.some((c) => c.fit === "cover"), "no crops made");
 
 	// A finished run waits a day before starting over; the admin can force it.
 	const calls = deps.images.calls.length;
@@ -245,13 +245,6 @@ test("the backfill makes missing sizes, skips what can't have them, records fail
 	b.objects.set("01N02.jpg", { body: new Uint8Array([1]).buffer, options: {} });
 	state = await store.backfillStep(deps, { budgetMs: 60_000 });
 	assert.deepEqual({ phase: state.phase, done: state.done, failed: state.failed }, { phase: "done", done: 1, failed: 0 }, "only the missing one is made");
-
-	// A new crop: records become incomplete; the backfill adds just the crop.
-	V.setImageCrops([[400, 210], [50, 50]]);
-	const before = deps.images.calls.length;
-	state = await store.backfillStep(deps, { budgetMs: 60_000 });
-	assert.equal(state.phase, "done");
-	assert.equal(deps.images.calls.length - before, 13 * 2, "one crop × two formats for each of the 13 images");
 	assert.deepEqual(await store.variantCounts(db), { total: 14, stored: 13, skipped: 1 });
 	V.setImageCrops([]);
 });
@@ -374,8 +367,138 @@ test("after media writes: a delete removes copies and record; uploads confirmed 
 
 	addMedia(db, "01G", "png", "image/png", 900, 500);
 	b.objects.set("01G.png", { body: new Uint8Array([1]).buffer, options: {} });
+	const { invalidateFeatures } = await import("../src/core/features.ts");
+	invalidateFeatures();
 	await variantsAfterMediaWrite("POST", "/_emdash/api/import/wordpress/media", true);
-	assert.ok(b.objects.has(`${v}/01G-800.webp`), "the import's media got sizes");
+	assert.ok(!b.objects.has(`${v}/01G-800.webp`), "sizes for existing images are off: an import starts nothing");
+	await setBulk(db, true);
+	await variantsAfterMediaWrite("POST", "/_emdash/api/import/wordpress/media", true);
+	assert.ok(b.objects.has(`${v}/01G-800.webp`), "the import's media got sizes once turned on");
+	setImageCdn(null);
+	globalThis.__testEnv = undefined;
+});
+
+function setBulk(db, on) {
+	db.sqlite.prepare("INSERT INTO options (name, value) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value").run("plugin:coywolf-pack:settings:imagesVariantsBulk", JSON.stringify(on));
+	return import("../src/core/features.ts").then((f) => f.invalidateFeatures());
+}
+
+test("the hourly backfill does nothing until sizes for existing images are turned on", async () => {
+	const { runVariantsBackfill } = await import("../src/images/pack.ts");
+	const { setImageCdn } = await import("../src/images/lib.ts");
+	const { invalidateFeatures } = await import("../src/core/features.ts");
+	const db = d1();
+	const b = bucket();
+	addMedia(db, "01H", "jpg", "image/jpeg", 900, 500);
+	b.objects.set("01H.jpg", { body: new Uint8Array([1]).buffer, options: {} });
+	const img = images();
+	globalThis.__testEnv = { DB: db, MEDIA: b, IMAGES: img };
+	setImageCdn("https://media.example.com");
+	invalidateFeatures();
+	assert.equal(await runVariantsBackfill({ budgetMs: 60_000 }), null);
+	assert.equal(img.calls.length, 0);
+	assert.equal((await store.readVariantsState(db)).state, null, "not even a run started");
+	await setBulk(db, true);
+	const state = await runVariantsBackfill({ budgetMs: 60_000 });
+	assert.equal(state.phase, "done");
+	assert.equal(state.done, 1);
+	setImageCdn(null);
+	globalThis.__testEnv = undefined;
+});
+
+test("crops made on first use are merged into the record without dropping others", async () => {
+	const db = d1();
+	assert.equal(await store.addCrops(db, "Q", ["50x50"]), false, "no record: nothing to add to");
+	await store.writeVariantRecord(db, "Q", { v: V.VARIANTS_VERSION, w: [400], c: [], at: "" });
+	assert.equal(await store.addCrops(db, "Q", ["50x50", "100x100"]), true);
+	assert.equal(await store.addCrops(db, "Q", ["100x100", "64x64"]), true);
+	assert.deepEqual(V.parseDoc(db.sqlite.prepare("SELECT data FROM _plugin_storage WHERE id = 'Q'").get().data).c.sort(), ["100x100", "50x50", "64x64"]);
+	await store.writeVariantRecord(db, "R", { v: V.VARIANTS_VERSION, w: [], skip: "type", at: "" });
+	assert.equal(await store.addCrops(db, "R", ["50x50"]), false, "skipped images get none");
+	await store.writeVariantRecord(db, "S", { v: V.VARIANTS_VERSION, w: [400], at: "" });
+	assert.equal(await store.addCrops(db, "S", ["50x50"]), true, "a record without a crop list gets one");
+	assert.deepEqual(V.parseDoc(db.sqlite.prepare("SELECT data FROM _plugin_storage WHERE id = 'S'").get().data).c, ["50x50"]);
+});
+
+test("renders: stopgaps only when sizes are coming; missing crops are made after the response; small images have no <picture>", async () => {
+	const pack = await import("../src/images/pack.ts");
+	const { setImageCdn } = await import("../src/images/lib.ts");
+	const { invalidateFeatures } = await import("../src/core/features.ts");
+	const { PENDING_MEDIA_LOCAL } = await import("../src/images/pending.ts");
+	const db = d1();
+	db.sqlite.prepare("INSERT INTO options (name, value) VALUES (?, ?)").run("plugin:coywolf-pack:settings:features", JSON.stringify({ images: true }));
+	const b = bucket();
+	const img = images();
+	globalThis.__testEnv = { DB: db, MEDIA: b, IMAGES: img };
+	setImageCdn("https://media.example.com");
+	invalidateFeatures();
+	V.setImageCrops([[400, 210], [50, 50]]);
+	pack.resetCropJobs();
+	const url = (id, ext = "jpg") => `https://media.example.com/${id}.${ext}`;
+	const render = async (fn) => {
+		const locals = {};
+		const out = await fn(locals);
+		return { out, stopgap: Boolean(locals[PENDING_MEDIA_LOCAL]) };
+	};
+	const thumbs = [[400, 210, "400w"]];
+
+	// An existing image without a record, bulk off: plain /s/, no stopgap, nothing made.
+	addMedia(db, "01OLD", "jpg", "image/jpeg", 1000, 600);
+	let r = await render((locals) => pack.responsiveImage(url("01OLD"), { locals }));
+	assert.deepEqual(r, { out: null, stopgap: false });
+	r = await render((locals) => pack.croppedImage(url("01OLD"), thumbs, { locals }));
+	assert.deepEqual(r, { out: null, stopgap: false });
+	await pack.cropsIdle();
+	assert.equal(img.calls.length, 0, "no generation without a record");
+
+	// A fresh upload (sizes on their way): stopgap.
+	db.sqlite.prepare("INSERT INTO media (id, filename, mime_type, size, width, height, storage_key, status, created_at) VALUES ('01NEW', '01NEW.jpg', 'image/jpeg', 1000, 1000, 600, '01NEW.jpg', 'ready', datetime('now'))").run();
+	r = await render((locals) => pack.responsiveImage(url("01NEW"), { locals }));
+	assert.deepEqual(r, { out: null, stopgap: true });
+
+	// Bulk on: older images are on their way too.
+	await setBulk(db, true);
+	pack.forgetInfo("01OLD");
+	r = await render((locals) => pack.responsiveImage(url("01OLD"), { locals }));
+	assert.deepEqual(r, { out: null, stopgap: true });
+	await setBulk(db, false);
+
+	// Widths stored, crop missing: /s/ now (stopgap), the crop is made after the response, then used.
+	addMedia(db, "01W", "jpg", "image/jpeg", 1000, 600);
+	b.objects.set("01W.jpg", { body: new Uint8Array([1]).buffer, options: {} });
+	await store.writeVariantRecord(db, "01W", { v: V.VARIANTS_VERSION, w: [400, 640, 800], c: [], at: "" });
+	r = await render((locals) => pack.responsiveImage(url("01W"), { locals }));
+	assert.ok(r.out && !r.stopgap);
+	r = await render((locals) => pack.croppedImage(url("01W"), thumbs, { locals }));
+	assert.deepEqual(r, { out: null, stopgap: true });
+	r = await render((locals) => pack.croppedImage(url("01W"), thumbs, { locals }));
+	assert.equal(r.stopgap, true, "still on its way");
+	await pack.cropsIdle();
+	assert.equal(img.calls.filter((c) => c.fit === "cover").length, 2, "one crop × two formats, made once");
+	assert.ok(!img.calls.some((c) => c.fit !== "cover"), "no widths remade");
+	r = await render((locals) => pack.croppedImage(url("01W"), thumbs, { locals }));
+	assert.equal(r.stopgap, false);
+	assert.match(r.out.webp, /01W-400x210\.webp 400w$/);
+
+	// A crop that isn't one of the site's, or a failed one: /s/ without waiting.
+	r = await render((locals) => pack.croppedImage(url("01W"), [[300, 300, "1x"]], { locals }));
+	assert.deepEqual(r, { out: null, stopgap: false });
+	addMedia(db, "01X", "jpg", "image/jpeg", 1000, 600); // Not in the bucket: the crop fails.
+	await store.writeVariantRecord(db, "01X", { v: V.VARIANTS_VERSION, w: [400], c: [], at: "" });
+	r = await render((locals) => pack.croppedImage(url("01X"), [[50, 50, "1x"]], { locals }));
+	assert.equal(r.stopgap, true);
+	await pack.cropsIdle();
+	r = await render((locals) => pack.croppedImage(url("01X"), [[50, 50, "1x"]], { locals }));
+	assert.deepEqual(r, { out: null, stopgap: false }, "failed recently: not retried yet");
+
+	// Under 400 pixels: a record with no widths gives no <picture>, and no stopgap.
+	addMedia(db, "01S", "png", "image/png", 300, 200);
+	await store.writeVariantRecord(db, "01S", { v: V.VARIANTS_VERSION, w: [], c: [], at: "" });
+	r = await render((locals) => pack.responsiveImage(url("01S", "png"), { locals }));
+	assert.deepEqual(r, { out: null, stopgap: false });
+
+	V.setImageCrops([]);
+	pack.resetCropJobs();
 	setImageCdn(null);
 	globalThis.__testEnv = undefined;
 });

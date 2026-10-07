@@ -358,10 +358,10 @@ test("cold isolate: the redirect lookup and the feature switches are one D1 roun
 // ── Stored image sizes ──────────────────────────────────────────
 
 test("imageInfo: one statement for all of a page's images, cached, read again after a settings change", async () => {
-	const MEDIA = "CREATE TABLE media (id TEXT PRIMARY KEY, storage_key TEXT, width INTEGER, height INTEGER, mime_type TEXT, size INTEGER, status TEXT, focal_x REAL, focal_y REAL);";
+	const MEDIA = "CREATE TABLE media (id TEXT PRIMARY KEY, storage_key TEXT, width INTEGER, height INTEGER, mime_type TEXT, size INTEGER, status TEXT, focal_x REAL, focal_y REAL, created_at TEXT);";
 	const db = d1(MEDIA);
 	db.sqlite.prepare("INSERT INTO options (name, value) VALUES (?, ?)").run("plugin:coywolf-pack:settings:features", JSON.stringify({ images: true }));
-	for (const id of ["01A", "01B", "01C"]) db.sqlite.prepare("INSERT INTO media VALUES (?, ?, 1600, 900, 'image/jpeg', 1000, 'ready', NULL, NULL)").run(id, `${id}.jpg`);
+	for (const id of ["01A", "01B", "01C"]) db.sqlite.prepare("INSERT INTO media VALUES (?, ?, 1600, 900, 'image/jpeg', 1000, 'ready', NULL, NULL, '2020-01-01 00:00:00')").run(id, `${id}.jpg`);
 	put(db, "imageVariants", "01A", { v: 1, w: [400, 640, 800, 1200], c: ["600x315"], k: "600x315", at: "" });
 	globalThis.__testEnv = { DB: db };
 	const { imageInfo, imageDimensions, responsiveImage, croppedImage } = await import("../src/images/pack.ts");
@@ -369,7 +369,7 @@ test("imageInfo: one statement for all of a page's images, cached, read again af
 	const { setImageCrops } = await import("../src/images/variants.ts");
 	const { PENDING_MEDIA_LOCAL } = await import("../src/images/pending.ts");
 	setImageCdn("https://media.example.com");
-	setImageCrops([[600, 315]]);
+	setImageCrops([[600, 315], [2000, 1000]]);
 	features.invalidateFeatures();
 	await features.siteFeatures();
 	const srcs = ["/_emdash/api/media/file/01A.jpg", "https://media.example.com/01B.jpg", "/_emdash/api/media/file/01C.jpg", "/_emdash/api/media/file/NOPE.png", "https://elsewhere.example/x.jpg"];
@@ -391,12 +391,12 @@ test("imageInfo: one statement for all of a page's images, cached, read again af
 	const crop = await inRequest(() => croppedImage(srcs[0], [[600, 315, "600w"]], { locals }));
 	assert.equal(crop.src, "https://media.example.com/v1/01A-600x315.webp");
 	assert.equal(locals[PENDING_MEDIA_LOCAL], undefined, "stored: not a stopgap");
-	assert.equal(await inRequest(() => responsiveImage(srcs[2], { locals })), null, "no record yet: the theme falls back");
-	assert.equal(locals[PENDING_MEDIA_LOCAL], true, "and the page is a stopgap");
-	assert.equal(db.stats.roundTrips, 1);
+	assert.equal(await inRequest(() => responsiveImage(srcs[2], { locals })), null, "no record: the theme falls back");
+	assert.equal(locals[PENDING_MEDIA_LOCAL], undefined, "an older image with sizes for existing images off: /s/ for good, not a stopgap");
+	assert.equal(db.stats.roundTrips, 1, "that setting comes with the switches");
 
 	// A settings change (any isolate) drops the cache: the next page reads again.
-	put(db, "imageVariants", "01C", { v: 1, w: [400], c: [], k: "600x315", at: "" });
+	put(db, "imageVariants", "01C", { v: 1, w: [400], c: [], at: "" });
 	features.invalidateFeatures();
 	await features.siteFeatures();
 	db.stats.roundTrips = 0;
@@ -404,7 +404,7 @@ test("imageInfo: one statement for all of a page's images, cached, read again af
 	assert.equal(db.stats.roundTrips, 1);
 	assert.deepEqual(again.get(srcs[2]).variants.w, [400]);
 	const later = {};
-	assert.equal(await inRequest(() => croppedImage(srcs[2], [[600, 315, "600w"]], { locals: later })), null);
+	assert.equal(await inRequest(() => croppedImage(srcs[2], [[2000, 1000, "1x"]], { locals: later })), null);
 	assert.equal(later[PENDING_MEDIA_LOCAL], undefined, "a crop the image is too small for isn't a stopgap");
 	setImageCdn(null);
 	setImageCrops([]);

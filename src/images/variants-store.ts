@@ -7,6 +7,11 @@
  * joined to the media table in one statement (imageInfo in pack.ts), and the
  * writers run after the response (waitUntil), outside any plugin context.
  *
+ * The backfill (existing images) only runs when the site turned it on
+ * (`imagesVariantsBulk`, Clean Image URLs page): making sizes for a whole
+ * library costs Cloudflare transformations, so it's opt-in. It makes widths
+ * only; crops are added to a record as pages first use them (addCrops).
+ *
  * The backfill's progress is one option row (VARIANTS_STATE_OPTION). Batches
  * are claimed with a compare-and-swap on its `cursor` (the last media id
  * handed out), so the hourly job, the admin's "Make missing sizes now" and an
@@ -22,7 +27,6 @@ import {
 	VARIANT_MIME_TYPES,
 	type VariantBucket,
 	type VariantDoc,
-	cropsKey,
 	deleteVariants,
 	deleteVersion,
 	generateVariants,
@@ -48,8 +52,8 @@ export interface Db {
 }
 
 const MIME_LIST = VARIANT_MIME_TYPES.map((m) => `'${m}'`).join(",");
-/** SQL: the media row `m` has no record (`s`) complete for this version and crop list. */
-const INCOMPLETE = `(s.data IS NULL OR json_extract(s.data, '$.v') IS NOT ?1 OR (json_extract(s.data, '$.skip') IS NULL AND COALESCE(json_extract(s.data, '$.k'), '') IS NOT ?2))`;
+/** SQL: the media row `m` has no record (`s`) of this version. */
+const INCOMPLETE = `(s.data IS NULL OR json_extract(s.data, '$.v') IS NOT ?1)`;
 const JOIN = `LEFT JOIN _plugin_storage AS s ON s.plugin_id = '${PLUGIN_ID}' AND s.collection = '${VARIANTS_COLLECTION}' AND s.id = m.id`;
 const READY = `(m.status IS NULL OR m.status = 'ready') AND m.mime_type IN (${MIME_LIST})`;
 
@@ -64,6 +68,27 @@ export async function writeVariantRecord(db: Db, id: string, doc: VariantDoc): P
 		)
 		.bind(PLUGIN_ID, VARIANTS_COLLECTION, id, JSON.stringify(doc), crypto.randomUUID(), now)
 		.run();
+}
+
+/**
+ * Add crops made on first use to an image's current record. Merged in SQL
+ * (the stored list plus the new names, deduplicated), so crops another
+ * isolate added meanwhile are kept. No-op when the record is gone, skipped or
+ * of another version (the files are then removed with the image, or replaced
+ * by the next version's).
+ */
+export async function addCrops(db: Db, id: string, names: string[]): Promise<boolean> {
+	if (!names.length) return false;
+	const result = await db
+		.prepare(
+			`UPDATE _plugin_storage SET
+				data = json_set(data, '$.c', json((SELECT json_group_array(value) FROM (SELECT value FROM json_each(_plugin_storage.data, '$.c') UNION SELECT value FROM json_each(?1))))),
+				revision = ?2, updated_at = ?3
+			WHERE plugin_id = ?4 AND collection = ?5 AND id = ?6 AND json_extract(data, '$.v') = ?7 AND json_extract(data, '$.skip') IS NULL`,
+		)
+		.bind(JSON.stringify(names), crypto.randomUUID(), new Date().toISOString(), PLUGIN_ID, VARIANTS_COLLECTION, id, VARIANTS_VERSION)
+		.run();
+	return (result.meta?.changes ?? 0) > 0;
 }
 
 export async function deleteVariantRecord(db: Db, id: string): Promise<void> {
@@ -88,7 +113,7 @@ export interface VariantDeps {
 }
 
 /**
- * Make (or skip) one image's sizes and record them. "done", "skipped" (it can't
+ * Make (or skip) one image's widths and record them (crops come later, on first use). "done", "skipped" (it can't
  * have stored sizes: recorded so it isn't tried again), or "failed" (nothing
  * recorded; tried again on the next run).
  */
@@ -133,8 +158,6 @@ export async function forgetMedia(deps: { db: Db; bucket: VariantBucket }, id: s
 
 export interface VariantsState {
 	version: number;
-	/** Crop list (cropsKey) of this run. */
-	crops: string;
 	/** Last media id handed to a batch. */
 	cursor: string;
 	done: number;
@@ -180,7 +203,6 @@ async function updateState(db: Db, update: (state: VariantsState) => VariantsSta
 
 const freshState = (now: number): VariantsState => ({
 	version: VARIANTS_VERSION,
-	crops: cropsKey(),
 	cursor: "",
 	done: 0,
 	skipped: 0,
@@ -194,7 +216,7 @@ export async function startVariantsRun(db: Db, options: { force?: boolean; now?:
 	const now = options.now ?? Date.now();
 	for (let i = 0; i < 10; i++) {
 		const { raw, state } = await readVariantsState(db);
-		const stale = !state || state.version !== VARIANTS_VERSION || state.crops !== cropsKey();
+		const stale = !state || state.version !== VARIANTS_VERSION;
 		const restart =
 			stale ||
 			(state.phase === "done" && (options.force || !state.finishedAt || now - Date.parse(state.finishedAt) >= RESTART_AFTER_MS));
@@ -210,8 +232,8 @@ async function claim(db: Db): Promise<{ state: VariantsState; rows: MediaRow[] }
 	const { raw, state } = await readVariantsState(db);
 	if (!state || state.phase !== "running") return { state: state as VariantsState, rows: [] };
 	const { results } = await db
-		.prepare(`SELECT ${ROW_COLUMNS} FROM media AS m ${JOIN} WHERE m.id > ?3 AND ${READY} AND ${INCOMPLETE} ORDER BY m.id LIMIT ${BATCH}`)
-		.bind(VARIANTS_VERSION, cropsKey(), state.cursor)
+		.prepare(`SELECT ${ROW_COLUMNS} FROM media AS m ${JOIN} WHERE m.id > ?2 AND ${READY} AND ${INCOMPLETE} ORDER BY m.id LIMIT ${BATCH}`)
+		.bind(VARIANTS_VERSION, state.cursor)
 		.all<MediaRow>();
 	const next: VariantsState = results.length ? { ...state, cursor: results[results.length - 1].id } : { ...state, phase: "cleanup" };
 	return (await swap(db, raw, next)) ? { state: next, rows: results } : null;
@@ -267,7 +289,39 @@ export async function variantCounts(db: Db): Promise<{ total: number; stored: nu
 				SUM(CASE WHEN NOT ${INCOMPLETE} AND json_extract(s.data, '$.skip') IS NOT NULL THEN 1 ELSE 0 END) AS skipped
 			FROM media AS m ${JOIN} WHERE ${READY}`,
 		)
-		.bind(VARIANTS_VERSION, cropsKey())
+		.bind(VARIANTS_VERSION)
 		.first<{ total: number; stored: number | null; skipped: number | null }>();
 	return { total: row?.total ?? 0, stored: row?.stored ?? 0, skipped: row?.skipped ?? 0 };
+}
+
+/** One media-library image for the cost estimate; `current` is 1 when it already has a record of this version. */
+export interface EstimateRow {
+	mime_type: string | null;
+	width: number | null;
+	height: number | null;
+	size: number | null;
+	current: number;
+}
+
+/** Every ready image of a type that can get stored sizes (admin only: one scan of the media table). */
+export async function estimateRows(db: Db): Promise<EstimateRow[]> {
+	const { results } = await db
+		.prepare(`SELECT m.mime_type, m.width, m.height, m.size, CASE WHEN ${INCOMPLETE} THEN 0 ELSE 1 END AS current FROM media AS m ${JOIN} WHERE ${READY}`)
+		.bind(VARIANTS_VERSION)
+		.all<EstimateRow>();
+	return results;
+}
+
+/** Published entries of the site's routable collections (its pages, for the traffic estimate); null when it can't be counted. */
+export async function publishedCount(db: Db): Promise<number | null> {
+	try {
+		const { results } = await db.prepare("SELECT slug FROM _emdash_collections WHERE routable = 1").bind().all<{ slug: string }>();
+		const tables = results.map((r) => r.slug).filter((slug) => /^[a-z0-9_]+$/.test(slug));
+		if (!tables.length) return 0;
+		const sum = tables.map((slug) => `(SELECT COUNT(*) FROM "ec_${slug}" WHERE status = 'published' AND deleted_at IS NULL)`).join(" + ");
+		const row = await db.prepare(`SELECT ${sum} AS n`).bind().first<{ n: number }>();
+		return row?.n ?? 0;
+	} catch {
+		return null;
+	}
 }
