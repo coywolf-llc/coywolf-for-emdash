@@ -154,7 +154,9 @@ interface VariantsStatus {
 	total?: number;
 	stored?: number;
 	skipped?: number;
-	state?: { phase: "running" | "cleanup" | "done"; done: number; skipped: number; failed: number; finishedAt?: string } | null;
+	state?: { phase: "running" | "cleanup" | "done"; done: number; skipped: number; failed: number; finishedAt?: string; leaseUntil?: string; pausedUntil?: string; pauseReason?: string } | null;
+	/** Images the running backfill handles an hour, from its start. */
+	perHour?: number | null;
 	crops: string[];
 	fallbackNote: string;
 }
@@ -292,6 +294,17 @@ function CostEstimate({ estimate }: { estimate: Estimate }) {
 	);
 }
 
+/** Where a backfill run is, in words: working (and how fast), or paused (and until when). */
+function progressText(state: NonNullable<VariantsStatus["state"]>, perHour: number | null | undefined): string {
+	const made = `${count(state.done)} made so far`;
+	if (state.pausedUntil && Date.parse(state.pausedUntil) > Date.now()) {
+		const at = new Date(state.pausedUntil).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+		return `paused until about ${at} (${state.pauseReason ?? "Cloudflare Images refused work"}); it picks up on its own · ${made}`;
+	}
+	if (state.phase === "cleanup") return `finishing up · ${made}`;
+	return `working${perHour ? `, about ${count(perHour)} images an hour` : ""} · ${made}`;
+}
+
 /** Stored image sizes: how many images have them, the cost estimate, and the opt-in for existing images. */
 function StoredSizes() {
 	const [status, setStatus] = React.useState<VariantsStatus | null>(null);
@@ -316,6 +329,8 @@ function StoredSizes() {
 				const next = await parseApiResponse<VariantsStatus>(await apiFetch(`${API}/variants/settings`), "Couldn't load the stored sizes");
 				setStatus(next);
 				if (next.available) await loadEstimate();
+				// A run under way (started here earlier, by the hourly job or an import): show its progress.
+				if (next.bulk && next.state && next.state.phase !== "done" && !next.state.pausedUntil) void watch();
 			} catch (cause) {
 				setError(errorText(cause, "Couldn't load the stored sizes"));
 			}
@@ -325,27 +340,37 @@ function StoredSizes() {
 		};
 	}, []);
 
-	const run = async () => {
+	/** While a run is under way, read its progress every few seconds (the server works on its own; this only watches). */
+	const watch = async () => {
 		setRunning(true);
-		setError(null);
 		stop.current = false;
 		try {
-			let start = true;
-			// Each call works for about 20 seconds; keep going until the run is done.
-			for (let i = 0; i < 1000 && !stop.current; i++) {
-				const next = await post<VariantsStatus>("variants/run", { start }, "Couldn't make the sizes");
-				start = false;
-				// Turned off while this call worked: its status is from before, and the next call would fail.
+			for (let i = 0; i < 2000 && !stop.current; i++) {
+				await new Promise((resolve) => setTimeout(resolve, 5000));
+				if (stop.current) break;
+				const next = await parseApiResponse<VariantsStatus>(await apiFetch(`${API}/variants/settings`), "Couldn't load the stored sizes");
 				if (stop.current) break;
 				setStatus(next);
-				if (!next.bulk || !next.state || next.state.phase === "done") break;
+				if (!next.bulk || !next.state || next.state.phase === "done" || next.state.pausedUntil) break;
 			}
 		} catch (cause) {
-			setError(errorText(cause, "Couldn't make the sizes"));
+			setError(errorText(cause, "Couldn't load the stored sizes"));
 		} finally {
 			setRunning(false);
 			void loadEstimate();
 		}
+	};
+
+	/** "Make missing sizes now": start a new run (its chain works in the background), then watch it. */
+	const run = async () => {
+		setError(null);
+		try {
+			setStatus(await post<VariantsStatus>("variants/run", { start: true }, "Couldn't make the sizes"));
+		} catch (cause) {
+			setError(errorText(cause, "Couldn't make the sizes"));
+			return;
+		}
+		void watch();
 	};
 
 	const setBulk = async (on: boolean) => {
@@ -362,8 +387,8 @@ function StoredSizes() {
 		} finally {
 			setSwitching(false);
 		}
-		// The first run follows at once, in the background: Turn off stays usable while it works.
-		if (turnedOn) void run();
+		// The first run starts on the server, in the background: Turn off stays usable while it works.
+		if (turnedOn) void watch();
 	};
 
 	const state = status?.state;
@@ -391,7 +416,7 @@ function StoredSizes() {
 					</span>
 					{status.skipped ? ` · ${count(status.skipped)} skipped (no known width or over 20 MB)` : ""}
 					{status.bulk && state?.failed ? ` · ${count(state.failed)} failed in the last run (tried again later)` : ""}
-					{status.bulk && state && state.phase !== "done" ? ` · working (${count(state.done)} made so far)` : ""}
+					{status.bulk && state && state.phase !== "done" ? ` · ${progressText(state, status.perHour)}` : ""}
 				</p>
 			)}
 
@@ -400,8 +425,9 @@ function StoredSizes() {
 					{status.bulk ? (
 						<>
 							<p className="text-sm">
-								<span className="font-medium">Sizes for existing images: on.</span> An hourly job makes any that are missing (also right after a WordPress
-								media import). Turning it off stops that; sizes already made stay in use.
+								<span className="font-medium">Sizes for existing images: on.</span> Missing sizes are made in the background, batch after batch, until
+								every image has them (also right after a WordPress media import; an hourly job picks up anything left). When a run is done, cached pages
+								are cleared once so they use the new sizes. Turning it off stops that; sizes already made stay in use.
 							</p>
 							<Button type="button" variant="secondary" disabled={switching} onClick={() => void setBulk(false)}>
 								{switching ? "Turning off…" : "Turn off"}

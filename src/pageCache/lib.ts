@@ -46,7 +46,7 @@ export function purgeScope(pathname: string): PurgeScope | null {
 	const route = pathname.slice(PACK_API.length);
 	if (/^redirects\/(?!(list|test|removed)$)|^backups\/(rewind|undo)$/.test(route)) return { tags: [REDIRECTS_TAG] };
 	if (/^(redirects|backups|links)\//.test(route) || /^cache\/(media|warm|purge)(\/|$)/.test(route)) return null;
-	// Stored image sizes: pages pick them up as they're made (pages shown without them are cached briefly).
+	// Stored image sizes: new uploads and crops are picked up after a short stopgap lifetime; a backfill run clears the cache itself once when it is done.
 	if (/^images\/variants\/(settings|run|bulk|estimate)$/.test(route)) return null;
 	// Videos admin reads (library, details, status, storage, settings, captions list) change nothing.
 	if (/^videos\/(list|status|detail|options|storage|test|settings|captions\/list)$/.test(route)) return null;

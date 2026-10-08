@@ -384,7 +384,7 @@ function setBulk(db, on) {
 }
 
 test("the hourly backfill does nothing until sizes for existing images are turned on", async () => {
-	const { runVariantsBackfill } = await import("../src/images/pack.ts");
+	const { startBackfillChain: runVariantsBackfill } = await import("../src/images/pack.ts");
 	const { setImageCdn } = await import("../src/images/lib.ts");
 	const { invalidateFeatures } = await import("../src/core/features.ts");
 	const db = d1();
@@ -395,13 +395,15 @@ test("the hourly backfill does nothing until sizes for existing images are turne
 	globalThis.__testEnv = { DB: db, MEDIA: b, IMAGES: img };
 	setImageCdn("https://media.example.com");
 	invalidateFeatures();
-	assert.equal(await runVariantsBackfill({ budgetMs: 60_000 }), null);
+	assert.equal(await runVariantsBackfill(), null);
 	assert.equal(img.calls.length, 0);
 	assert.equal((await store.readVariantsState(db)).state, null, "not even a run started");
 	await setBulk(db, true);
-	const state = await runVariantsBackfill({ budgetMs: 60_000 });
+	// Without the SELF binding, one step runs right here.
+	const state = await runVariantsBackfill();
 	assert.equal(state.phase, "done");
 	assert.equal(state.done, 1);
+	assert.equal(state.lease, undefined, "the lease is let go");
 	setImageCdn(null);
 	globalThis.__testEnv = undefined;
 });
@@ -456,11 +458,13 @@ test("renders: stopgaps only when sizes are coming; missing crops are made after
 	r = await render((locals) => pack.responsiveImage(url("01NEW"), { locals }));
 	assert.deepEqual(r, { out: null, stopgap: true });
 
-	// Bulk on: older images are on their way too.
+	// Bulk on: older images wait for the backfill without shortening pages (its run clears the cache once when done).
 	await setBulk(db, true);
 	pack.forgetInfo("01OLD");
 	r = await render((locals) => pack.responsiveImage(url("01OLD"), { locals }));
-	assert.deepEqual(r, { out: null, stopgap: true });
+	assert.deepEqual(r, { out: null, stopgap: false });
+	r = await render((locals) => pack.croppedImage(url("01OLD"), thumbs, { locals }));
+	assert.deepEqual(r, { out: null, stopgap: false });
 	await setBulk(db, false);
 
 	// Widths stored, crop missing: /s/ now (stopgap), the crop is made after the response, then used.
@@ -536,4 +540,214 @@ test("a run stops where it is once sizes for existing images are turned off (kee
 	state = await store.backfillStep(deps, { budgetMs: 60_000 });
 	assert.equal(state.phase, "done");
 	assert.deepEqual(await store.variantCounts(db), { total: 12, stored: 12, skipped: 0 });
+});
+
+// ── The backfill's chain of steps ──────────────────────────────────
+
+/** A library of `n` images (1000 × 600 JPEGs: three widths each) in the database and bucket. */
+function library(db, b, n, prefix = "01C") {
+	for (let i = 0; i < n; i++) {
+		const id = `${prefix}${String(i).padStart(4, "0")}`;
+		addMedia(db, id, "jpg", "image/jpeg", 1000, 600);
+		b.objects.set(`${id}.jpg`, { body: new Uint8Array([1]).buffer, options: {} });
+	}
+}
+
+/**
+ * The SELF service binding: hands each POST to the internal endpoint, and keeps
+ * each step's background work (waitUntil) to run one at a time (drain), so the
+ * test can see what each step did.
+ */
+function selfBinding(pack, img) {
+	const pending = [];
+	const steps = [];
+	const self = {
+		requests: [],
+		async fetch(request) {
+			self.requests.push({ method: request.method, step: request.headers.get("X-Coywolf-Backfill-Step") });
+			const response = await pack.handleBackfillRequest(request, (p) => pending.push(p));
+			return response ?? new Response("Not found", { status: 404 });
+		},
+	};
+	const drain = async () => {
+		while (pending.length) {
+			const before = img.calls.length;
+			await pending.shift();
+			steps.push((img.calls.length - before) / 6);
+		}
+	};
+	return { self, steps, drain };
+}
+
+async function chainSetup(n) {
+	const pack = await import("../src/images/pack.ts");
+	const { setImageCdn } = await import("../src/images/lib.ts");
+	const db = d1();
+	const b = bucket();
+	library(db, b, n);
+	const img = images();
+	const s = selfBinding(pack, img);
+	globalThis.__testEnv = { DB: db, MEDIA: b, IMAGES: img, SELF: s.self };
+	setImageCdn("https://media.example.com");
+	await setBulk(db, true);
+	const done = () => {
+		setImageCdn(null);
+		globalThis.__testEnv = undefined;
+	};
+	return { pack, db, b, img, ...s, done };
+}
+
+test("the backfill runs back to back in steps of their own (≤ 25 images each) until the run is done", async () => {
+	const { pack, db, img, self, steps, drain, done } = await chainSetup(60);
+	const started = await pack.startBackfillChain("https://site.test", { force: true });
+	assert.ok(started.lease, "the trigger holds the run");
+	assert.equal(img.calls.length, 0, "the trigger hands the work to a step of its own (no transformations in the trigger)");
+	await drain();
+	const { state } = await store.readVariantsState(db);
+	assert.equal(state.phase, "done");
+	assert.equal(state.done, 60);
+	assert.equal(state.lease, undefined, "a finished run has no chain");
+	assert.ok(steps.every((n) => n <= pack.STEP_BUDGET.maxImages), `each step stays within its budget: ${steps}`);
+	assert.deepEqual(steps.slice(0, 3), [25, 25, 10], "batches of five, 25 images a step");
+	assert.deepEqual(
+		self.requests.map((r) => r.step),
+		steps.map((_, i) => String(i + 1)),
+		"each step posts the next one",
+	);
+	assert.equal(img.calls.length, 60 * 6, "every image made once");
+	// Subrequests per step: ≤ 25 images × (1 list + 1 get + 3 widths × 4 + 1 record) plus claims, counts and the lease.
+	assert.ok(pack.STEP_BUDGET.maxImages * 22 + 50 < 1000);
+	done();
+});
+
+test("the chain endpoint only works for the chain holding the run", async () => {
+	const { pack, db, img, drain, done } = await chainSetup(10);
+	await store.startVariantsRun(db, { force: true });
+	const post = (headers, method = "POST") => pack.handleBackfillRequest(new Request(`https://site.test${pack.BACKFILL_PATH}`, { method, headers }), () => assert.fail("no work may start"));
+	const token = crypto.randomUUID();
+	assert.equal((await post({})).status, 403, "no token");
+	assert.equal((await post({ "X-Coywolf-Backfill": token, "X-Coywolf-Backfill-Step": "1" })).status, 403, "not the lease's token");
+	assert.equal((await post({ "X-Coywolf-Backfill": "x", "X-Coywolf-Backfill-Step": "1" })).status, 403);
+	assert.equal(await pack.handleBackfillRequest(new Request("https://site.test/other"), () => {}), undefined, "other paths aren't touched");
+	// The lease's own token works, but not with GET or an out-of-range step.
+	assert.ok(await store.acquireLease(db, token));
+	assert.equal((await post({ "X-Coywolf-Backfill": token, "X-Coywolf-Backfill-Step": "1" }, "GET")).status, 403);
+	assert.equal((await post({ "X-Coywolf-Backfill": token, "X-Coywolf-Backfill-Step": String(pack.MAX_HOPS + 1) })).status, 403);
+	assert.equal(img.calls.length, 0);
+	await drain();
+	done();
+});
+
+test("one chain at a time: the lease, taking over a dead chain, and what page requests look at", async () => {
+	const db = d1();
+	await store.startVariantsRun(db, { force: true, now: 1_000 });
+	const a = await store.acquireLease(db, "a", { now: 1_000 });
+	assert.equal(a.lease, "a");
+	assert.equal(await store.acquireLease(db, "b", { now: 2_000 }), null, "held by another chain");
+	assert.equal(await store.acquireLease(db, "b", { now: 2_000, follow: true }), null, "a step goes on only with its own token");
+	assert.ok(await store.acquireLease(db, "a", { now: 2_000, follow: true }), "its own next step renews it");
+	const raw = (await store.readVariantsState(db)).raw;
+	assert.equal(store.backfillMayHaveWork(raw, 3_000), false, "a chain is working");
+	assert.equal(store.backfillMayHaveWork(raw, 2_000 + store.LEASE_MS + 1), true, "its lease ran out: page requests start a new chain");
+	assert.ok(await store.acquireLease(db, "b", { now: 2_000 + store.LEASE_MS + 1 }), "a dead chain is taken over");
+	await store.releaseLease(db, "a");
+	assert.equal((await store.readVariantsState(db)).state.lease, "b", "only the holder lets go");
+	await store.releaseLease(db, "b");
+	assert.equal(store.backfillMayHaveWork((await store.readVariantsState(db)).raw, 3_000), true);
+	assert.equal(store.backfillMayHaveWork(null), false);
+	assert.equal(store.backfillMayHaveWork(undefined), false, "unknown: no query to find out");
+	assert.equal(store.publicState({ ...(await store.readVariantsState(db)).state, lease: "secret" }).lease, undefined, "the token never goes to the admin");
+});
+
+test("a chain stops after MAX_HOPS steps and lets go; the next trigger finishes the run", async () => {
+	const { pack, db, steps, drain, done } = await chainSetup(650);
+	await pack.startBackfillChain("https://site.test", { force: true });
+	await drain();
+	let { state } = await store.readVariantsState(db);
+	assert.equal(steps.length, pack.MAX_HOPS);
+	assert.equal(state.phase, "running");
+	assert.equal(state.done, pack.MAX_HOPS * 25);
+	assert.equal(state.lease, undefined, "let go, so a page request or the hourly job starts a new chain at once");
+	await pack.startBackfillChain("https://site.test");
+	await drain();
+	({ state } = await store.readVariantsState(db));
+	assert.deepEqual({ phase: state.phase, done: state.done }, { phase: "done", done: 650 });
+	done();
+});
+
+test("Cloudflare Images rate limiting pauses the run and hands the batch back; turning sizes off stops the chain", async () => {
+	const { pack, db, img, self, drain, done } = await chainSetup(12);
+	let limited = true;
+	const real = img.input;
+	img.input = (stream) => {
+		if (limited) return { transform: () => ({ output: async () => ({ response: () => new Response("", { status: 429 }) }) }) };
+		return real(stream);
+	};
+	await pack.startBackfillChain("https://site.test", { force: true });
+	await drain();
+	let { state, raw } = await store.readVariantsState(db);
+	assert.ok(Date.parse(state.pausedUntil) > Date.now(), "paused");
+	assert.match(state.pauseReason, /limiting/);
+	assert.deepEqual({ cursor: state.cursor, failed: state.failed, done: state.done, lease: state.lease }, { cursor: "", failed: 0, done: 0, lease: undefined }, "the batch is handed back, not failed");
+	assert.equal(store.backfillMayHaveWork(raw), false, "page requests don't restart it while paused");
+	const requests = self.requests.length;
+	assert.equal((await pack.startBackfillChain("https://site.test")).lease, undefined, "nor does the hourly job");
+	assert.equal(self.requests.length, requests, "no step posted");
+	// The pause is over: the hourly job (or a page request) resumes it.
+	limited = false;
+	db.sqlite.prepare("UPDATE options SET value = json_set(value, '$.pausedUntil', '2000-01-01T00:00:00.000Z') WHERE name = ?").run(store.VARIANTS_STATE_OPTION);
+	await setBulk(db, false);
+	await pack.startBackfillChain("https://site.test");
+	await drain();
+	assert.equal((await store.readVariantsState(db)).state.done, 0, "off: nothing is made");
+	await setBulk(db, true);
+	await pack.startBackfillChain("https://site.test");
+	await drain();
+	({ state } = await store.readVariantsState(db));
+	assert.deepEqual({ phase: state.phase, done: state.done, failed: state.failed }, { phase: "done", done: 12, failed: 0 });
+	done();
+});
+
+test("a run that made sizes calls onDone exactly once (the page cache purge); one that made none doesn't", async () => {
+	const db = d1();
+	const b = bucket();
+	library(db, b, 7);
+	let calls = 0;
+	const deps = { db, bucket: b, images: images(), onDone: async () => void calls++ };
+	await store.startVariantsRun(db, { force: true });
+	// Two steps racing to the end: only the one that finishes the run reports it.
+	await Promise.all([store.backfillStep(deps, { budgetMs: 60_000 }), store.backfillStep(deps, { budgetMs: 60_000 })]);
+	assert.equal((await store.readVariantsState(db)).state.phase, "done");
+	assert.equal(calls, 1);
+	await store.backfillStep(deps, { budgetMs: 60_000 });
+	assert.equal(calls, 1, "a finished run isn't reported again");
+	await store.startVariantsRun(db, { force: true });
+	await store.backfillStep(deps, { budgetMs: 60_000 });
+	assert.equal(calls, 1, "nothing was missing: no purge");
+});
+
+test("a whole batch failing for another reason counts as failed and pauses the run", async () => {
+	const db = d1();
+	const b = bucket();
+	library(db, b, 5);
+	const deps = { db, bucket: b, images: images({ fail: () => true }) };
+	const state = await store.backfillStep(deps, { budgetMs: 60_000 });
+	assert.equal(state.failed, 5);
+	assert.ok(store.pausedAt(state, Date.now()));
+	assert.match(state.pauseReason, /failed/);
+	assert.equal(state.cursor, "01C0004", "not handed back: retried on the next run");
+	assert.equal(store.isThrottled(new Error("Images binding answered 429")), true);
+	assert.equal(store.isThrottled(new Error("transform failed")), false);
+});
+
+test("when the hand-off isn't accepted (something ahead of the pack refuses the internal request), the trigger makes one step's sizes itself and lets go", async () => {
+	const { pack, db, img, done } = await chainSetup(30);
+	globalThis.__testEnv.SELF = { fetch: async () => new Response("Unauthorized", { status: 401 }) };
+	const state = await pack.startBackfillChain("https://site.test", { force: true });
+	assert.equal(img.calls.length, pack.STEP_BUDGET.maxImages * 6, "one step's worth, made here");
+	assert.equal(state.done, pack.STEP_BUDGET.maxImages);
+	assert.equal(state.phase, "running");
+	assert.equal(state.lease, undefined, "the lease is released, so the next trigger continues the run");
+	assert.equal((await store.readVariantsState(db)).state.lease, undefined);
+	done();
 });

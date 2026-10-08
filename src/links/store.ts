@@ -17,6 +17,8 @@
  */
 import type { CollectionSchemaInfo, PluginContext, StorageCollection } from "emdash";
 
+import { PLUGIN_ID } from "../core/features.js";
+import { workerEnv } from "../shared.js";
 import { type IgnoreRule, type LinkStatus, isIgnored } from "./classify.js";
 import { type FoundLink, type LinkKind, bareHost, extractEntryLinks, isInternal, resolveHref } from "./pt.js";
 
@@ -169,6 +171,30 @@ export async function queryAll<T>(
 		cursor = page.hasMore ? page.cursor : undefined;
 	} while (cursor && out.length < max);
 	return out;
+}
+
+/**
+ * SQL of refsWhere: one indexed field, compared for equality, with no ORDER BY.
+ * Storage queries always sort (by created_at, id), and for that SQLite picks
+ * the generic idx_plugin_storage_list index and scans every links_refs row of
+ * the site; without the sort it uses the field's own expression index
+ * (idx_plugin_coywolf-pack_links_refs_<field>), so a lookup reads only its rows.
+ */
+export const refsWhereSql = (field: "entryKey" | "urlId") =>
+	`SELECT id, data FROM _plugin_storage WHERE plugin_id = ? AND collection = ? AND json_extract(data, '$.${field}') = ?`;
+
+/**
+ * Reference rows whose `field` equals `value`, in any order, read straight from
+ * D1 (one statement, see refsWhereSql). These lookups run once per entry
+ * indexed (hundreds per weekly scan), so they must use the index. Without a D1
+ * binding (tests, other databases) it falls back to the storage API.
+ */
+export async function refsWhere(ctx: PluginContext, field: "entryKey" | "urlId", value: string, ops?: Ops): Promise<Array<{ id: string; data: RefRow }>> {
+	const db = ((await workerEnv().catch(() => ({}))) as Record<string, unknown>).DB as D1Database | undefined;
+	if (!db?.prepare) return queryAll(refs(ctx), { [field]: value }, { ops });
+	ops?.spend();
+	const { results } = await db.prepare(refsWhereSql(field)).bind(PLUGIN_ID, "links_refs", value).all<{ id: string; data: string }>();
+	return (results ?? []).map((row) => ({ id: row.id, data: JSON.parse(row.data) as RefRow }));
 }
 
 /** Rows whose `field` is any of `values`, chunked so each statement stays under D1's parameter limit. */
@@ -378,7 +404,7 @@ export async function indexEntry(
 		});
 	}
 
-	const existing = new Map((await queryAll(refs(ctx), { entryKey: key }, { ops })).map((r) => [r.data.urlId, r.data]));
+	const existing = new Map((await refsWhere(ctx, "entryKey", key, ops)).map((r) => [r.data.urlId, r.data]));
 	const removed = [...existing.keys()].filter((id) => !next.has(id));
 	const added = [...next.keys()].filter((id) => !existing.has(id));
 	const changed = [...next].filter(([id, row]) => {
@@ -407,7 +433,7 @@ export async function indexEntry(
 
 export async function removeEntry(ctx: PluginContext, collection: string, id: string, ops?: Ops): Promise<void> {
 	const key = entryKey(collection, id);
-	const existing = await queryAll(refs(ctx), { entryKey: key }, { ops });
+	const existing = await refsWhere(ctx, "entryKey", key, ops);
 	if (!existing.length) return;
 	await deleteMany(
 		refs(ctx),

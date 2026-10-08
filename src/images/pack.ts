@@ -22,7 +22,9 @@
 import type { PluginContext } from "emdash";
 
 import { batchedAll } from "../core/d1-batch.js";
-import { isCurrent, registerFeatures, settingsEpoch, siteFeatureOn } from "../core/features.js";
+import { isCurrent, registerFeatures, registerSiteOption, rememberSiteOption, settingsEpoch, siteFeatureOn, siteOption, siteSetting } from "../core/features.js";
+import { purgePageCache } from "../pageCache/lib.js";
+import { WARMER_AGENT, WARM_SETTING, WARM_STATE_OPTION, startWarm } from "../pageCache/warm.js";
 import type { PackMiddleware, PackModule } from "../core/module.js";
 import { CLOUDFLARE_API_HOST } from "./cloudflare.js";
 import { afterResponse, workerEnv } from "../shared.js";
@@ -31,7 +33,24 @@ import { imagesModule } from "./module.js";
 import { markPendingMedia } from "./pending.js";
 import { configureMediaHostDatabase, refreshMediaHost, variantsBulkOn } from "./settings.js";
 import { type ImagesBinding, type VariantBucket, type VariantDoc, type Crop, VARIANTS_VERSION, cropSrcsets, cropState, currentDoc, eligible, generateVariants, parseDoc, setImageCrops, variantSrcsets } from "./variants.js";
-import { type BackfillDeps, type Db, VARIANTS_COLLECTION, addCrops, backfillStep, forgetMedia, mediaRow, processMedia, startVariantsRun } from "./variants-store.js";
+import {
+	type BackfillDeps,
+	type Db,
+	VARIANTS_COLLECTION,
+	VARIANTS_STATE_OPTION,
+	type VariantsState,
+	acquireLease,
+	addCrops,
+	backfillMayHaveWork,
+	backfillStep,
+	forgetMedia,
+	mediaRow,
+	pausedAt,
+	processMedia,
+	readVariantsState,
+	releaseLease,
+	startVariantsRun,
+} from "./variants-store.js";
 import { upgradeListedPosters } from "../videos/poster.js";
 
 export const F = { main: "images" } as const;
@@ -70,17 +89,205 @@ export interface ImagesOptions {
 
 let config: { bucket: string; images: string; database: string } = { bucket: "MEDIA", images: "IMAGES", database: "DB" };
 
-/** Scheduled job that makes missing stored sizes. */
+/** Scheduled job that restarts the backfill (a finished run a day later, a stalled or paused chain). */
 export const VARIANTS_TASK = "images-variants";
+
+// The backfill's progress row is read with the feature switches, so page requests can tell
+// whether a chain should start without a query of their own.
+registerSiteOption(VARIANTS_STATE_OPTION);
+
 /**
- * Time and image limits for one run of the backfill (scheduled job; admin
- * route; after an import). Each image costs up to ~22 subrequests (a list, a
- * read, and for each of up to 5 widths a transform and a put per format), and
- * a Worker invocation (cron or request) gets 1,000, so a run handles a few
- * images at a time; the hourly job and the admin's repeated calls cover the rest.
+ * The backfill runs as a chain of steps, each in a Worker invocation of its own
+ * (so each gets its own subrequest budget), back to back until the run is done:
+ *
+ *  - A trigger (turning sizes for existing images on, "Make missing sizes now",
+ *    a WordPress media import, the hourly task, or a page request that sees a
+ *    run with no chain) takes the run's lease (a compare-and-swap on its
+ *    progress row, so there's one chain at a time) and hands the first step to
+ *    the Worker itself: a POST to BACKFILL_PATH through the SELF service
+ *    binding, carrying the lease's token. Like cache warming
+ *    (src/pageCache/warm.ts), no work happens in the Cron Trigger itself: it
+ *    runs wherever Cloudflare has room, often far from the database.
+ *  - A step renews the lease, makes sizes for up to STEP_BUDGET.maxImages
+ *    images (claiming no batch after STEP_BUDGET.budgetMs), then, while work
+ *    is left, renews the lease again and posts the next step the same way.
+ *  - The endpoint only works for the chain holding the lease: a request
+ *    without its current token (a random UUID kept in the database, never sent
+ *    to browsers) gets a 403 and starts nothing, so the public can't trigger
+ *    transformations.
+ *  - Cloudflare allows 32 Worker invocations per incoming request (each
+ *    service-binding call counts), so a chain stops after MAX_HOPS steps and
+ *    lets go of the lease; the next page request (or the hourly task) starts a
+ *    new one. A chain that dies (an error, a deploy) leaves a lease that runs
+ *    out after LEASE_MS, and the next trigger takes over the same way.
+ *  - Turning sizes for existing images off stops it (keepGoing); Cloudflare
+ *    Images refusing work pauses the run for PAUSE_MS (see backfillStep): page
+ *    requests and the hourly task resume it after that.
+ *
+ * Budget per step: an image takes at most ~22 subrequests (a list, the
+ * original, and for up to 5 widths a WebP and an AVIF transform and two puts)
+ * plus its record, so 25 images are ≤ 575; the claims and counts (5 batches ×
+ * ~5 statements), the lease (~4) and the next step's POST add ~30: ~600 of the
+ * 1,000 a Worker invocation may make. Images are made 2 at a time, each
+ * taking ~2–4 s, so a step ends ~15–25 s after it started, inside the 30
+ * seconds waitUntil allows after its 202 response; CPU time stays small (the
+ * encoding happens in the Images binding). Throughput: ~15–25 images per
+ * ~20-second step, back to back, ≈ 2,000–4,000 images an hour (less with
+ * large originals), against the ~15 an hour of the hourly job alone.
  */
-export const CRON_BUDGET = { budgetMs: 10 * 60_000, maxImages: 15 };
-export const ROUTE_BUDGET = { budgetMs: 20_000, maxImages: 10 };
+export const STEP_BUDGET = { budgetMs: 15_000, maxImages: 25 };
+/** Internal endpoint of a chain's next step (POST, through the SELF service binding). */
+export const BACKFILL_PATH = "/_coywolf-pack/images/backfill";
+/** Steps per chain: Cloudflare allows 32 Worker invocations per incoming request, each service-binding call counting. */
+export const MAX_HOPS = 24;
+const TOKEN_HEADER = "X-Coywolf-Backfill";
+const STEP_HEADER = "X-Coywolf-Backfill-Step";
+
+interface Fetcher {
+	fetch(request: Request): Promise<Response>;
+}
+
+/** The SELF service binding (the site's own Worker), if bound. */
+async function selfBinding(): Promise<Fetcher | undefined> {
+	const env: Record<string, unknown> = await workerEnv().catch(() => ({}));
+	const self = env.SELF as Fetcher | undefined;
+	return typeof self?.fetch === "function" ? self : undefined;
+}
+
+/** Keep this isolate's copy of the progress row current (page requests check it before starting a chain). */
+function rememberState(state: VariantsState | null): void {
+	if (state) rememberSiteOption(VARIANTS_STATE_OPTION, JSON.stringify(state));
+}
+
+interface Chain {
+	token: string;
+	/** 0 for the trigger, 1… for the steps posted to BACKFILL_PATH. */
+	step: number;
+	/** The site's origin, for posting the next step; without it (or SELF), the work is done right here, one step only. */
+	origin?: string;
+	self?: Fetcher;
+}
+
+/**
+ * Renew the lease and post the chain's next step through SELF. The renewed
+ * state when the step was accepted (202); null when the run is no longer this
+ * chain's or the post failed (the caller then works or lets go).
+ */
+async function postNextStep(deps: BackfillDeps, chain: Chain & { self: Fetcher; origin: string }): Promise<VariantsState | null> {
+	const renewed = await acquireLease(deps.db, chain.token, { follow: true });
+	if (!renewed) return null;
+	try {
+		const response = await chain.self.fetch(
+			new Request(`${chain.origin}${BACKFILL_PATH}`, { method: "POST", headers: { [TOKEN_HEADER]: chain.token, [STEP_HEADER]: String(chain.step + 1) } }),
+		);
+		await response.body?.cancel();
+		if (response.status === 202) return renewed;
+		console.error(`coywolf-pack images: the next backfill step answered ${response.status}`);
+	} catch (error) {
+		console.error("coywolf-pack images: couldn't start the next backfill step", error);
+	}
+	return null;
+}
+
+/**
+ * One link of the chain: take the lease; the trigger (step 0) hands the work
+ * to a step of its own, and a step works and then posts the next one; when the
+ * hand-off isn't accepted (no SELF binding, or something ahead of the pack's
+ * middleware refused the internal request) the work is done right here, one
+ * step's worth. Lets go of the lease when nothing follows.
+ */
+async function chainStep(deps: BackfillDeps, chain: Chain): Promise<VariantsState | null> {
+	const lease = await acquireLease(deps.db, chain.token, { follow: chain.step > 0 });
+	if (!lease) return null;
+	const link = chain.self && chain.origin ? (chain as Chain & { self: Fetcher; origin: string }) : null;
+	if (chain.step === 0 && link) {
+		const next = await postNextStep(deps, link);
+		if (next) {
+			rememberState(next);
+			return next;
+		}
+	}
+	const state = (await backfillStep(deps, STEP_BUDGET)) ?? lease;
+	console.log(
+		`coywolf-pack images: backfill step ${chain.step}: ${state.done} made, ${state.skipped} skipped, ${state.failed} failed; ${state.phase}${state.pausedUntil ? `, paused until ${state.pausedUntil}` : ""}`,
+	);
+	const more = (state.phase === "running" || state.phase === "cleanup") && !pausedAt(state, Date.now()) && (deps.keepGoing ? await deps.keepGoing() : true);
+	// A trigger whose hand-off was refused doesn't try again: the next trigger starts a new chain.
+	if (more && link && chain.step > 0 && chain.step < MAX_HOPS) {
+		const next = await postNextStep(deps, link);
+		if (next) {
+			rememberState(next);
+			return next;
+		}
+	}
+	const released = (await releaseLease(deps.db, chain.token)) ?? state;
+	rememberState(released);
+	return released;
+}
+
+/** Constant-time comparison of two tokens of the same length (both are checked against the UUID shape first). */
+function sameToken(a: string, b: string): boolean {
+	if (a.length !== b.length) return false;
+	let diff = 0;
+	for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+	return diff === 0;
+}
+
+/**
+ * Start a chain on the current run (starting a run first: with `force`, a new
+ * one; otherwise only when the last finished a day ago), unless one is under
+ * way. A no-op without the bindings, a media host, or sizes for existing images
+ * turned on. With `origin` and the SELF binding the work runs in steps of their
+ * own; otherwise one step runs here.
+ */
+export async function startBackfillChain(origin?: string, options: { force?: boolean } = {}): Promise<VariantsState | null> {
+	if (!(await variantsBulkOn())) return null;
+	const deps = await variantDeps();
+	if (!deps) return null;
+	const run = await startVariantsRun(deps.db, { force: options.force });
+	// Another chain holds the run, it's paused or done: nothing to start (and this isolate now knows, so
+	// page requests stop asking until its lease runs out).
+	if (!backfillMayHaveWork(JSON.stringify(run))) {
+		rememberState(run);
+		return run;
+	}
+	return chainStep(deps, { token: crypto.randomUUID(), step: 0, origin, self: origin ? await selfBinding() : undefined });
+}
+
+/**
+ * The internal endpoint (BACKFILL_PATH): runs a chain's next step after the
+ * response (202) when the request carries the lease's current token; 403
+ * otherwise. Undefined for any other path.
+ */
+export async function handleBackfillRequest(request: Request, waitUntil: (p: Promise<unknown>) => void): Promise<Response | undefined> {
+	const url = new URL(request.url);
+	if (url.pathname !== BACKFILL_PATH) return undefined;
+	const forbidden = () => new Response("Forbidden", { status: 403, headers: { "Cache-Control": "no-store" } });
+	const token = request.headers.get(TOKEN_HEADER) ?? "";
+	const step = Number(request.headers.get(STEP_HEADER));
+	if (request.method !== "POST" || !/^[0-9a-f-]{36}$/.test(token) || !Number.isInteger(step) || step < 1 || step > MAX_HOPS) return forbidden();
+	const deps = await variantDeps();
+	if (!deps) return forbidden();
+	const { state } = await readVariantsState(deps.db);
+	if (!state?.lease || !sameToken(state.lease, token)) return forbidden();
+	waitUntil(chainStep(deps, { token, step, origin: url.origin, self: await selfBinding() }).catch((error) => console.error("coywolf-pack images: backfill step failed", error)));
+	return new Response(null, { status: 202, headers: { "Cache-Control": "no-store" } });
+}
+
+/** Per isolate: page requests look for a chain to start at most this often. */
+let chainCheckUntil = 0;
+const CHAIN_CHECK_MS = 10_000;
+
+/**
+ * From a page request: start a chain when the progress row (as read with the
+ * feature switches: no query) shows a run with no chain working on it.
+ */
+function maybeStartChain(origin: string, waitUntil: (p: Promise<unknown>) => void): void {
+	const now = Date.now();
+	if (now < chainCheckUntil || !backfillMayHaveWork(siteOption(VARIANTS_STATE_OPTION), now)) return;
+	chainCheckUntil = now + CHAIN_CHECK_MS;
+	waitUntil(startBackfillChain(origin).catch((error) => console.error("coywolf-pack images: couldn't start the backfill", error)));
+}
 
 /** The bindings stored sizes need, or null when one is missing (or there's no media host). */
 export async function variantDeps(): Promise<BackfillDeps | null> {
@@ -99,18 +306,22 @@ export async function variantDeps(): Promise<BackfillDeps | null> {
 		// Read with the feature switches (per-isolate cache, FEATURES_TTL_MS), so a run under way
 		// stops within that long of the setting being turned off; a toggle in this isolate stops it at once.
 		keepGoing: variantsBulkOn,
+		// Pages showing images still on /s/ were cached normally (not as stopgaps): once the run made
+		// sizes, clear the page cache once and warm it again, so every page picks them up together.
+		onDone: async () => {
+			if (!(await purgePageCache())) return;
+			if (await siteSetting<boolean>(WARM_SETTING, config.database)) rememberSiteOption(WARM_STATE_OPTION, JSON.stringify(await startWarm(db as unknown as D1Database, "images")));
+		},
 	};
 }
 
-/**
- * Run the backfill for a while: a no-op without the bindings or a media host,
- * and unless the site turned on stored sizes for existing images (callers
- * that already checked it, like the admin route, pass `checked`).
- */
-export async function runVariantsBackfill(budget: { budgetMs: number; maxImages?: number }, options: { checked?: boolean } = {}) {
-	if (!options.checked && !(await variantsBulkOn())) return null;
-	const deps = await variantDeps();
-	return deps ? backfillStep(deps, budget) : null;
+/** The site's origin (for the chain's steps), from its configured URL. */
+function siteOrigin(ctx: PluginContext): string | undefined {
+	try {
+		return ctx.site?.url ? new URL(ctx.site.url).origin : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** Make one uploaded image's stored sizes (after the response). */
@@ -131,19 +342,14 @@ const WP_MEDIA_IMPORT = "/_emdash/api/import/wordpress/media";
  * - a deleted image: its copies and record go (whether or not the feature is on);
  * - a confirmed direct upload (POST …/confirm): its sizes are made (the upload hook ran before the file existed);
  * - a replaced file (PUT …/replace, same key): its sizes are made again;
- * - a WordPress media import (EmDash's importer doesn't notify plugins): the backfill runs for a while,
- *   only when the site turned on stored sizes for existing images (an import can be thousands of images).
+ * - a WordPress media import (EmDash's importer doesn't notify plugins): a new backfill run starts (its chain
+ *   of steps, see startBackfillChain), only when the site turned on stored sizes for existing images (an
+ *   import can be thousands of images). `origin` is the site's, for the chain's steps.
  */
-export function variantsAfterMediaWrite(method: string, pathname: string, featureOn: boolean): Promise<void> | null {
+export function variantsAfterMediaWrite(method: string, pathname: string, featureOn: boolean, origin?: string): Promise<void> | null {
 	if (pathname === WP_MEDIA_IMPORT && method === "POST") {
 		if (!featureOn) return null;
-		return (async () => {
-			if (!(await variantsBulkOn())) return;
-			const deps = await variantDeps();
-			if (!deps) return;
-			await startVariantsRun(deps.db, { force: true });
-			await backfillStep(deps, ROUTE_BUDGET);
-		})();
+		return startBackfillChain(origin, { force: true }).then(() => undefined);
 	}
 	const m = MEDIA_ITEM.exec(pathname);
 	if (!m) return null;
@@ -181,7 +387,7 @@ export function imagesPack(options: ImagesOptions = {}): PackModule {
 		id: "images",
 		label: "Clean Image URLs",
 		features: FEATURES,
-		routes: imagesModule({ database: options.database, variants: { run: () => runVariantsBackfill(ROUTE_BUDGET, { checked: true }), deps: variantDeps } }).routes,
+		routes: imagesModule({ database: options.database, variants: { start: (origin, force) => startBackfillChain(origin, { force }), deps: variantDeps } }).routes,
 		adminPages: [{ path: "/images", label: "Clean Image URLs", icon: "image" }],
 		storage: { [VARIANTS_COLLECTION]: { indexes: [] } },
 		hooks: {
@@ -195,8 +401,10 @@ export function imagesPack(options: ImagesOptions = {}): PackModule {
 			{
 				name: VARIANTS_TASK,
 				schedule: "@hourly",
-				handler: async (_ctx: PluginContext) => {
-					await runVariantsBackfill(CRON_BUDGET);
+				// Restarts the backfill: a run finished a day ago (to retry failures), or one whose chain
+				// stopped or paused. The steps run in requests of their own (see startBackfillChain).
+				handler: async (ctx: PluginContext) => {
+					await startBackfillChain(siteOrigin(ctx));
 				},
 			},
 		],
@@ -360,17 +568,17 @@ function mediaTime(value: string | null | undefined): number | null {
 export const NEW_UPLOAD_MS = 15 * 60_000;
 
 /**
- * Whether an image without a current record will get its widths soon, so a page
- * showing its /s/ stopgap should be cached briefly: when the site makes sizes for
- * existing images (bulk), or when it was uploaded in the last 15 minutes. Otherwise
- * (bulk off, an older image) /s/ is what it uses for good, and the page is cached
- * normally.
+ * Whether an image without a current record will get its widths within minutes,
+ * so a page showing its /s/ stopgap should be cached briefly: only when it was
+ * uploaded in the last 15 minutes. Older images waiting for the backfill don't
+ * shorten pages (that would rebuild every page every five minutes for hours):
+ * the page is cached normally, and the backfill clears the page cache once when
+ * its run is done (BackfillDeps.onDone), so all pages pick the sizes up together.
  */
-async function expectedSoon(info: ImageInfo, now = Date.now()): Promise<boolean> {
+function expectedSoon(info: ImageInfo, now = Date.now()): boolean {
 	if (!eligible(info.mimeType, info.width, info.size)) return false;
 	if (info.variants?.v === VARIANTS_VERSION && info.variants.skip) return false;
-	if (info.createdAt !== null && now - info.createdAt < NEW_UPLOAD_MS) return true;
-	return variantsBulkOn();
+	return info.createdAt !== null && now - info.createdAt < NEW_UPLOAD_MS;
 }
 
 /**
@@ -389,7 +597,7 @@ export async function responsiveImage(src: string | null | undefined, options: {
 	const info = (await imageInfo([src])).get(src);
 	if (!info?.width || !info.height) return null;
 	if (!currentDoc(info.variants)) {
-		if (await expectedSoon(info)) markPendingMedia(options.locals);
+		if (expectedSoon(info)) markPendingMedia(options.locals);
 		return null;
 	}
 	// Images under 400 pixels have no stored widths: a plain <img> of the original (or /s/) is all there is.
@@ -494,7 +702,7 @@ export async function croppedImage(
 	if (states.every((s) => s === "stored")) return cropSrcsets(cdn, info.id, info.variants as VariantDoc, names.map((n, i) => [n, crops[i][2]]), options.srcIndex);
 	if (states.includes("never")) return null;
 	if (states.includes("none")) {
-		if (await expectedSoon(info)) markPendingMedia(options.locals);
+		if (expectedSoon(info)) markPendingMedia(options.locals);
 		return null;
 	}
 	if (queueCrops(info.id, names.filter((_, i) => states[i] === "missing"))) markPendingMedia(options.locals);
@@ -520,6 +728,12 @@ export const imagesMiddleware: PackMiddleware = {
 	feature: F.main,
 	handle: async (context, env, waitUntil) => {
 		const { pathname } = context.url;
+		// A backfill chain's next step (internal; see startBackfillChain).
+		if (pathname === BACKFILL_PATH) return handleBackfillRequest(context.request, waitUntil);
+		// Page traffic restarts a backfill run that has no chain working on it (no query when there's none).
+		if (context.request.method === "GET" && !pathname.startsWith("/_emdash/") && context.request.headers.get("user-agent") !== WARMER_AGENT) {
+			maybeStartChain(context.url.origin, waitUntil);
+		}
 		if (!pathname.startsWith(IMAGE_PATH)) return undefined;
 		const request = parseImagePath(pathname);
 		if (!request) return undefined;
