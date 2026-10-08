@@ -19,6 +19,13 @@
  * image is left it cleans up (the previous version's files, legacy video
  * posters) and is done; a done run starts over a day later (to retry
  * failures) or at once from the admin.
+ *
+ * Batches run back to back in a chain of Worker invocations (see
+ * src/images/pack.ts, startBackfillChain): one chain at a time, holding a
+ * lease on the progress row (`lease`, `leaseUntil`). A chain that dies leaves
+ * a lease that runs out LEASE_MS later, and the next trigger takes over.
+ * Cloudflare Images refusing work (rate limits, the monthly quota) pauses the
+ * run (`pausedUntil`) instead of burning through the library with failures.
  */
 import { PLUGIN_ID } from "../core/features.js";
 import {
@@ -39,6 +46,12 @@ export const VARIANTS_STATE_OPTION = `plugin:${PLUGIN_ID}:images:variantsState`;
 export const RESTART_AFTER_MS = 24 * 60 * 60_000;
 /** Images claimed at a time. */
 const BATCH = 5;
+/** Images of a batch made at the same time (each holds its original in memory while its sizes are made). */
+const CONCURRENCY = 2;
+/** How long a chain's lease lasts without being renewed (a step works ~20 s; a dead chain is taken over after this). */
+export const LEASE_MS = 90_000;
+/** How long the run pauses when Cloudflare Images refuses work or a whole batch fails. */
+export const PAUSE_MS = 30 * 60_000;
 
 /** The slice of D1 used here (node:sqlite stands in for it in tests). */
 export interface Db {
@@ -117,7 +130,7 @@ export interface VariantDeps {
  * have stored sizes: recorded so it isn't tried again), or "failed" (nothing
  * recorded; tried again on the next run).
  */
-export async function processMedia(deps: VariantDeps, row: MediaRow): Promise<"done" | "skipped" | "failed"> {
+export async function processMedia(deps: VariantDeps, row: MediaRow, onError?: (error: unknown) => void): Promise<"done" | "skipped" | "failed"> {
 	const reason = ineligibleReason(row.mime_type, row.width, row.size);
 	if (reason) {
 		await writeVariantRecord(deps.db, row.id, { v: VARIANTS_VERSION, w: [], skip: reason, at: new Date().toISOString() });
@@ -137,6 +150,7 @@ export async function processMedia(deps: VariantDeps, row: MediaRow): Promise<"d
 		return "done";
 	} catch (error) {
 		console.error(`coywolf-pack images: couldn't make stored sizes for ${row.storage_key}`, error);
+		onError?.(error);
 		return "failed";
 	}
 }
@@ -167,6 +181,12 @@ export interface VariantsState {
 	startedAt: string;
 	finishedAt?: string;
 	error?: string;
+	/** The chain working on the run (one at a time): its token, and until when (ISO) it holds the run. Never sent to the admin. */
+	lease?: string;
+	leaseUntil?: string;
+	/** Cloudflare Images refused work (or a whole batch failed): no batches before then (ISO), and why. */
+	pausedUntil?: string;
+	pauseReason?: string;
 }
 
 export async function readVariantsState(db: Db): Promise<{ raw: string | null; state: VariantsState | null }> {
@@ -228,15 +248,15 @@ export async function startVariantsRun(db: Db, options: { force?: boolean; now?:
 }
 
 /** Claim the next batch of images missing their sizes; null when another isolate moved the cursor first. */
-async function claim(db: Db): Promise<{ state: VariantsState; rows: MediaRow[] } | null> {
+async function claim(db: Db): Promise<{ state: VariantsState; rows: MediaRow[]; from: string } | null> {
 	const { raw, state } = await readVariantsState(db);
-	if (!state || state.phase !== "running") return { state: state as VariantsState, rows: [] };
+	if (!state || state.phase !== "running") return { state: state as VariantsState, rows: [], from: state?.cursor ?? "" };
 	const { results } = await db
 		.prepare(`SELECT ${ROW_COLUMNS} FROM media AS m ${JOIN} WHERE m.id > ?2 AND ${READY} AND ${INCOMPLETE} ORDER BY m.id LIMIT ${BATCH}`)
 		.bind(VARIANTS_VERSION, state.cursor)
 		.all<MediaRow>();
 	const next: VariantsState = results.length ? { ...state, cursor: results[results.length - 1].id } : { ...state, phase: "cleanup" };
-	return (await swap(db, raw, next)) ? { state: next, rows: results } : null;
+	return (await swap(db, raw, next)) ? { state: next, rows: results, from: state.cursor } : null;
 }
 
 export interface BackfillDeps extends VariantDeps {
@@ -248,12 +268,40 @@ export interface BackfillDeps extends VariantDeps {
 	 * keeps its cursor; turning the setting back on starts over anyway.
 	 */
 	keepGoing?: () => Promise<boolean>;
+	/**
+	 * Called once per run, by the step that finished it, when the run made sizes
+	 * for at least one image: pages cached with /s/ can now use them (the pack
+	 * clears the page cache and warms it again).
+	 */
+	onDone?: (state: VariantsState) => Promise<void>;
 }
 
+/** An error from Cloudflare Images that means "not now": rate limiting, or the transformation quota. */
+export function isThrottled(error: unknown): boolean {
+	const text = error instanceof Error ? `${error.message} ${(error as { code?: unknown }).code ?? ""}` : String(error);
+	return /\b429\b|rate.?limit|too many|quota|exceeded/i.test(text);
+}
+
+/** Run `work` over `items`, `limit` at a time. */
+async function pool<T>(items: T[], limit: number, work: (item: T) => Promise<void>): Promise<void> {
+	let next = 0;
+	const runner = async () => {
+		while (next < items.length) await work(items[next++]);
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runner));
+}
+
+/** Whether a run is paused at `now`. */
+export const pausedAt = (state: Pick<VariantsState, "pausedUntil">, now: number) => Boolean(state.pausedUntil && Date.parse(state.pausedUntil) > now);
+
 /**
- * Work on the current run until `budgetMs` has passed or `maxImages` images were
- * handled: claim a batch, make its sizes, record the counts; when none are
- * left, clean up and finish. Returns the state at the end.
+ * Work on the current run until `budgetMs` has passed (no batch is claimed
+ * after that) or `maxImages` images were handled: claim a batch, make its
+ * sizes, record the counts; when none are left, clean up and finish. A batch
+ * that Cloudflare Images refused (rate limit, quota) is handed back (the
+ * cursor moves back) and the run pauses for PAUSE_MS; a batch that failed
+ * entirely for another reason is counted as failed (retried on the next run)
+ * and pauses it too. Returns the state at the end.
  */
 export async function backfillStep(deps: BackfillDeps, options: { budgetMs: number; maxImages?: number; now?: () => number }): Promise<VariantsState | null> {
 	const clock = options.now ?? Date.now;
@@ -261,7 +309,7 @@ export async function backfillStep(deps: BackfillDeps, options: { budgetMs: numb
 	let handled = 0;
 	let state = await startVariantsRun(deps.db, { now: clock() });
 	while (clock() < deadline && handled < (options.maxImages ?? Number.POSITIVE_INFINITY)) {
-		if (state.phase === "done") break;
+		if (state.phase === "done" || pausedAt(state, clock())) break;
 		// Each batch and the cleanup cost transformations: stop as soon as the site turned them off.
 		if (deps.keepGoing && !(await deps.keepGoing())) break;
 		if (state.phase === "cleanup") {
@@ -269,7 +317,15 @@ export async function backfillStep(deps: BackfillDeps, options: { budgetMs: numb
 			const versionsDone = await deleteVersion(deps.bucket, VARIANTS_VERSION - 1, left).catch(() => false);
 			const postersDone = deps.upgradePosters ? await deps.upgradePosters(deadline).catch(() => false) : true;
 			if (!versionsDone || !postersDone) break;
-			state = (await updateState(deps.db, (s) => (s.phase === "cleanup" ? { ...s, phase: "done", finishedAt: new Date(clock()).toISOString() } : null))) ?? state;
+			// Exactly one step finishes the run (compare-and-swap); only that one calls onDone.
+			const finishing: { state?: VariantsState } = {};
+			const after = await updateState(deps.db, (s) =>
+				s.phase === "cleanup" ? (finishing.state = { ...s, phase: "done", finishedAt: new Date(clock()).toISOString(), lease: undefined, leaseUntil: undefined }) : null,
+			);
+			state = after ?? state;
+			if (after && after === finishing.state && state.done > 0 && deps.onDone) {
+				await deps.onDone(state).catch((error) => console.error("coywolf-pack images: after the run finished", error));
+			}
 			break;
 		}
 		const claimed = await claim(deps.db);
@@ -280,12 +336,77 @@ export async function backfillStep(deps: BackfillDeps, options: { budgetMs: numb
 		state = claimed.state;
 		if (!claimed.rows.length) continue;
 		const counts = { done: 0, skipped: 0, failed: 0 };
-		for (const row of claimed.rows) counts[await processMedia(deps, row)]++;
+		let throttled = false;
+		await pool(claimed.rows, CONCURRENCY, async (row) => {
+			counts[await processMedia(deps, row, (error) => (throttled ||= isThrottled(error)))]++;
+		});
 		handled += claimed.rows.length;
+		const allFailed = counts.failed === claimed.rows.length && claimed.rows.length >= 3;
+		const pause = throttled || allFailed ? new Date(clock() + PAUSE_MS).toISOString() : undefined;
 		state =
-			(await updateState(deps.db, (s) => ({ ...s, done: s.done + counts.done, skipped: s.skipped + counts.skipped, failed: s.failed + counts.failed }))) ?? state;
+			(await updateState(deps.db, (s) => ({
+				...s,
+				done: s.done + counts.done,
+				skipped: s.skipped + counts.skipped,
+				// Refused by Cloudflare Images: not failures; the batch's images are handed back for after the pause.
+				failed: s.failed + (throttled ? 0 : counts.failed),
+				...(throttled && s.cursor === claimed.state.cursor ? { cursor: claimed.from } : {}),
+				...(pause ? { pausedUntil: pause, pauseReason: throttled ? "Cloudflare Images is limiting transformations" : "every image of a batch failed" } : {}),
+			}))) ?? state;
 	}
 	return state;
+}
+
+// ── The chain's lease ────────────────────────────────────────────
+
+/**
+ * Whether a progress row (raw, as last read with the feature switches) may
+ * have a batch for a new chain: a run under way or cleaning up, not paused,
+ * and no chain holding it. False when unknown (no read yet) or unreadable, so
+ * page requests never add a query to find out.
+ */
+export function backfillMayHaveWork(raw: string | null | undefined, now = Date.now()): boolean {
+	if (!raw) return false;
+	try {
+		const state = JSON.parse(raw) as VariantsState;
+		if (state.version !== VARIANTS_VERSION || (state.phase !== "running" && state.phase !== "cleanup") || pausedAt(state, now)) return false;
+		return !(state.lease && state.leaseUntil && Date.parse(state.leaseUntil) > now);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Take (or renew) the run for the chain `token`, for LEASE_MS. `follow`: a
+ * chain's next step, which only goes on while the run is still its own (a
+ * request with any other token gets nothing). Without it, the run is taken
+ * when no other chain holds it (none, or its lease ran out). Null when the
+ * run isn't there to work on (none, done, paused) or is someone else's.
+ */
+export async function acquireLease(db: Db, token: string, options: { follow?: boolean; now?: number } = {}): Promise<VariantsState | null> {
+	const now = options.now ?? Date.now();
+	for (let i = 0; i < 5; i++) {
+		const { raw, state } = await readVariantsState(db);
+		if (!raw || !state || state.version !== VARIANTS_VERSION || (state.phase !== "running" && state.phase !== "cleanup") || pausedAt(state, now)) return null;
+		const mine = state.lease === token;
+		const free = !state.lease || !state.leaseUntil || Date.parse(state.leaseUntil) <= now;
+		if (options.follow ? !mine : !mine && !free) return null;
+		const next = { ...state, lease: token, leaseUntil: new Date(now + LEASE_MS).toISOString() };
+		if (await swap(db, raw, next)) return next;
+	}
+	return null;
+}
+
+/** Let go of the run (when the chain stops), so the next trigger can start a new chain at once. */
+export async function releaseLease(db: Db, token: string): Promise<VariantsState | null> {
+	return updateState(db, (s) => (s.lease === token ? { ...s, lease: undefined, leaseUntil: undefined } : null));
+}
+
+/** The state without the lease token (for the admin). */
+export function publicState(state: VariantsState | null): Omit<VariantsState, "lease"> | null {
+	if (!state) return null;
+	const { lease: _lease, ...rest } = state;
+	return rest;
 }
 
 /** Library counts for the admin: images that can have stored sizes, how many have them, how many are skipped. */

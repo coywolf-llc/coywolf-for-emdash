@@ -116,7 +116,7 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 		const afterWrite = (response: Response): Response => {
 			// Stored image sizes follow media deletes, confirmed uploads, replaced files and WordPress media imports.
 			if (method !== "GET" && method !== "HEAD" && response.status < 400) {
-				const work = variantsAfterMediaWrite(method, context.url.pathname, isOn(features, "images"));
+				const work = variantsAfterMediaWrite(method, context.url.pathname, isOn(features, "images"), context.url.origin);
 				if (work) waitUntil(work.catch((error) => console.error("coywolf-pack images: stored sizes after a media change failed", error)));
 			}
 			if (invalidated?.() && response.status < 400 && db) {

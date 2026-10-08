@@ -12,12 +12,12 @@ import { PluginRouteError, definePluginRoute } from "emdash";
 import { z } from "zod";
 
 import { requireFeature } from "../core/features.js";
-import { parseInput, secret, workerEnv } from "../shared.js";
+import { afterResponse, parseInput, secret, workerEnv } from "../shared.js";
 import { CloudflareApiError, type CloudflareConfig, applySetup, checkMediaHost, planSetup, purgeHost } from "./cloudflare.js";
 import { imageCdn, imageCdnSource, normalizeMediaHost } from "./lib.js";
 import { rememberSiteSetting } from "../core/features.js";
 import { IMAGES_SETTINGS, invalidateMediaHost, refreshMediaHost } from "./settings.js";
-import { type BackfillDeps, type VariantsState, estimateRows, publishedCount, readVariantsState, startVariantsRun, variantCounts } from "./variants-store.js";
+import { type BackfillDeps, type VariantsState, estimateRows, publicState, publishedCount, readVariantsState, startVariantsRun, variantCounts } from "./variants-store.js";
 import { summarizeLibrary } from "./variants-estimate.js";
 import { imageCrops } from "./variants.js";
 
@@ -27,7 +27,7 @@ export const QUOTA_NOTE =
 	"Cloudflare's Free plan includes 5,000 unique image transformations a month (each new size of each image counts once a month; repeat views are served from the cache). Stored sizes are made once per image (each width and crop, as WebP and AVIF) and then served as plain files, so they don't count again. Beyond the free amount, transformations need a paid Cloudflare Images plan; without one, new sizes stop being made until the next month while existing ones keep working.";
 
 export const VARIANTS_FALLBACK_NOTE =
-	"New uploads get their sizes right away. Images without stored sizes (existing images until you turn them on, and images over 20 MB, GIFs and SVGs) keep using the media host's /s/ resizing. Crops (thumbnails, avatars) are made the first time a page shows them; pages shown while sizes are being made are cached for minutes instead of days, so they pick the sizes up.";
+	"New uploads get their sizes right away. Images without stored sizes (existing images until you turn them on, and images over 20 MB, GIFs and SVGs) keep using the media host's /s/ resizing. Crops (thumbnails, avatars) are made the first time a page shows them; pages shown while a new upload's sizes or a crop are being made are cached for minutes instead of days, so they pick them up. Pages keep their normal caching while existing images wait for their sizes; when a run finishes, the page cache is cleared once (and warmed again, with cache warming on) so every page uses them.";
 
 const hostInput = z
 	.string()
@@ -190,8 +190,8 @@ async function runCheck(host: string, database: string) {
 }
 
 interface VariantsHooks {
-	/** Run the backfill for one admin request. */
-	run(): Promise<VariantsState | null>;
+	/** Start the backfill's chain of steps (a new run with `force`); it works in the background. */
+	start(origin: string, force?: boolean): Promise<VariantsState | null>;
 	/** The bindings, or null when something is missing. */
 	deps(): Promise<BackfillDeps | null>;
 }
@@ -209,8 +209,19 @@ async function variantsStatus(variants: VariantsHooks, bulk: boolean) {
 		};
 	}
 	const [counts, { state }] = await Promise.all([variantCounts(deps.db), readVariantsState(deps.db)]);
-	return { available: true, bulk, ...counts, state, crops: imageCrops(), fallbackNote: VARIANTS_FALLBACK_NOTE };
+	return { available: true, bulk, ...counts, state: publicState(state), perHour: state ? imagesPerHour(state) : null, crops: imageCrops(), fallbackNote: VARIANTS_FALLBACK_NOTE };
 }
+
+/** Images a running backfill handles an hour, from its start (null when it's not running or just started). */
+export function imagesPerHour(state: VariantsState, now = Date.now()): number | null {
+	if (state.phase !== "running") return null;
+	const hours = (now - Date.parse(state.startedAt)) / 3_600_000;
+	const handled = state.done + state.skipped + state.failed;
+	return hours >= 2 / 60 && handled > 0 ? Math.round(handled / hours) : null;
+}
+
+/** Origin of a route's request (the chain's steps are posted there). */
+const requestOrigin = (ctx: { request: Request }) => new URL(ctx.request.url).origin;
 
 const bulkSetting = async (ctx: PluginContext) => (await ctx.settings.get<boolean>(IMAGES_SETTINGS.bulk)) === true;
 
@@ -290,13 +301,21 @@ export function imagesModule(options: { database?: string; variants: VariantsHoo
 					if (on && !deps) throw PluginRouteError.badRequest("Stored sizes need a media host, and the MEDIA bucket, IMAGES and DB bindings.");
 					await ctx.settings.set(IMAGES_SETTINGS.bulk, on);
 					rememberSiteSetting(IMAGES_SETTINGS.bulk, on);
-					if (on && deps) await startVariantsRun(deps.db, { force: true });
+					if (on && deps) {
+						await startVariantsRun(deps.db, { force: true });
+						// The run's steps follow in the background (a chain of requests of their own).
+						await afterResponse(variants.start(requestOrigin(ctx)).catch((error) => console.error("coywolf-pack images: couldn't start the backfill", error)));
+					}
 					ctx.log.info(on ? "Stored sizes for existing images turned on" : "Stored sizes for existing images turned off");
 					return variantsStatus(variants, on);
 				},
 			}),
 
-			/** One step of "Make missing sizes now" (only with sizes for existing images on): starts a run if none is under way, works ~20 s, reports. The page calls it until done. */
+			/**
+			 * "Make missing sizes now" (only with sizes for existing images on): starts the backfill's chain
+			 * (a new run with `start`), unless one is already working, and reports. The work goes on in the
+			 * background; the page polls images/variants/settings for progress.
+			 */
 			"images/variants/run": definePluginRoute({
 				permission: "plugins:manage",
 				methods: ["POST"],
@@ -308,9 +327,8 @@ export function imagesModule(options: { database?: string; variants: VariantsHoo
 					if (!(await bulkSetting(ctx))) throw PluginRouteError.badRequest("Turn on stored sizes for existing images first.");
 					const { start } = parseInput(z.object({ start: z.boolean().optional() }), ctx.input ?? {});
 					if (start) await startVariantsRun(deps.db, { force: true });
-					await variants.run();
-					// Read again: another admin may have turned the setting off while this call worked.
-					return variantsStatus(variants, await bulkSetting(ctx));
+					await afterResponse(variants.start(requestOrigin(ctx)).catch((error) => console.error("coywolf-pack images: couldn't start the backfill", error)));
+					return variantsStatus(variants, true);
 				},
 			}),
 
