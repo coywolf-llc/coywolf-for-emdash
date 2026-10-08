@@ -168,34 +168,69 @@ interface Chain {
 	self?: Fetcher;
 }
 
-/** One link of the chain: take the lease, work (unless handing the work to a step of its own), then post the next step or let go. */
+/**
+ * Renew the lease and post the chain's next step through SELF. The renewed
+ * state when the step was accepted (202); null when the run is no longer this
+ * chain's or the post failed (the caller then works or lets go).
+ */
+async function postNextStep(deps: BackfillDeps, chain: Chain & { self: Fetcher; origin: string }): Promise<VariantsState | null> {
+	const renewed = await acquireLease(deps.db, chain.token, { follow: true });
+	if (!renewed) return null;
+	try {
+		const response = await chain.self.fetch(
+			new Request(`${chain.origin}${BACKFILL_PATH}`, { method: "POST", headers: { [TOKEN_HEADER]: chain.token, [STEP_HEADER]: String(chain.step + 1) } }),
+		);
+		await response.body?.cancel();
+		if (response.status === 202) return renewed;
+		console.error(`coywolf-pack images: the next backfill step answered ${response.status}`);
+	} catch (error) {
+		console.error("coywolf-pack images: couldn't start the next backfill step", error);
+	}
+	return null;
+}
+
+/**
+ * One link of the chain: take the lease; the trigger (step 0) hands the work
+ * to a step of its own, and a step works and then posts the next one; when the
+ * hand-off isn't accepted (no SELF binding, or something ahead of the pack's
+ * middleware refused the internal request) the work is done right here, one
+ * step's worth. Lets go of the lease when nothing follows.
+ */
 async function chainStep(deps: BackfillDeps, chain: Chain): Promise<VariantsState | null> {
 	const lease = await acquireLease(deps.db, chain.token, { follow: chain.step > 0 });
 	if (!lease) return null;
-	const handOff = chain.step === 0 && chain.self && chain.origin;
-	const state = handOff ? lease : ((await backfillStep(deps, STEP_BUDGET)) ?? lease);
+	const link = chain.self && chain.origin ? (chain as Chain & { self: Fetcher; origin: string }) : null;
+	if (chain.step === 0 && link) {
+		const next = await postNextStep(deps, link);
+		if (next) {
+			rememberState(next);
+			return next;
+		}
+	}
+	const state = (await backfillStep(deps, STEP_BUDGET)) ?? lease;
+	console.log(
+		`coywolf-pack images: backfill step ${chain.step}: ${state.done} made, ${state.skipped} skipped, ${state.failed} failed; ${state.phase}${state.pausedUntil ? `, paused until ${state.pausedUntil}` : ""}`,
+	);
 	const more = (state.phase === "running" || state.phase === "cleanup") && !pausedAt(state, Date.now()) && (deps.keepGoing ? await deps.keepGoing() : true);
-	if (more && chain.self && chain.origin && chain.step < MAX_HOPS) {
-		const renewed = await acquireLease(deps.db, chain.token, { follow: true });
-		if (renewed) {
-			try {
-				const response = await chain.self.fetch(
-					new Request(`${chain.origin}${BACKFILL_PATH}`, { method: "POST", headers: { [TOKEN_HEADER]: chain.token, [STEP_HEADER]: String(chain.step + 1) } }),
-				);
-				await response.body?.cancel();
-				if (response.status === 202) {
-					rememberState(renewed);
-					return renewed;
-				}
-				console.error(`coywolf-pack images: the next backfill step answered ${response.status}`);
-			} catch (error) {
-				console.error("coywolf-pack images: couldn't start the next backfill step", error);
-			}
+	// A trigger whose hand-off was refused doesn't try again: the next trigger starts a new chain.
+	if (more && link && chain.step > 0 && chain.step < MAX_HOPS) {
+		const next = await postNextStep(deps, link);
+		if (next) {
+			rememberState(next);
+			return next;
 		}
 	}
 	const released = (await releaseLease(deps.db, chain.token)) ?? state;
 	rememberState(released);
 	return released;
+}
+
+/** Constant-time comparison of two tokens of the same length (both are checked against the UUID shape first). */
+function sameToken(a: string, b: string): boolean {
+	if (a.length !== b.length) return false;
+	let diff = 0;
+	for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+	return diff === 0;
 }
 
 /**
@@ -234,7 +269,7 @@ export async function handleBackfillRequest(request: Request, waitUntil: (p: Pro
 	const deps = await variantDeps();
 	if (!deps) return forbidden();
 	const { state } = await readVariantsState(deps.db);
-	if (!state || state.lease !== token) return forbidden();
+	if (!state?.lease || !sameToken(state.lease, token)) return forbidden();
 	waitUntil(chainStep(deps, { token, step, origin: url.origin, self: await selfBinding() }).catch((error) => console.error("coywolf-pack images: backfill step failed", error)));
 	return new Response(null, { status: 202, headers: { "Cache-Control": "no-store" } });
 }

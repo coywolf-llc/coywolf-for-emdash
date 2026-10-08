@@ -739,3 +739,15 @@ test("a whole batch failing for another reason counts as failed and pauses the r
 	assert.equal(store.isThrottled(new Error("Images binding answered 429")), true);
 	assert.equal(store.isThrottled(new Error("transform failed")), false);
 });
+
+test("when the hand-off isn't accepted (something ahead of the pack refuses the internal request), the trigger makes one step's sizes itself and lets go", async () => {
+	const { pack, db, img, done } = await chainSetup(30);
+	globalThis.__testEnv.SELF = { fetch: async () => new Response("Unauthorized", { status: 401 }) };
+	const state = await pack.startBackfillChain("https://site.test", { force: true });
+	assert.equal(img.calls.length, pack.STEP_BUDGET.maxImages * 6, "one step's worth, made here");
+	assert.equal(state.done, pack.STEP_BUDGET.maxImages);
+	assert.equal(state.phase, "running");
+	assert.equal(state.lease, undefined, "the lease is released, so the next trigger continues the run");
+	assert.equal((await store.readVariantsState(db)).state.lease, undefined);
+	done();
+});
