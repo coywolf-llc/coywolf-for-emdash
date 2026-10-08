@@ -186,7 +186,7 @@ function ImportDialog(props: { open: boolean; onClose: () => void; onImported: (
 						className="font-mono text-xs"
 					/>
 				</div>
-				{error && <Banner variant="error" role="alert" className="mt-3 whitespace-pre-line" description={error} />}
+				{error && <Banner variant="error" role="alert" className="mt-3 whitespace-pre-wrap" description={error} />}
 				<div className="mt-6 flex flex-wrap justify-end gap-2">
 					<Button className="me-auto" variant="secondary" icon={<FileArrowUp />} disabled={pending} onClick={() => fileRef.current?.click()}>
 						Choose file…
@@ -370,7 +370,7 @@ export function RedirectsPage() {
 						<div className="hidden w-16 text-end md:block" title="Requests the site's Worker answered; repeats served from the edge cache aren't counted">
 							Hits
 						</div>
-						<div className="hidden w-28 lg:block">Last hit</div>
+						<div className="w-32 cw-lg-block">Last hit</div>
 						<div className="w-10" />
 					</div>
 					{visible.map((rule) => (
@@ -397,7 +397,7 @@ export function RedirectsPage() {
 								<Badge variant="secondary">{rule.type}</Badge>
 							</div>
 							<div className="hidden w-16 text-end tabular-nums md:block">{rule.hits.toLocaleString()}</div>
-							<div className="hidden w-28 text-xs text-kumo-subtle lg:block">
+							<div className="w-32 text-xs text-kumo-subtle cw-lg-block">
 								{rule.lastHit ? dateFormat.format(new Date(rule.lastHit)) : "Never"}
 							</div>
 							<div className="flex w-10 justify-end">

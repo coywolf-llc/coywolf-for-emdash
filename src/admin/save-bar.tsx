@@ -15,6 +15,8 @@ import { Button } from "@cloudflare/kumo";
 import { FloppyDisk } from "@phosphor-icons/react";
 import * as React from "react";
 
+import { SAVE_BAR_CSS } from "./admin-css.js";
+
 export { isDirty } from "./dirty.js";
 
 /**
@@ -45,9 +47,6 @@ export function useUnsavedChanges(dirty: boolean, onSave: () => void, canSave = 
 	}, []);
 }
 
-const KEYFRAMES = `@keyframes cw-save-bar-in{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
-.cw-save-bar{animation:cw-save-bar-in 160ms ease-out}
-@media (prefers-reduced-motion: reduce){.cw-save-bar{animation:none}}`;
 
 export function SaveBar(props: {
 	dirty: boolean;
@@ -109,7 +108,7 @@ export function SaveBar(props: {
 						boxShadow: "0 -4px 12px -6px rgba(0, 0, 0, 0.18)",
 					}}
 				>
-					<style>{KEYFRAMES}</style>
+					<style>{SAVE_BAR_CSS}</style>
 					<div className="min-w-0 text-sm">
 						<span className="font-medium">Unsaved changes</span>
 						{props.detail && <span className="text-kumo-subtle"> · {props.detail}</span>}

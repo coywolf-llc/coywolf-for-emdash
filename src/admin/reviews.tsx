@@ -137,7 +137,7 @@ export function ReviewsPage() {
 			)}
 
 			{saved && (
-				<div className="grid gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]">
+				<div className="grid gap-6 cw-lg-cols-24-fill">
 					<div className="space-y-6">
 						<div className="space-y-2">
 							<div className="flex items-end gap-2">

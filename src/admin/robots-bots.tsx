@@ -71,9 +71,9 @@ export function BotPicker(props: { bots: BotEntry[]; selected: string[]; onChang
 					value={query}
 					onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
 				/>
-				<MagnifyingGlass className="pointer-events-none absolute right-3 bottom-2.5 text-kumo-subtle" aria-hidden="true" />
+				<MagnifyingGlass className="pointer-events-none absolute right-3 cw-field-icon text-kumo-subtle" aria-hidden="true" />
 			</div>
-			<div className="max-h-72 overflow-y-auto rounded border border-kumo-line">
+			<div className="max-h-80 overflow-y-auto rounded border border-kumo-line">
 				{categories.map((cat) => {
 					const list = all.filter((b) => b.category === cat);
 					const on = list.filter((b) => selected.has(b.token.toLowerCase())).length;
@@ -103,7 +103,7 @@ export function BotPicker(props: { bots: BotEntry[]; selected: string[]; onChang
 								<ul id={panelId} className="pb-2">
 									{list.slice(0, 200).map((bot) => (
 										<li key={bot.slug}>
-											<label className="flex cursor-pointer items-start gap-2 px-9 py-1 text-sm hover:bg-kumo-tint/50">
+											<label className="flex cursor-pointer items-start gap-2 ps-9 pe-9 py-1 text-sm hover:bg-kumo-tint/50">
 												<input type="checkbox" className="mt-1" checked={selected.has(bot.token.toLowerCase())} onChange={(e) => set([bot.token], e.target.checked)} />
 												<span className="min-w-0 flex-1">
 													<span className="flex flex-wrap items-center gap-1.5">
@@ -247,7 +247,7 @@ export function BotsTab(props: {
 			<div aria-live="polite">{message && <Banner variant="default" role="status" title={message} />}</div>
 			{error && !dialog && <Banner variant="error" role="alert" description={error} />}
 
-			<div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+			<div className="grid gap-2 sm:grid-cols-2 cw-lg-cols-6">
 				<div className="lg:col-span-2">
 					<Input label="Search" placeholder="Name, token, company or description" value={query} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)} />
 				</div>
@@ -295,8 +295,8 @@ export function BotsTab(props: {
 						<tr>
 							<th scope="col" className="px-3 py-2 font-medium">Name</th>
 							<th scope="col" className="px-3 py-2 font-medium">Token</th>
-							<th scope="col" className="hidden px-3 py-2 font-medium md:table-cell">Operator</th>
-							<th scope="col" className="hidden px-3 py-2 font-medium md:table-cell">Category and purpose</th>
+							<th scope="col" className="cw-md-table-cell px-3 py-2 font-medium">Operator</th>
+							<th scope="col" className="cw-md-table-cell px-3 py-2 font-medium">Category and purpose</th>
 							<th scope="col" className="px-3 py-2 font-medium">Status</th>
 							<th scope="col" className="hidden px-3 py-2 font-medium lg:table-cell">Rules</th>
 							<th scope="col" className="px-3 py-2"><span className="sr-only">Actions</span></th>
@@ -313,8 +313,8 @@ export function BotsTab(props: {
 										{bot.delisted && <Badge variant="outline">left Radar</Badge>}
 									</td>
 									<td className="px-3 py-2"><code className="text-xs">{bot.token}</code></td>
-									<td className="hidden px-3 py-2 md:table-cell">{bot.operator || "—"}</td>
-									<td className="hidden px-3 py-2 md:table-cell">
+									<td className="cw-md-table-cell px-3 py-2">{bot.operator || "—"}</td>
+									<td className="cw-md-table-cell px-3 py-2">
 										{catName(bot.category)}
 										<div className="text-xs text-kumo-subtle">{bot.purpose ? PURPOSE_LABELS[bot.purpose] : "Purpose not documented"}</div>
 									</td>

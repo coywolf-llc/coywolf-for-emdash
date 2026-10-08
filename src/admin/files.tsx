@@ -92,10 +92,10 @@ function TypeBadge({ ext }: { ext: string }) {
 		<svg width="28" height="34" viewBox="0 0 40 48" fill="none" aria-hidden="true" focusable="false" className="shrink-0">
 			<path
 				d="M10 3 h14 l10 10 v28 a4 4 0 0 1 -4 4 H10 a4 4 0 0 1 -4 -4 V7 a4 4 0 0 1 4 -4 z"
-				className="fill-kumo-base stroke-kumo-line"
+				className="fill-kumo-base cw-stroke-line"
 				strokeWidth="1.5"
 			/>
-			<path d="M24 3 L24 13 L34 13" className="fill-kumo-tint stroke-kumo-line" strokeWidth="1.5" strokeLinejoin="round" />
+			<path d="M24 3 L24 13 L34 13" className="cw-fill-tint cw-stroke-line" strokeWidth="1.5" strokeLinejoin="round" />
 			<rect x="2" y="26" width="27" height="15" rx="3.5" fill={icon.color} />
 			<text x="15.5" y="36.5" textAnchor="middle" fontSize="8.5" fontWeight="700" fill="#fff">
 				{icon.label}
@@ -698,7 +698,7 @@ export function FilesPage() {
 						<div role="columnheader" className="hidden w-20 text-end sm:block">
 							Size
 						</div>
-						<div role="columnheader" className="hidden w-28 lg:block">
+						<div role="columnheader" className="w-32 cw-lg-block">
 							Uploaded
 						</div>
 						{data.countsEnabled && (
@@ -733,7 +733,7 @@ export function FilesPage() {
 							<div role="cell" className="hidden w-20 text-end tabular-nums sm:block">
 								{file.size ? formatSize(file.size) : "—"}
 							</div>
-							<div role="cell" className="hidden w-28 text-xs text-kumo-subtle lg:block">
+							<div role="cell" className="w-32 text-xs text-kumo-subtle cw-lg-block">
 								{formatDate(file.uploadedAt) || "—"}
 							</div>
 							{data.countsEnabled && (
@@ -757,7 +757,7 @@ export function FilesPage() {
 												</Button>
 											}
 										/>
-										<DropdownMenu.Content className="max-h-72 overflow-y-auto p-1">
+										<DropdownMenu.Content className="max-h-80 overflow-y-auto p-1">
 											{file.usedIn.map((u) => (
 												<DropdownMenu.Item
 													key={`${u.collection}:${u.id}`}
