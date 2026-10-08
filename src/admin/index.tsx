@@ -1,5 +1,7 @@
 import type { PluginAdminExports } from "emdash";
 
+import { injectAdminCss } from "./admin-css.js";
+
 import { AiPage } from "./ai.js";
 import { BackupStatusWidget, BackupsPage } from "./backups.js";
 import { CodeBlocksPage } from "./codeBlocks.js";
@@ -20,6 +22,9 @@ import { VideosPage } from "./videos.js";
 import { RobotsPage } from "./robots.js";
 import { WpImportPage } from "./wpImport.js";
 import { ReviewsPage } from "./reviews.js";
+
+// Rules for the layout classes EmDash's admin stylesheet lacks (see admin-css.ts).
+injectAdminCss();
 
 export const pages: PluginAdminExports["pages"] = {
 	"/features": FeaturesPage,

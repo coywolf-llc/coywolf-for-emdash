@@ -132,7 +132,7 @@ function Tester(props: { robotsTxt: string; bots: BotEntry[]; siteUrl: string })
 			</h2>
 			<p className="text-sm text-kumo-subtle">Tests the robots.txt being served, the way Google reads it.</p>
 			<div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-				<div className="sm:w-56">
+				<div className="sm:w-64">
 					<Input label="Crawler token" list="cw-robots-tokens" value={agent} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAgent(e.target.value)} />
 					<datalist id="cw-robots-tokens">
 						{tokens.map((t) => (

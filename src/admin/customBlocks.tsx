@@ -179,7 +179,7 @@ export function CustomBlocksPage() {
 
 			{saved && (
 				<>
-					<section aria-labelledby="cw-cb-disclosure" className="grid gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]">
+					<section aria-labelledby="cw-cb-disclosure" className="grid gap-6 cw-lg-cols-24-fill">
 						<div className="space-y-4">
 							<div>
 								<h2 id="cw-cb-disclosure" className="text-base font-semibold">
@@ -234,7 +234,7 @@ export function CustomBlocksPage() {
 						<PreviewSection id="cw-cb-disclosure-preview" title="Affiliate disclosure preview" css={CUSTOM_BLOCKS_CSS} html={disclosures} note={note} />
 					</section>
 
-					<section aria-labelledby="cw-cb-podcast" className="grid gap-6 border-t border-kumo-line pt-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]">
+					<section aria-labelledby="cw-cb-podcast" className="grid gap-6 border-t border-kumo-line pt-6 cw-lg-cols-24-fill">
 						<div className="space-y-4">
 							<div>
 								<h2 id="cw-cb-podcast" className="text-base font-semibold">

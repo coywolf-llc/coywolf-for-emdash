@@ -369,7 +369,7 @@ function CaptionsDialog(props: { video: Video | null; onClose: () => void }) {
 							))}
 						</ul>
 					)}
-					<div className="grid gap-3 sm:grid-cols-[8rem_minmax(0,1fr)] sm:items-end">
+					<div className="grid gap-3 cw-sm-cols-8-fill sm:items-end">
 						<Input label="Language" value={lang} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLang(e.target.value)} />
 						<div>
 							<label className="mb-1.5 block text-sm font-medium" htmlFor="cw-vtt-file">
@@ -1030,7 +1030,7 @@ export function VideosPage() {
 						<div className="w-24 shrink-0" />
 						<div className="min-w-0 flex-1">Video</div>
 						<div className="w-16 text-end">Length</div>
-						<div className="hidden w-28 lg:block">Uploaded</div>
+						<div className="w-32 cw-lg-block">Uploaded</div>
 						{f.engagement && <div className="hidden w-16 text-end md:block">Plays</div>}
 						{f.engagement && <div className="hidden w-14 text-end md:block">Likes</div>}
 						<div className="w-16 text-end">Used in</div>
@@ -1067,7 +1067,7 @@ export function VideosPage() {
 								)}
 							</div>
 							<div className="w-16 text-end tabular-nums">{clock(v.duration)}</div>
-							<div className="hidden w-28 text-xs text-kumo-subtle lg:block">{v.created ? dateFormat.format(new Date(v.created)) : ""}</div>
+							<div className="w-32 text-xs text-kumo-subtle cw-lg-block">{v.created ? dateFormat.format(new Date(v.created)) : ""}</div>
 							{f.engagement && <div className="hidden w-16 text-end tabular-nums md:block">{numberFormat.format(v.plays)}</div>}
 							{f.engagement && <div className="hidden w-14 text-end tabular-nums md:block">{numberFormat.format(v.likes)}</div>}
 							<div

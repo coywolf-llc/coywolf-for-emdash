@@ -86,7 +86,7 @@ export function TriCheckbox(props: { checked: boolean; indeterminate: boolean; o
 			ref={ref}
 			id={props.id}
 			type="checkbox"
-			className="size-4 shrink-0 accent-current"
+			className="size-4 shrink-0 cw-accent-current"
 			checked={props.checked}
 			aria-checked={props.indeterminate ? "mixed" : props.checked}
 			aria-label={props.label}

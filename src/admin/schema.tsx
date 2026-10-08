@@ -163,7 +163,7 @@ function MediaDialog(props: { open: boolean; onClose: () => void; onPick: (item:
 						<li key={item.id}>
 							<button
 								type="button"
-								className="block w-full overflow-hidden rounded border border-kumo-line text-start focus:outline-2 focus:outline-kumo-brand"
+								className="block w-full overflow-hidden rounded border border-kumo-line text-start focus-visible:outline-2 focus-visible:outline-kumo-brand"
 								onClick={() => props.onPick(item)}
 							>
 								<img src={item.url} alt={item.alt ?? ""} className="aspect-square w-full object-cover" loading="lazy" />
@@ -434,28 +434,30 @@ function TypesTab(props: { config: Config; onSaved: (types: Record<string, TypeC
 				description="The WebPage subtype and Article subtype for each kind of page. Override them for single entries on the Overrides tab."
 			>
 				<div className="rounded-lg border">
-					<div className="hidden items-center gap-4 border-b bg-kumo-tint/50 px-4 py-2 text-sm font-medium text-kumo-subtle md:flex">
+					<div className="cw-md-flex items-center gap-4 border-b bg-kumo-tint/50 px-4 py-2 text-sm font-medium text-kumo-subtle">
 						<div className="flex-1">Pages</div>
-						<div className="w-60">Page type</div>
-						<div className="w-60">Article type</div>
+						<div className="cw-w-60">Page type</div>
+						<div className="cw-w-60">Article type</div>
 					</div>
 					{rows.map((row) => (
-						<div key={row.key} className="flex flex-col gap-2 border-b px-4 py-3 last:border-0 md:flex-row md:items-center md:gap-4">
+						<div key={row.key} className="flex flex-col gap-2 border-b px-4 py-3 last:border-0 cw-md-row md:gap-4">
 							<div className="min-w-0 flex-1">
 								<div className="text-sm font-medium">{row.label}</div>
 								<div className="truncate text-xs text-kumo-subtle">{row.hint}</div>
 							</div>
-							<div className="md:w-60">
+							<div className="cw-md-w-60">
 								<Select
 									aria-label={`${row.label} page type`}
+									className="w-full min-w-0"
 									value={types[row.key]?.pageType ?? ""}
 									onValueChange={(value: string | null) => set(row.key, { pageType: value || undefined })}
 									items={pageItems}
 								/>
 							</div>
-							<div className="md:w-60">
+							<div className="cw-md-w-60">
 								<Select
 									aria-label={`${row.label} article type`}
+									className="w-full min-w-0"
 									value={types[row.key]?.articleType ?? ""}
 									onValueChange={(value: string | null) => set(row.key, { articleType: value || undefined })}
 									items={articleItems}
@@ -624,7 +626,7 @@ function EntryPicker(props: { collections: Collection[]; onPick: (collection: st
 					void find();
 				}}
 			>
-				<div className="sm:w-56">
+				<div className="sm:w-64">
 					<Select
 						label="Collection"
 						value={collection}
@@ -1025,7 +1027,7 @@ function PreviewTab(props: { config: Config }) {
 			description="What Schema & Social adds to a page's head with the current settings. Entries are previewed from their stored fields; the live page may pass the theme's own title, breadcrumbs or page type."
 		>
 			<div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-				<div className="sm:w-56">
+				<div className="sm:w-64">
 					<Select
 						label="Page"
 						value={target}
@@ -1066,7 +1068,7 @@ function PreviewTab(props: { config: Config }) {
 						{jsonld.map((j) => (
 							<div key={j.id ?? "jsonld"}>
 								<h3 className="mb-1 text-sm font-medium">JSON-LD ({j.id === "primary" ? "replaces EmDash's" : j.id})</h3>
-								<pre className="max-h-[32rem] overflow-auto rounded bg-kumo-tint p-3 text-xs">{JSON.stringify(j.graph, null, 2)}</pre>
+								<pre className="max-h-[28rem] overflow-auto rounded bg-kumo-tint p-3 text-xs">{JSON.stringify(j.graph, null, 2)}</pre>
 							</div>
 						))}
 						{jsonld.length > 0 && (

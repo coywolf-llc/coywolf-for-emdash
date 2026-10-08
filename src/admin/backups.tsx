@@ -439,7 +439,7 @@ export function BackupsPage() {
 				<div className="rounded-lg border">
 					<div className="flex items-center gap-4 border-b bg-kumo-tint/50 px-4 py-2 text-sm font-medium text-kumo-subtle">
 						<div className="flex-1">Backup</div>
-						<div className="hidden w-28 sm:block">Type</div>
+						<div className="hidden w-32 sm:block">Type</div>
 						<div className="w-20 text-end">Size</div>
 						<div className="hidden flex-1 md:block">Contents</div>
 						<div className="w-10" />
@@ -450,7 +450,7 @@ export function BackupsPage() {
 								<div className="truncate">{formatDate(backup.createdAt)}</div>
 								<div className="text-xs text-kumo-subtle">{ago(backup.createdAt)}</div>
 							</div>
-							<div className="hidden w-28 sm:block">
+							<div className="hidden w-32 sm:block">
 								<Badge variant={backup.source === "admin" ? "secondary" : "outline"}>{sourceLabel(backup.source)}</Badge>
 							</div>
 							<div className="w-20 text-end tabular-nums">{formatBytes(backup.bytes)}</div>

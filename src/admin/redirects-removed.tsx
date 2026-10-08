@@ -158,8 +158,12 @@ export function RemovedContentPanel(props: { onRuleCreated: () => void }) {
 				</p>
 			</div>
 			<div aria-live="polite">
-				{notice && <Banner variant="default" role="status" className="m-4" title={notice} />}
-				{error && <Banner variant="error" role="alert" className="m-4" description={error} />}
+				{(notice || error) && (
+					<div className="space-y-4 p-4">
+						{notice && <Banner variant="default" role="status" title={notice} />}
+						{error && <Banner variant="error" role="alert" description={error} />}
+					</div>
+				)}
 			</div>
 			{items.length === 0 ? (
 				<p className="px-4 py-4 text-sm text-kumo-subtle">Nothing left to decide.</p>

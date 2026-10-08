@@ -468,7 +468,7 @@ function IgnoreRulesDialog(props: { open: boolean; rules: IgnoreRule[]; onClose:
 						void save({ add: [{ type, value }] }, "Ignore rule added.");
 					}}
 				>
-					<div className="sm:w-56">
+					<div className="sm:w-64">
 						<Select
 							label="Type"
 							value={type}
@@ -711,7 +711,7 @@ export function LinksPage() {
 							onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
 						/>
 					</div>
-					<div className="sm:w-56">
+					<div className="sm:w-64">
 						<Input
 							label="Domain"
 							placeholder="example.com"
@@ -797,9 +797,9 @@ export function LinksPage() {
 							/>
 						</div>
 						<div className="min-w-0 flex-1">URL</div>
-						<div className="w-28">Status</div>
+						<div className="w-32">Status</div>
 						<div className="w-24">Used in</div>
-						<div className="hidden w-36 lg:block">Checked</div>
+						<div className="w-36 cw-lg-block">Checked</div>
 						<div className="w-10" />
 					</div>
 					{items.map((row) => {
@@ -835,7 +835,7 @@ export function LinksPage() {
 										)}
 										{row.note && row.status !== "ok" && row.status !== "redirect" && <div className="mt-0.5 truncate text-xs text-kumo-subtle">{row.note}</div>}
 									</div>
-									<div className="w-28">
+									<div className="w-32">
 										<StatusBadge row={row} />
 									</div>
 									<div className="w-24">
@@ -849,7 +849,7 @@ export function LinksPage() {
 											{plural(row.refs, "entry", "entries")}
 										</button>
 									</div>
-									<div className="hidden w-36 text-xs text-kumo-subtle lg:block">{row.checkedAt ? dateFormat.format(new Date(row.checkedAt)) : "Never"}</div>
+									<div className="w-36 text-xs text-kumo-subtle cw-lg-block">{row.checkedAt ? dateFormat.format(new Date(row.checkedAt)) : "Never"}</div>
 									<div className="flex w-10 justify-end">
 										<DropdownMenu>
 											<DropdownMenu.Trigger

@@ -50,7 +50,7 @@ function ColorField(props: { label: string; value: string; placeholder: string; 
 			</div>
 			<input
 				type="color"
-				className="mb-0.5 h-9 w-10 shrink-0 cursor-pointer rounded border border-kumo-line bg-transparent p-0.5"
+				className="h-9 w-10 shrink-0 cursor-pointer rounded border border-kumo-line bg-transparent p-0.5"
 				aria-label={`Pick ${props.label.toLowerCase()}`}
 				value={swatch}
 				disabled={props.disabled}
@@ -98,7 +98,7 @@ export function DisplaySettings(props: {
 	const html = renderVideoPreviewHtml(fromDisplayDraft(draft), /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(props.background.trim()) ? props.background.trim() : null);
 
 	return (
-		<div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,24rem)] lg:items-start">
+		<div className="grid gap-6 cw-lg-cols-fill-24">
 			<div className="min-w-0 space-y-6">
 				<SettingsSection
 					id="videos-engagement"
@@ -234,7 +234,7 @@ export function DisplaySettings(props: {
 					</Group>
 				</SettingsSection>
 			</div>
-			<div className="min-w-0 lg:sticky lg:top-4">
+			<div className="min-w-0 cw-lg-sticky">
 				<PreviewSection
 					id="videos-display-preview"
 					title="Video preview"
