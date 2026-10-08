@@ -47,7 +47,6 @@ export function useUnsavedChanges(dirty: boolean, onSave: () => void, canSave = 
 	}, []);
 }
 
-
 export function SaveBar(props: {
 	dirty: boolean;
 	saving: boolean;

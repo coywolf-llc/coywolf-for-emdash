@@ -86,21 +86,71 @@ function expressionStrings(expr) {
 	return out;
 }
 
+/** Index of the `;` or line break that ends the statement starting at `start` (outside strings, brackets and braces; a line that continues with `? :`, `.` or a trailing operator is one statement). */
+function statementEnd(src, start) {
+	let depth = 0;
+	for (let i = start; i < src.length; i++) {
+		const ch = src[i];
+		if (ch === '"' || ch === "'") i = src.indexOf(ch, i + 1);
+		else if (ch === "`") i = skipTemplate(src, i);
+		else if (ch === "(" || ch === "[" || ch === "{") depth++;
+		else if (ch === ")" || ch === "]" || ch === "}") depth--;
+		else if (ch === ";" && depth <= 0) return i;
+		else if (ch === "\n" && depth <= 0) {
+			const before = src.slice(start, i).trimEnd();
+			const after = src.slice(i + 1).trimStart();
+			if (!/[=?:+&|,(]$/.test(before) && !/^[?:.]|^(?:&&|\|\|)/.test(after)) return i;
+		}
+	}
+	return src.length;
+}
+
+/** Initializers of the file's `const`/`let` declarations by name: class strings kept in a variable (`${color}`) are checked through these. */
+function declarations(src) {
+	const map = new Map();
+	for (const match of src.matchAll(/\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;\n]+)?=(?!=)\s*/g)) {
+		const start = match.index + match[0].length;
+		map.set(match[1], src.slice(start, statementEnd(src, start)));
+	}
+	return map;
+}
+
+/** Strings in a className expression, following bare identifiers (`${color}`, `className={rowClass}`, `cond ? a : b`) to their declarations in the same file. */
+function classStrings(expr, decls, seen = new Set()) {
+	const out = expressionStrings(expr);
+	const idents = [...expr.matchAll(/\$\{\s*([A-Za-z_$][\w$]*)\s*\}|[?:]\s*([A-Za-z_$][\w$]*)\s*(?=[:)}]|$)/g)].map((m) => m[1] ?? m[2]);
+	const whole = expr.trim().match(/^([A-Za-z_$][\w$]*)$/);
+	if (whole) idents.push(whole[1]);
+	for (const name of idents) {
+		if (seen.has(name) || !decls.has(name)) continue;
+		seen.add(name);
+		out.push(...classStrings(decls.get(name), decls, seen));
+	}
+	return out;
+}
+
+/** Class names used in a file's className attributes. */
+export function classNamesIn(src) {
+	const decls = declarations(src);
+	const classes = [];
+	for (const match of src.matchAll(/className=/g)) {
+		const start = match.index + match[0].length;
+		let strings;
+		if (src[start] === '"') strings = [src.slice(start + 1, src.indexOf('"', start + 1))];
+		else if (src[start] === "{") strings = classStrings(src.slice(start + 1, skipBraces(src, start) - 1), decls);
+		else continue;
+		classes.push(...strings.join(" ").split(/\s+/).filter(Boolean));
+	}
+	return classes;
+}
+
 /** Class names used in className attributes, with the file they appear in. */
 export function adminClassNames(files) {
 	const found = new Map();
 	for (const file of files) {
-		const src = readFileSync(file, "utf8");
-		for (const match of src.matchAll(/className=/g)) {
-			const start = match.index + match[0].length;
-			let strings;
-			if (src[start] === '"') strings = [src.slice(start + 1, src.indexOf('"', start + 1))];
-			else if (src[start] === "{") strings = expressionStrings(src.slice(start + 1, skipBraces(src, start) - 1));
-			else continue;
-			for (const cls of strings.join(" ").split(/\s+/).filter(Boolean)) {
-				if (!found.has(cls)) found.set(cls, new Set());
-				found.get(cls).add(relative(root, file));
-			}
+		for (const cls of classNamesIn(readFileSync(file, "utf8"))) {
+			if (!found.has(cls)) found.set(cls, new Set());
+			found.get(cls).add(relative(root, file));
 		}
 	}
 	return found;
@@ -119,6 +169,25 @@ test("the extractor reads static strings, conditionals, and template literal sta
 	assert.deepEqual(expr('`text-xs ${on ? "font-bold" : ""} m-1`'), ["font-bold", "text-xs", "m-1"]);
 	assert.deepEqual(expr('x === "none" ? "gap-2" : undefined'), ["gap-2"]);
 	assert.deepEqual([...cssClassNames(".md\\:flex{display:flex}:where(.space-y-8>:not(:last-child)){}.w-1\\/2{}.\\32 xl\\:grid-cols-6{}")], ["md:flex", "space-y-8", "w-1/2", "2xl:grid-cols-6"]);
+});
+
+test("the extractor follows class strings kept in variables", () => {
+	const src = [
+		'const color = f.severity === "error" ? "text-kumo-danger" : "text-kumo-subtle";',
+		"const row =",
+		'\tactive ? "bg-kumo-tint"',
+		'\t\t: "bg-kumo-base";',
+		"const cell = `p-2 ${color}`;",
+		'const label: string = "Save";',
+		"<Icon className={`mt-0.5 shrink-0 ${color}`} />",
+		"<li className={row} />",
+		'<td className={on ? cell : "p-1"} />',
+		"<em className={label} />",
+	].join("\n");
+	assert.deepEqual(
+		[...new Set(classNamesIn(src))].sort(),
+		["Save", "bg-kumo-base", "bg-kumo-tint", "mt-0.5", "p-1", "p-2", "shrink-0", "text-kumo-danger", "text-kumo-subtle"],
+	);
 });
 
 test("every admin className exists in EmDash's admin CSS or the pack's admin CSS", { skip: emdashCss ? false : "@emdash-cms/admin/dist/styles.css not installed (run npm install); skipping the admin class check" }, async () => {
