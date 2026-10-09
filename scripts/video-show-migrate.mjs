@@ -241,32 +241,46 @@ async function restoreUpdatedAt() {
 		process.exit(0);
 	}
 
-	// wrangler reads the account from the site's wrangler config in --wrangler-dir.
-	const output = await new Promise((resolveRun, reject) => {
-		const child = spawn("npx", ["wrangler", "d1", "execute", database, "--remote", "--json", "--yes", "--file", resolve(sqlFile)], { cwd: wranglerDir, stdio: ["ignore", "pipe", "inherit"] });
-		let out = "";
-		child.stdout.on("data", (d) => (out += d));
-		child.on("error", reject);
-		child.on("close", (code) => (code === 0 ? resolveRun(out) : reject(new Error(`wrangler d1 execute exited with ${code}`))));
-	});
-	let changes;
-	try {
-		changes = d1Changes(JSON.parse(output.slice(output.indexOf("["))));
-	} catch {
-		console.error("Could not read wrangler's output; check the entries in the admin.");
-		process.exit(1);
+	// wrangler reads the account from the site's wrangler config in --wrangler-dir. The statements go
+	// through --command (not --file, which uses D1's import and reports no per-statement results), in
+	// chunks so the command line stays short; each statement's result says whether it changed a row.
+	const runSql = (text) =>
+		new Promise((resolveRun, reject) => {
+			const child = spawn("npx", ["wrangler", "d1", "execute", database, "--remote", "--json", "--yes", "--command", text], { cwd: wranglerDir, stdio: ["ignore", "pipe", "inherit"] });
+			let out = "";
+			child.stdout.on("data", (d) => (out += d));
+			child.on("error", reject);
+			child.on("close", (code) => (code === 0 ? resolveRun(out) : reject(new Error(`wrangler d1 execute exited with ${code}`))));
+		});
+	const statements = restores.map((r) => restoreUpdatedAtSql(r));
+	const CHUNK = 50;
+	const changes = [];
+	for (let i = 0; i < statements.length; i += CHUNK) {
+		const chunk = statements.slice(i, i + CHUNK);
+		let results;
+		try {
+			const output = await runSql(chunk.join(" "));
+			results = d1Changes(JSON.parse(output.slice(output.indexOf("["))));
+		} catch (error) {
+			console.error(`Could not run or read statements ${i + 1}–${i + chunk.length}: ${error instanceof Error ? error.message : error}`);
+			results = [];
+		}
+		for (let j = 0; j < chunk.length; j++) changes.push(results[j] ?? null);
 	}
 	let restored = 0;
 	let untouched = 0;
 	restores.forEach((r, i) => {
 		const n = changes[i];
-		if (n === 1) restored++;
+		// D1 counts rows changed by triggers too (EmDash keeps search tables in sync), so a restored
+		// entry reports 1 or more; 0 means the guard didn't match.
+		if (typeof n === "number" && n > 0) restored++;
 		else {
 			untouched++;
-			console.log(`  NOT CHANGED ${r.collection}/${r.slug ?? r.id}: ${n === 0 ? "updated_at no longer held the migration's value (edited since?)" : "no result"}`);
+			console.log(`  NOT CHANGED ${r.collection}/${r.slug ?? r.id}: ${n === 0 ? "updated_at no longer held the migration's value (edited since, or already restored)" : "no result from D1 (check this entry in the admin)"}`);
 		}
 	});
 	console.log(`Restored ${restored}, not changed ${untouched}.`);
+	if (untouched) process.exitCode = 1;
 
 	// Pages were rendered with the migration's dates: clear them.
 	try {
