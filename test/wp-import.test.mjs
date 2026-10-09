@@ -71,7 +71,7 @@ test("Cloudflare Stream schema blocks merge with their embed HTML into Coywolf V
 		{ uid: "5b7349bd06767b1ba66bf2ce566d1440", title: "Open Graph Checker", preset: "standard", controls: true, autoplay: false, posterTime: 1, aspect: 60.674 },
 	);
 	assert.match(ogc.caption, /^The Open Graph Checker by Coywolf/);
-	assert.equal(ogc.showName, false, "the WordPress embed showed no title");
+	assert.equal(ogc.showName, "hide", "the WordPress embed showed no title");
 	// GIF-like embed: autoplay, loop, muted, no controls.
 	assert.deepEqual([ulysses.autoplay, ulysses.loop, ulysses.muted, ulysses.controls, ulysses.preload], [true, true, true, false, "auto"]);
 	// Wrapper whose iframe was stripped on WordPress: the video comes back, sized by the wrapper.
@@ -79,7 +79,7 @@ test("Cloudflare Stream schema blocks merge with their embed HTML into Coywolf V
 	assert.equal(example.aspect, 76.856);
 	// <figure> wrapper with a caption and a phone-width max.
 	assert.equal(qr.caption, "Scanning a QR code on a printed article with a smartphone");
-	assert.equal(qr.showDescription, true);
+	assert.equal(qr.showDescription, "show");
 	assert.deepEqual([qr.sizeMode, qr.maxWidth], ["maxwidth", 360]);
 	assert.deepEqual([shop.sizeMode, shop.maxWidth], ["maxwidth", 344]);
 

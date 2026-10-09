@@ -170,11 +170,11 @@ function streamVideo(attrs: Record<string, unknown>, embed: StreamEmbed | null):
 		preset: "standard",
 		title: str(attrs["cs-name"]) || embed?.title || undefined,
 		caption: caption ?? (str(attrs["cs-description"]) || undefined),
-		showName: false,
-		showDescription: Boolean(caption),
-		showPlays: false,
-		showLikes: false,
-		showDate: false,
+		showName: "hide",
+		showDescription: caption ? "show" : "hide",
+		showPlays: "hide",
+		showLikes: "hide",
+		showDate: "hide",
 	};
 	embedFields(embed, block);
 	const host = embed?.host ?? (/^customer-[a-z0-9]+\.cloudflarestream\.com$/.test(str(attrs["cs-subdomain"])) ? str(attrs["cs-subdomain"]) : undefined);

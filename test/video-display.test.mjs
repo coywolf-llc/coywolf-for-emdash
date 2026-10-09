@@ -4,12 +4,13 @@ import { test } from "node:test";
 
 import "./ts-resolve.mjs";
 
-const { SHOW_DEFAULTS, parseTags, playerConfig, resolveShow } = await import("../src/videos/lib.ts");
+const { SHOW_DEFAULTS, normalizeVideoShow, normalizeVideoShows, parseTags, playerConfig, resolveShow } = await import("../src/videos/lib.ts");
 const { relativeDate, videoDateText } = await import("../src/videos/date.ts");
 const {
 	DISPLAY_DEFAULTS,
 	LIKE_ICON_PATHS,
 	VIDEO_CSS,
+	blockDisplay,
 	captionHtml,
 	displayVars,
 	likeIconSvg,
@@ -246,4 +247,90 @@ test("blockDisplay: invalid values are ignored or clamped (they become CSS)", as
 	assert.equal(d.borderColor, "#eeeeee");
 	assert.equal(blockDisplay(DISPLAY_DEFAULTS, { radius: "12" }).radius, DISPLAY_DEFAULTS.radius, "numbers only");
 	assert.doesNotMatch(displayVars(d).join(";"), /red|display/);
+});
+
+test("normalizeVideoShow turns true/false into what the editor shows, rendering the same", () => {
+	const old = { _type: "coywolf-video", uid: UID, showName: false, showDescription: true, showPlays: "show", showLikes: false, showLikeCount: "", showBorder: true };
+	const kept = normalizeVideoShow(old, false);
+	assert.deepEqual(
+		[kept.showName, kept.showDescription, kept.showPlays, kept.showLikes, kept.showLikeCount, kept.showDate, kept.showBorder],
+		["hide", "show", "show", "hide", "", undefined, "show"],
+	);
+	assert.equal(old.showName, false, "the input is not changed");
+	const followed = normalizeVideoShow(old, true);
+	assert.deepEqual(
+		[followed.showName, "showDescription" in followed, "showLikes" in followed, followed.showPlays, followed.showBorder],
+		[undefined, false, false, "show", "show"],
+	);
+	const fresh = { _type: "coywolf-video", uid: UID, showName: "hide" };
+	assert.equal(normalizeVideoShow(fresh, false), fresh, "nothing to change: same object");
+	// Rendering is unchanged either way.
+	const off = { ...SHOW_DEFAULTS, showPlays: false, showDate: false };
+	for (const follow of [false, true]) {
+		const site = { ...off, followSiteDefaults: follow };
+		assert.deepEqual(playerConfig(normalizeVideoShow(old, follow), site), playerConfig(old, site));
+	}
+});
+
+test("normalizeVideoShows rewrites every video block in content, at any depth", () => {
+	const video = (extra) => ({ _type: "coywolf-video", uid: UID, ...extra });
+	const text = { _type: "block", children: [{ _type: "span", text: "showName" }] };
+	const content = [text, video({ showLikes: false }), { _type: "columns", columns: [{ content: [video({ showDate: true })] }] }, video({ showName: "show" })];
+	const { value, changed } = normalizeVideoShows(content, false);
+	assert.equal(changed, 2);
+	assert.equal(value[0], text, "untouched blocks are kept as they are");
+	assert.equal(value[3], content[3]);
+	assert.equal(value[1].showLikes, "hide");
+	assert.equal(value[2].columns[0].content[0].showDate, "show");
+	assert.equal(content[1].showLikes, false, "the input is not changed");
+	const again = normalizeVideoShows(value, false);
+	assert.deepEqual([again.changed, again.value], [0, value], "running it again changes nothing");
+	assert.deepEqual(normalizeVideoShows(null, false), { value: null, changed: 0 });
+});
+
+test("normalizeVideoShow renders identically for every combination of stored choices and site settings", () => {
+	// Everything that reads a block's show choices: playerConfig (the six meta choices) and blockDisplay (the border).
+	const keys = ["showName", "showDescription", "showPlays", "showLikes", "showLikeCount", "showDate", "showBorder"];
+	const values = [true, false, "show", "hide", "", undefined];
+	const sites = [];
+	for (const follow of [false, true]) {
+		for (const on of [true, false]) {
+			const site = { ...SHOW_DEFAULTS, followSiteDefaults: follow };
+			for (const key of keys.slice(0, 6)) site[key] = on;
+			sites.push(site);
+			// Mixed defaults too.
+			sites.push({ ...site, showName: !on, showPlays: !on, showDate: !on });
+		}
+	}
+	const blocks = [];
+	// Every true/false assignment of all seven keys...
+	for (let mask = 0; mask < 1 << keys.length; mask++) {
+		const block = { _type: "coywolf-video", uid: UID };
+		keys.forEach((key, i) => (block[key] = Boolean(mask & (1 << i))));
+		blocks.push(block);
+	}
+	// ...and every key taking each kind of value while the others roll through the rest (booleans mixed with strings and gaps).
+	for (let shift = 0; shift < values.length * keys.length; shift++) {
+		const block = { _type: "coywolf-video", uid: UID };
+		keys.forEach((key, i) => {
+			const value = values[(i * 5 + shift) % values.length];
+			if (value !== undefined) block[key] = value;
+		});
+		blocks.push(block);
+	}
+	let combos = 0;
+	for (const block of blocks) {
+		for (const site of sites) {
+			const normalized = normalizeVideoShow(block, site.followSiteDefaults);
+			assert.deepEqual(playerConfig(normalized, site), playerConfig(block, site), JSON.stringify({ block, site }));
+			for (const border of [true, false]) {
+				const display = { ...DISPLAY_DEFAULTS, border };
+				assert.deepEqual(blockDisplay(display, normalized), blockDisplay(display, block), JSON.stringify({ block, border }));
+			}
+			for (const value of Object.values(normalized)) assert.notEqual(typeof value, "boolean", "no boolean choice survives");
+			assert.deepEqual(normalizeVideoShow(normalized, site.followSiteDefaults), normalized, "a second pass changes nothing");
+			combos++;
+		}
+	}
+	assert.ok(combos > 1000, `${combos} combinations checked`);
 });
