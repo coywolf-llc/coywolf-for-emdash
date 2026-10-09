@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 import "./ts-resolve.mjs";
 
-const { SHOW_DEFAULTS, parseTags, playerConfig, resolveShow } = await import("../src/videos/lib.ts");
+const { SHOW_DEFAULTS, normalizeVideoShow, normalizeVideoShows, parseTags, playerConfig, resolveShow } = await import("../src/videos/lib.ts");
 const { relativeDate, videoDateText } = await import("../src/videos/date.ts");
 const {
 	DISPLAY_DEFAULTS,
@@ -246,4 +246,43 @@ test("blockDisplay: invalid values are ignored or clamped (they become CSS)", as
 	assert.equal(d.borderColor, "#eeeeee");
 	assert.equal(blockDisplay(DISPLAY_DEFAULTS, { radius: "12" }).radius, DISPLAY_DEFAULTS.radius, "numbers only");
 	assert.doesNotMatch(displayVars(d).join(";"), /red|display/);
+});
+
+test("normalizeVideoShow turns true/false into what the editor shows, rendering the same", () => {
+	const old = { _type: "coywolf-video", uid: UID, showName: false, showDescription: true, showPlays: "show", showLikes: false, showLikeCount: "", showBorder: true };
+	const kept = normalizeVideoShow(old, false);
+	assert.deepEqual(
+		[kept.showName, kept.showDescription, kept.showPlays, kept.showLikes, kept.showLikeCount, kept.showDate, kept.showBorder],
+		["hide", "show", "show", "hide", "", undefined, "show"],
+	);
+	assert.equal(old.showName, false, "the input is not changed");
+	const followed = normalizeVideoShow(old, true);
+	assert.deepEqual(
+		[followed.showName, "showDescription" in followed, "showLikes" in followed, followed.showPlays, followed.showBorder],
+		[undefined, false, false, "show", "show"],
+	);
+	const fresh = { _type: "coywolf-video", uid: UID, showName: "hide" };
+	assert.equal(normalizeVideoShow(fresh, false), fresh, "nothing to change: same object");
+	// Rendering is unchanged either way.
+	const off = { ...SHOW_DEFAULTS, showPlays: false, showDate: false };
+	for (const follow of [false, true]) {
+		const site = { ...off, followSiteDefaults: follow };
+		assert.deepEqual(playerConfig(normalizeVideoShow(old, follow), site), playerConfig(old, site));
+	}
+});
+
+test("normalizeVideoShows rewrites every video block in content, at any depth", () => {
+	const video = (extra) => ({ _type: "coywolf-video", uid: UID, ...extra });
+	const text = { _type: "block", children: [{ _type: "span", text: "showName" }] };
+	const content = [text, video({ showLikes: false }), { _type: "columns", columns: [{ content: [video({ showDate: true })] }] }, video({ showName: "show" })];
+	const { value, changed } = normalizeVideoShows(content, false);
+	assert.equal(changed, 2);
+	assert.equal(value[0], text, "untouched blocks are kept as they are");
+	assert.equal(value[3], content[3]);
+	assert.equal(value[1].showLikes, "hide");
+	assert.equal(value[2].columns[0].content[0].showDate, "show");
+	assert.equal(content[1].showLikes, false, "the input is not changed");
+	const again = normalizeVideoShows(value, false);
+	assert.deepEqual([again.changed, again.value], [0, value], "running it again changes nothing");
+	assert.deepEqual(normalizeVideoShows(null, false), { value: null, changed: 0 });
 });

@@ -333,6 +333,62 @@ export function resolveShow(value: unknown, siteDefault: boolean, followSiteDefa
 	return siteDefault;
 }
 
+const SHOW_KEYS = ["showName", "showDescription", "showPlays", "showLikes", "showLikeCount", "showDate"] as const;
+
+/**
+ * A coywolf-video block with its true/false show choices (older blocks and
+ * WordPress imports) turned into what the block editor shows, rendering the
+ * same: "show"/"hide", or, when the site makes every block follow its
+ * defaults (so the booleans were ignored), removed (Site default). The
+ * border was always honored, so true/false → "show"/"hide" either way.
+ * Strings and missing values are left alone. Returns the same object when
+ * nothing changes.
+ */
+export function normalizeVideoShow<T extends Record<string, unknown>>(block: T, followSiteDefaults: boolean): T {
+	let out: Record<string, unknown> | null = null;
+	for (const key of [...SHOW_KEYS, "showBorder"] as const) {
+		const value = block[key];
+		if (typeof value !== "boolean") continue;
+		out ??= { ...block };
+		if (followSiteDefaults && key !== "showBorder") delete out[key];
+		else out[key] = value ? "show" : "hide";
+	}
+	return (out ?? block) as T;
+}
+
+/**
+ * normalizeVideoShow on every coywolf-video block in a content value (a
+ * Portable Text array, an entry's data, at any depth). Returns a copy only
+ * along changed paths; `changed` counts the blocks rewritten.
+ */
+export function normalizeVideoShows<T>(value: T, followSiteDefaults: boolean): { value: T; changed: number } {
+	let changed = 0;
+	const visit = (node: unknown, depth: number): unknown => {
+		if (depth > 12 || node === null || typeof node !== "object") return node;
+		if (Array.isArray(node)) {
+			let copy: unknown[] | null = null;
+			node.forEach((item, i) => {
+				const next = visit(item, depth + 1);
+				if (next !== item) (copy ??= [...node])[i] = next;
+			});
+			return copy ?? node;
+		}
+		const record = node as Record<string, unknown>;
+		if (record._type === BLOCK_TYPE) {
+			const next = normalizeVideoShow(record, followSiteDefaults);
+			if (next !== record) changed++;
+			return next;
+		}
+		let copy: Record<string, unknown> | null = null;
+		for (const [key, child] of Object.entries(record)) {
+			const next = visit(child, depth + 1);
+			if (next !== child) (copy ??= { ...record })[key] = next;
+		}
+		return copy ?? record;
+	};
+	return { value: visit(value, 0) as T, changed };
+}
+
 export interface PlayerConfig {
 	controls: boolean;
 	autoplay: boolean;
