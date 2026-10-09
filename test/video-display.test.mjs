@@ -10,6 +10,7 @@ const {
 	DISPLAY_DEFAULTS,
 	LIKE_ICON_PATHS,
 	VIDEO_CSS,
+	blockDisplay,
 	captionHtml,
 	displayVars,
 	likeIconSvg,
@@ -285,4 +286,51 @@ test("normalizeVideoShows rewrites every video block in content, at any depth", 
 	const again = normalizeVideoShows(value, false);
 	assert.deepEqual([again.changed, again.value], [0, value], "running it again changes nothing");
 	assert.deepEqual(normalizeVideoShows(null, false), { value: null, changed: 0 });
+});
+
+test("normalizeVideoShow renders identically for every combination of stored choices and site settings", () => {
+	// Everything that reads a block's show choices: playerConfig (the six meta choices) and blockDisplay (the border).
+	const keys = ["showName", "showDescription", "showPlays", "showLikes", "showLikeCount", "showDate", "showBorder"];
+	const values = [true, false, "show", "hide", "", undefined];
+	const sites = [];
+	for (const follow of [false, true]) {
+		for (const on of [true, false]) {
+			const site = { ...SHOW_DEFAULTS, followSiteDefaults: follow };
+			for (const key of keys.slice(0, 6)) site[key] = on;
+			sites.push(site);
+			// Mixed defaults too.
+			sites.push({ ...site, showName: !on, showPlays: !on, showDate: !on });
+		}
+	}
+	const blocks = [];
+	// Every true/false assignment of all seven keys...
+	for (let mask = 0; mask < 1 << keys.length; mask++) {
+		const block = { _type: "coywolf-video", uid: UID };
+		keys.forEach((key, i) => (block[key] = Boolean(mask & (1 << i))));
+		blocks.push(block);
+	}
+	// ...and every key taking each kind of value while the others roll through the rest (booleans mixed with strings and gaps).
+	for (let shift = 0; shift < values.length * keys.length; shift++) {
+		const block = { _type: "coywolf-video", uid: UID };
+		keys.forEach((key, i) => {
+			const value = values[(i * 5 + shift) % values.length];
+			if (value !== undefined) block[key] = value;
+		});
+		blocks.push(block);
+	}
+	let combos = 0;
+	for (const block of blocks) {
+		for (const site of sites) {
+			const normalized = normalizeVideoShow(block, site.followSiteDefaults);
+			assert.deepEqual(playerConfig(normalized, site), playerConfig(block, site), JSON.stringify({ block, site }));
+			for (const border of [true, false]) {
+				const display = { ...DISPLAY_DEFAULTS, border };
+				assert.deepEqual(blockDisplay(display, normalized), blockDisplay(display, block), JSON.stringify({ block, border }));
+			}
+			for (const value of Object.values(normalized)) assert.notEqual(typeof value, "boolean", "no boolean choice survives");
+			assert.deepEqual(normalizeVideoShow(normalized, site.followSiteDefaults), normalized, "a second pass changes nothing");
+			combos++;
+		}
+	}
+	assert.ok(combos > 1000, `${combos} combinations checked`);
 });
