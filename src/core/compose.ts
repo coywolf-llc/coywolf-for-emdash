@@ -54,6 +54,8 @@ export function hookCapabilities(modules: PackModule[]): string[] {
 const COLLECTING = new Set(["page:metadata", "page:fragments"]);
 /** Scheduled jobs can take far longer than EmDash's 5-second hook default (Workers cron allows 15 minutes). */
 const CRON_TIMEOUT_MS = 14 * 60_000;
+/** plugin:activate schedules every task (one D1 write each); a boot-time failure would disable the plugin. */
+const ACTIVATE_TIMEOUT_MS = 60_000;
 
 const mainFeature = (module: PackModule) => module.features[0]?.id ?? module.id;
 
@@ -116,9 +118,15 @@ export function composeHooks(modules: PackModule[], extra: { tasks: TaskDef[] })
 
 	const tasks = [...extra.tasks, ...modules.flatMap((m) => (m.tasks ?? []).map((t) => ({ ...t, feature: t.feature ?? mainFeature(m) })))];
 
-	hooks["plugin:activate"] = async (event, ctx) => {
-		await ensureTasks(ctx, tasks);
-		for (const module of modules) await module.hooks?.["plugin:activate"]?.(event, ctx);
+	// EmDash 1.2.0 runs install → activate once at boot for a config plugin with no _plugin_state row, and a
+	// hook that fails (its 5-second default timeout included) disables the plugin until an admin re-enables
+	// it. Scheduling a dozen tasks is a dozen D1 writes: give it room.
+	hooks["plugin:activate"] = {
+		timeout: ACTIVATE_TIMEOUT_MS,
+		handler: async (event, ctx) => {
+			await ensureTasks(ctx, tasks);
+			for (const module of modules) await module.hooks?.["plugin:activate"]?.(event, ctx);
+		},
 	};
 
 	hooks.cron = {

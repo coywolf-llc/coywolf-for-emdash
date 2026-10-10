@@ -36,8 +36,8 @@ const PACKAGE = "@coywolf/emdash";
 
 /** The admin sidebar folder holding every pack page (EmDash 1.2.0+ keeps the pages' order inside it). */
 const SIDEBAR_GROUP = "Coywolf Pack";
-/** First in the folder (its icon is the folder's). */
-const FEATURES_PAGE = { path: "/features", label: "Coywolf Pack", icon: "toggle-right" };
+/** First in the folder (its icon is the folder's). Labeled "Features", not "Coywolf Pack": the folder already says that. */
+const FEATURES_PAGE = { path: "/features", label: "Features", icon: "toggle-right" };
 /** Always on (not a feature), listed right below Coywolf Pack. */
 const PERFORMANCE_PAGE = { path: "/performance", label: "Performance", icon: "lightning" };
 /** Module pages listed right after Performance (when their feature is on), ahead of the rest. */
