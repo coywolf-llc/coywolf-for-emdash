@@ -52,7 +52,7 @@ A page that isn't in the edge cache yet is built by the Worker, and every D1 rou
 | **WordPress import** | Finishes a move from any WordPress site: keeps heading ids, reusable blocks, quotes and Details blocks through EmDash's importer, credits co-authors and guest authors, restores category and page parents, points leftover `/wp-content/` URLs (size variants and files outside the media library included) at the media library, and turns old slugs and Redirection, Rank Math and Yoast rules into redirects. Blocks from Coywolf's WordPress plugins become Coywolf Pack blocks |
 | **AI Enrichment** | Wikidata-grounded entities for schema, meta-description suggestions, and image alt text, with Workers AI or your own key |
 
-Every feature can be turned on or off under **Plugins → Coywolf Pack**, like Coywolf SEO's feature switches. New features start off, so installing or updating changes nothing on the site until you turn them on. A module that is off also leaves the admin sidebar and dashboard. Clean Image URLs is listed right after Performance when it's on.
+Every feature can be turned on or off under **Plugins → Coywolf Pack**, like Coywolf SEO's feature switches. New features start off, so installing or updating changes nothing on the site until you turn them on. A module that is off also leaves the admin sidebar and dashboard. The pack's pages share one **Coywolf Pack** folder in the sidebar's Plugins section (EmDash 1.2.0+): the feature switches first, then Performance, then Clean Image URLs when it's on, then the other modules.
 
 More modules will follow as Coywolf's WordPress plugins move to EmDash.
 
@@ -60,7 +60,7 @@ This is a native (trusted) EmDash plugin, so it installs from GitHub or npm rath
 
 ## Requirements
 
-EmDash 1.1+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media bucket (`MEDIA`).
+EmDash 1.2+ on the Cloudflare adapter, with a D1 database (`DB`) and an R2 media bucket (`MEDIA`).
 
 ## Install
 
@@ -246,7 +246,7 @@ https://media.example.com/v1/<id>-<w>x<h>.avif|.webp      the site's crops (fit:
   ```
 
   Adding crops later is fine: they're made as pages show them. Removed crops' files stay until the image is deleted.
-- **When.** New images: right after an upload (in the background; the upload doesn't wait), after a direct upload is confirmed or a file is replaced. These always run (one image's widths cost a few cents at most).
+- **When.** New images: right after an upload (in the background; the upload doesn't wait; EmDash 1.2.0+ notifies plugins of direct uploads too, once confirmed), and after a file is replaced. An image whose sizes already exist isn't made again. These always run (one image's widths cost a few cents at most).
 - **Existing images are opt-in.** Making sizes for a whole library (for example after a WordPress import) is a one-time Cloudflare fee, so it doesn't start on its own. Until an admin turns on **Sizes for existing images** on the Clean Image URLs page (setting `imagesVariantsBulk`, read with the feature switches, so checking it adds no query), the backfill, the step after a WordPress media import and legacy video-poster upgrades do nothing, and existing images keep using `/s/`. Turning it on takes a confirmation that shows the estimate (below) and starts a run. A finished run starts over a day later to retry failures. Turning it off stops further work, including a run under way (it checks the setting before each batch of five images and before the cleanup, so within the switches' cache); sizes already made stay in use. Turning it back on starts a fresh run.
 - **Back-to-back batches.** A run works in a chain of steps, each in a Worker invocation of its own (so each gets its own subrequest budget), one after another until every image is done; nobody has to keep the admin page open. Turning sizes for existing images on, **Make missing sizes now**, a WordPress media import, the hourly job (it restarts a run that finished a day ago, or a chain that stopped), and page traffic (a request that sees a run with no chain working on it, from the progress row read with the feature switches, so no extra query) start a chain. The trigger takes the run's **lease** (a compare-and-swap on the progress row `plugin:coywolf-pack:images:variantsState`: one chain at a time) and posts the first step to the Worker itself through the `SELF` service binding (internal path `/_coywolf-pack/images/backfill`), so no image work happens in the Cron Trigger, which runs wherever Cloudflare has room, often far from the database (the same reason cache warming rides on traffic). Each step renews the lease, makes sizes for up to 25 images (2 at a time; it claims no new batch after 15 seconds), then posts the next step. The endpoint only works for the request carrying the lease's current token (a random UUID kept in the database, never sent to browsers); anything else gets a 403 and starts nothing, so visitors can't trigger transformations. Budget per step: an image takes up to ~22 subrequests (a list, the original, and for up to five widths a WebP and an AVIF transform and two writes) plus its record, so 25 images are at most ~575, plus ~30 for claims, counts, the lease and the next step: about 600 of the 1,000 an invocation may make, finishing within the 30 seconds a step's background work may run after its response. That's roughly 2,000–4,000 images an hour (fewer with large originals), instead of 15 an hour from the hourly job alone. Cloudflare allows 32 Worker invocations per incoming request, so a chain lets go after 24 steps and the next page request (or the hourly job) starts a new one; a chain that dies leaves a lease that runs out after 90 seconds and is taken over the same way. When Cloudflare Images rate-limits or refuses work (a 429, the monthly quota), the batch is handed back and the run pauses for 30 minutes (`pausedUntil`; a batch where every image failed for another reason pauses it too, its images counted as failed); page traffic and the hourly job resume it afterward. The page shows the progress ("working, about N images an hour", or paused until when). Without the `SELF` binding, or when the hand-off isn't accepted (something ahead of the pack's middleware refuses the internal request, as a staging site's password gate does), each trigger makes one step's worth of sizes itself and lets go; the hourly job and page traffic carry on from there.
 - **Until an image's sizes exist** (and for images that can't have them), `responsiveImage()` and `croppedImage()` return `null` and themes use `cleanImageUrl()` (`/s/`). A page that showed such a stopgap is cached for minutes instead of days, so its next render uses the stored files, only when the sizes are moments away: the image was uploaded in the last 15 minutes (`created_at` comes with the media row `imageInfo()` already reads), or a crop was just queued. Existing images waiting for the backfill don't shorten pages (that would rebuild every page every few minutes for as long as the run takes): those pages keep their normal lifetime, and when a run that made sizes for at least one image finishes, the backfill clears the page cache once (exactly once per run: only the step whose compare-and-swap finishes the run does it) and, with cache warming on, starts a warm-up, so every page picks up the stored sizes together. An image that can't have sizes, or a crop that failed recently, uses `/s/` and the page is cached normally.
@@ -397,7 +397,7 @@ Keep `EMDASH_ENCRYPTION_KEY` in a password manager. It isn't in backups, and enc
 
 ## Redirects
 
-EmDash's built-in Redirects (**Manage → Redirects**) handle site-relative page redirects. This module covers what they can't:
+EmDash's built-in Redirects (**Manage → Redirects**) handle site-relative page redirects (since EmDash 1.2.0 they ignore a trailing slash, as this module does). This module covers what they can't:
 
 - **External destinations**, such as affiliate links (`/visit/partner`) and articles that moved to another site.
 - **File paths**, such as old WordPress `/wp-content/uploads/` image URLs. EmDash's middleware skips any path with a file extension.
@@ -670,7 +670,7 @@ Nothing beyond the plugin itself: the block renderer is registered through the p
 
 - Languages: Prism names used by Code Block Enhancer for WordPress work too (`markup` is HTML, `svg` and `mathml` are XML). EmDash's editor list (Astro, Svelte and Vue are highlighted as HTML, MDX as Markdown, TOML as INI) plus highlight.js's common grammars. Unknown languages, blocks over 30,000 characters and blocks with any line over 2,000 characters are shown as plain text (highlight.js slows sharply on long lines). Rendered blocks are cached in memory (200 per Worker isolate), so repeat page views don't re-highlight.
 - Theme CSS is generated from highlight.js's own stylesheets (BSD-3-Clause, each theme's original credits kept) by `node scripts/gen-code-themes.mjs`.
-- Tests: `node --test src/codeBlocks/render.test.ts`.
+- Tests: `node --import ./test/ts-resolve.mjs --test src/codeBlocks/render.test.ts`.
 
 ## Schema & Social
 
@@ -965,6 +965,8 @@ Without the binding, internal links are listed but not checked (they're never re
 
 The Coywolf Video Manager for EmDash, on Cloudflare Stream.
 
+EmDash 1.2.0 added its own **Video** block (`video`): a media-library video in the browser's player, or a media provider's embed, with a caption. It's a different block from **Coywolf Video** (`coywolf-video`), which plays Cloudflare Stream videos with the light embed, posters, views and likes, schema and the sitemap below. Both can be used side by side; the pack doesn't render or index EmDash's.
+
 - **Coywolf Video block** (slash menu → Media): pick a video from your Stream library, then set a title, description, poster (a frame time or an image), start time, controls/autoplay/loop/muted/preload, full or maximum width, and whether to show the name, description, views, a like button, the like count and the upload date: **Site default** (follow **Videos → Settings**), **Show** or **Hide**. The **Loop like a GIF** style plays muted, autoplaying and looping with no controls. Server-rendered in a `<figure>` sized by the video's aspect ratio, so nothing shifts.
 - **Light embed** (the default; **Videos → Player → Load the player only when it's needed**): pages show the video's poster as a responsive image (Stream thumbnails at 480, 800 and 1200 px) with a play button, and load Stream's player (about 350 KB of JavaScript) when someone presses play, already playing. Autoplaying and GIF-style videos show the poster until the visitor's first scroll, touch, pointer move or key press, then load their player once on screen (loading it on idle still ran Stream's ~1.5 s of player script inside PageSpeed's measuring window). Without it, a video near the top of a page loads with the page and, on a slow phone connection, becomes its largest paint several seconds late (coywolf.com's mobile Performance score was 70 on such a page, 100 on the home page). Without JavaScript the player loads as before. Turn the setting off to load the player with the page.
 - **Pause and reduced motion** (WCAG 2.2.2): autoplaying videos without controls (including the GIF style) show a pause/play button in the corner, so the motion can always be stopped; pausing before the player has loaded keeps the poster (also when that press is the visitor's first interaction), and a pause pressed while the player is still starting holds once it's ready. Visitors whose system asks for reduced motion get the poster and a play button instead of autoplay.
@@ -1223,7 +1225,7 @@ Sites that used Coywolf's WordPress plugins (Video Manager, Coywolf SEO, Custom 
 | `&#91;` and bold markup in code blocks | Shown as literal text | Prepare cleans them |
 | Co-authors and guest authors (Co-Authors Plus, PublishPress Authors) | Each post is credited to its WordPress user only | Step 3, **Co-authors and guest authors** |
 | Category parents and page parents (`/{parent}/{child}/` URLs) | Every category is top level; pages lose their parent | Step 4, **Category and page parents**, with `{termpath:category}` and `{pagepath}` in [Content URLs](#content-urls) |
-| `/wp-content/` URLs EmDash's URL rewrite misses: inside HTML blocks, links to files, other blocks' fields (a testimonial photo, a video poster or caption track), size variants of large images (`-1024x683`, `-scaled`), files that were never media-library attachments, theme and plugin files | Still point at the old site, and break when it goes away | Step 5, **Old-site media URLs**: matches, imports, rewrites and redirects them |
+| `/wp-content/` URLs EmDash's URL rewrite misses: other blocks' fields (a testimonial photo, a video poster or caption track), `-scaled`, `-rotated` and image-editor copies of large images, files that were never media-library attachments, theme and plugin files (since EmDash 1.2.0 its rewrite also covers HTML blocks, embeds, links in text and tables, file and button blocks, covers, and `-1024x683` size variants of attachments) | Still point at the old site, and break when it goes away | Step 5, **Old-site media URLs**: matches, imports, rewrites and redirects them |
 | Old slugs (`_wp_old_slug`, which WordPress redirects by itself) and redirect plugins' rules (Redirection, Rank Math, Yoast SEO Premium, Coywolf SEO) | Not in the export | Step 6, **Redirects from WordPress** |
 | `/wp-content/uploads/` URLs that other sites and image search link to | 404 | Step 5 adds a redirect for every old file URL it matched |
 | Image width and height | Not recorded on imported image blocks | Theme: `imageDimensions(srcs)` from `@coywolf/emdash/astro` (see [In theme code](#in-theme-code)) |
@@ -1305,7 +1307,7 @@ EmDash pages have no parent, so the step shows a ready-to-paste `pageParents` op
 
 ### Old-site media URLs
 
-EmDash's importer imports attachments into the media library and rewrites their URLs in image, gallery and column blocks. **Old-site media URLs** (step 5) handles every other `/wp-content/uploads/`, `/wp-content/themes/` and `/wp-content/plugins/` URL of the old site:
+EmDash's importer imports attachments into the media library and rewrites their URLs in image, gallery, column and cover blocks, file and button blocks, embeds and HTML blocks, and links in text and tables (EmDash 1.2.0+), including `-1024x683` size variants of an attachment. **Old-site media URLs** (step 5) handles every other `/wp-content/uploads/`, `/wp-content/themes/` and `/wp-content/plugins/` URL of the old site:
 
 1. **Find old URLs** searches every entry (its latest draft included) for URLs on the old site's host names (filled in from the export; add a CDN host if media was served from one), protocol-relative and site-relative ones, URLs through Jetpack's image CDN (`i0.wp.com/<host>/…`), and URLs under the folder WordPress was installed in. It then reads the media library.
 2. Each URL is matched to a media library file. Size variants (`photo-1024x683.jpg`), `-scaled` and `-rotated` copies and image-editor copies (`photo-e1589912345678.jpg`) match the file imported from their original attachment, found through the export's attachment URLs (folder and name, so two `logo.png` in different months don't mix). A URL that wasn't an attachment, and theme and plugin files, are **not in the media library**; several media files with the same name are **ambiguous** (fix those in the editor). Attachments not used in content are included too, for redirects.
@@ -1401,7 +1403,7 @@ Without a Stream token, converted videos still play and have VideoObject schema:
 
 ```bash
 npx tsc --noEmit -p .        # typecheck
-node --test test/*.test.mjs  # unit tests (Node 22.15+; runs the TypeScript sources directly)
+npm test                     # unit tests: test/ and src/**/*.test.ts (Node 22.15+; runs the TypeScript sources directly)
 ```
 
 ## License

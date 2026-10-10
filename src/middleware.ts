@@ -114,7 +114,7 @@ export function coywolfPack(options: CoywolfPackMiddlewareOptions = {}, handlers
 				? watchInvalidation((context as unknown as { cache?: Parameters<typeof watchInvalidation>[0] }).cache)
 				: null;
 		const afterWrite = (response: Response): Response => {
-			// Stored image sizes follow media deletes, confirmed uploads, replaced files and WordPress media imports.
+			// Stored image sizes follow media deletes, replaced files and WordPress media imports (new uploads: the media:afterUpload hook).
 			if (method !== "GET" && method !== "HEAD" && response.status < 400) {
 				const work = variantsAfterMediaWrite(method, context.url.pathname, isOn(features, "images"), context.url.origin);
 				if (work) waitUntil(work.catch((error) => console.error("coywolf-pack images: stored sizes after a media change failed", error)));

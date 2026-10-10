@@ -17,7 +17,7 @@ import { composeHooks, hookCapabilities } from "./core/compose.js";
 import { configureContentUrls } from "./core/content-url.js";
 import { PLUGIN_ID, isOn, knownFeatures } from "./core/features.js";
 import { featuresRoutes } from "./core/features-module.js";
-import type { PackModule } from "./core/module.js";
+import type { AdminPageDef, PackModule } from "./core/module.js";
 import { secretSettingsSchema } from "./core/secrets.js";
 import { MODULES } from "./modules.js";
 import type { CoywolfOptions } from "./options.js";
@@ -34,16 +34,19 @@ export type { ContentUrlOptions, TrailingSlash } from "./core/content-url.js";
 
 const PACKAGE = "@coywolf/emdash";
 
+/** The admin sidebar folder holding every pack page (EmDash 1.2.0+ keeps the pages' order inside it). */
+const SIDEBAR_GROUP = "Coywolf Pack";
+/** First in the folder (its icon is the folder's). */
 const FEATURES_PAGE = { path: "/features", label: "Coywolf Pack", icon: "toggle-right" };
 /** Always on (not a feature), listed right below Coywolf Pack. */
 const PERFORMANCE_PAGE = { path: "/performance", label: "Performance", icon: "lightning" };
 /** Module pages listed right after Performance (when their feature is on), ahead of the rest. */
 const AFTER_PERFORMANCE = ["/images"];
 
-function sidebar(modules: PackModule[]) {
+function sidebar(modules: PackModule[]): AdminPageDef[] {
 	const pages = modules.flatMap((m) => m.adminPages ?? []);
 	const early = AFTER_PERFORMANCE.flatMap((path) => pages.filter((p) => p.path === path));
-	return [FEATURES_PAGE, PERFORMANCE_PAGE, ...early, ...pages.filter((p) => !early.includes(p))];
+	return [FEATURES_PAGE, PERFORMANCE_PAGE, ...early, ...pages.filter((p) => !early.includes(p))].map((p) => ({ ...p, group: SIDEBAR_GROUP }));
 }
 
 function buildModules(options: CoywolfOptions): PackModule[] {
