@@ -9,22 +9,80 @@ import { ArrowBendUpRight, Prohibit, X } from "@phosphor-icons/react";
 import { apiFetch, parseApiResponse } from "emdash/plugin-utils";
 import * as React from "react";
 
-const API = "/_emdash/api/plugins/coywolf-pack/redirects/removed";
+import type { Pending } from "./trash-prompt-core.js";
 
-interface Pending {
-	id: string;
-	collection: string;
-	url: string;
-	title: string;
-	reason: "deleted" | "unpublished";
-	at: string;
-}
+export type { Pending };
 
-const errorText = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
+export const REMOVED_API = "/_emdash/api/plugins/coywolf-pack/redirects/removed";
+const API = REMOVED_API;
+
+export const errorText = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
 const dateFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" });
 const domId = (item: Pending) => `cw-removed-${item.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 
-function RedirectDialog(props: { item: Pending | null; onClose: () => void; onDone: (message: string) => void }) {
+/**
+ * One removed entry: title, old URL, Deleted/Unpublished badge, and the
+ * Redirect to… and Return 410 Gone buttons (plus `extra` buttons and `meta`
+ * details). With `status`, the buttons give way to that line.
+ */
+export function RemovedItemRow(props: {
+	item: Pending;
+	busy: boolean;
+	onRedirect: () => void;
+	onGone: () => void;
+	meta?: React.ReactNode;
+	extra?: React.ReactNode;
+	status?: string;
+	redirectRef?: React.Ref<HTMLButtonElement>;
+}) {
+	const { item } = props;
+	const urlId = `${domId(item)}-url`;
+	return (
+		<li className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center">
+			<div className="min-w-0 flex-1">
+				<div className="truncate text-sm font-medium" title={item.title}>
+					{item.title}
+				</div>
+				<div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-kumo-subtle">
+					<code id={urlId} className="truncate" title={item.url}>
+						{item.url}
+					</code>
+					<Badge variant="outline">{item.reason === "deleted" ? "Deleted" : "Unpublished"}</Badge>
+					{props.meta}
+				</div>
+				{props.status && <p className="mt-1 text-sm">{props.status}</p>}
+			</div>
+			{!props.status && (
+				<div className="flex shrink-0 flex-wrap gap-2">
+					<Button
+						ref={props.redirectRef}
+						variant="secondary"
+						size="sm"
+						icon={<ArrowBendUpRight aria-hidden="true" />}
+						disabled={props.busy}
+						onClick={props.onRedirect}
+						aria-describedby={urlId}
+					>
+						Redirect to…
+					</Button>
+					<Button
+						variant="secondary"
+						size="sm"
+						icon={<Prohibit aria-hidden="true" />}
+						disabled={props.busy}
+						onClick={props.onGone}
+						aria-describedby={urlId}
+					>
+						Return 410 Gone
+					</Button>
+					{props.extra}
+				</div>
+			)}
+		</li>
+	);
+}
+
+export function RedirectDialog(props: { item: Pending | null; onClose: () => void; onDone: (message: string) => void }) {
 	const [target, setTarget] = React.useState("");
 	const [type, setType] = React.useState("301");
 	const [pending, setPending] = React.useState(false);
@@ -96,7 +154,7 @@ function RedirectDialog(props: { item: Pending | null; onClose: () => void; onDo
 	);
 }
 
-async function resolve(id: string, action: "redirect" | "gone" | "dismiss", target?: string, type?: number) {
+export async function resolve(id: string, action: "redirect" | "gone" | "dismiss", target?: string, type?: number) {
 	const response = await apiFetch(`${API}/resolve`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -170,40 +228,14 @@ export function RemovedContentPanel(props: { onRuleCreated: () => void }) {
 			) : (
 				<ul className="divide-y divide-kumo-line">
 					{items.map((item) => (
-						<li key={item.id} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center">
-							<div className="min-w-0 flex-1">
-								<div className="truncate text-sm font-medium" title={item.title}>
-									{item.title}
-								</div>
-								<div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-kumo-subtle">
-									<code id={`${domId(item)}-url`} className="truncate" title={item.url}>
-										{item.url}
-									</code>
-									<Badge variant="outline">{item.reason === "deleted" ? "Deleted" : "Unpublished"}</Badge>
-									<span>{dateFormat.format(new Date(item.at))}</span>
-								</div>
-							</div>
-							<div className="flex shrink-0 flex-wrap gap-2">
-								<Button
-									variant="secondary"
-									size="sm"
-									icon={<ArrowBendUpRight aria-hidden="true" />}
-									disabled={busy !== null}
-									onClick={() => setRedirecting(item)}
-									aria-describedby={`${domId(item)}-url`}
-								>
-									Redirect to…
-								</Button>
-								<Button
-									variant="secondary"
-									size="sm"
-									icon={<Prohibit aria-hidden="true" />}
-									disabled={busy !== null}
-									onClick={() => void act(item, "gone")}
-									aria-describedby={`${domId(item)}-url`}
-								>
-									Return 410 Gone
-								</Button>
+						<RemovedItemRow
+							key={item.id}
+							item={item}
+							busy={busy !== null}
+							onRedirect={() => setRedirecting(item)}
+							onGone={() => void act(item, "gone")}
+							meta={<span>{dateFormat.format(new Date(item.at))}</span>}
+							extra={
 								<Button
 									variant="ghost"
 									size="sm"
@@ -214,8 +246,8 @@ export function RemovedContentPanel(props: { onRuleCreated: () => void }) {
 								>
 									Dismiss
 								</Button>
-							</div>
-						</li>
+							}
+						/>
 					))}
 				</ul>
 			)}

@@ -1,6 +1,7 @@
 import type { PluginAdminExports } from "emdash";
 
 import { injectAdminCss } from "./admin-css.js";
+import { mountTrashPrompt } from "./trash-prompt.js";
 
 import { AiPage } from "./ai.js";
 import { BackupStatusWidget, BackupsPage } from "./backups.js";
@@ -25,6 +26,8 @@ import { ReviewsPage } from "./reviews.js";
 
 // Rules for the layout classes EmDash's admin stylesheet lacks (see admin-css.ts).
 injectAdminCss();
+// Asks what a trashed or unpublished entry's old URL should do (Redirects → Removed content).
+mountTrashPrompt();
 
 export const pages: PluginAdminExports["pages"] = {
 	"/features": FeaturesPage,

@@ -239,6 +239,17 @@ export async function saveRule(db: D1Database, input: RedirectInput & { id?: str
 	return toRule(saved!);
 }
 
+/** One rule by id, or null (also when the table doesn't exist yet). */
+export async function getRule(db: D1Database, id: string): Promise<RedirectRule | null> {
+	try {
+		const row = await db.prepare(`SELECT * FROM ${TABLE} WHERE id = ?`).bind(id).first<Row>();
+		return row ? toRule(row) : null;
+	} catch (error) {
+		if (isMissingTable(error)) return null;
+		throw error;
+	}
+}
+
 export async function deleteRule(db: D1Database, id: string): Promise<boolean> {
 	await ensureTable(db);
 	const result = await db.prepare(`DELETE FROM ${TABLE} WHERE id = ?`).bind(id).run();

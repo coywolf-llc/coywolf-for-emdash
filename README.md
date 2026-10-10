@@ -425,13 +425,17 @@ Each request looks up its exact rule in D1: one indexed read of the request path
 
 ### Removed content
 
-Feature **Redirects → Removed content** (`redirects.trashPrompt`, off by default). When a published entry is deleted (trashed) or unpublished, its old URL is listed in a **Removed content** panel on the Redirects page, with three choices:
+Feature **Redirects → Removed content** (`redirects.trashPrompt`, off by default). When a published entry is trashed or unpublished, the admin asks right away what its old URL should do:
 
 - **Redirect to…** creates a Coywolf redirect rule (301 by default) from the old URL.
 - **Return 410 Gone** creates a 410 rule, telling search engines the page is gone for good.
-- **Dismiss** forgets it (for example, when the URL should simply 404).
+- **Decide later** (or Escape) closes the prompt. Until you decide, the old URL returns 404.
 
-The old URL is resolved the way EmDash resolves it: the collection's URL pattern (`{slug}`, `{id}`, and date tokens from the publish date), or `/<collection>/<slug>`. Locale prefixes aren't added. Drafts that were never published aren't listed, and republishing an entry, or restoring it from the trash (it comes back as a draft), removes it from the list. Decisions are kept in plugin storage (`redirects_removed`). The module declares the `content:read` capability for the delete and publish hooks.
+Trashing several entries at once (bulk trash) asks once, listing each of them. Undecided URLs stay listed in a **Removed content** panel on the Redirects page, with the same choices plus **Dismiss**, which forgets an entry (for example, when the URL should simply 404).
+
+The old URL is resolved the way EmDash resolves it: the collection's URL pattern (`{slug}`, `{id}`, and date tokens from the publish date), or `/<collection>/<slug>`. Locale prefixes aren't added. Drafts that were never published aren't listed or prompted for. Restoring an entry from the trash (it comes back as a draft) or republishing it removes it from the list and **undoes the rule its decision created**, as long as that rule still has its `Removed:` note and the same source; a republished entry must also be back at the same URL (a new slug keeps the redirect from the old one). Decisions are kept in plugin storage (`redirects_removed`), and the rules they created in `redirects_applied`. The module declares the `content:read` capability for the delete and publish hooks.
+
+How the prompt knows: EmDash has no admin event for a trash or unpublish, so the pack's admin module watches the admin's own content API calls (`DELETE /_emdash/api/content/<collection>/<id>` and `POST …/<id>/unpublish`), never altering or reading their responses, then asks the server which of those entries it recorded. The trash is recorded before EmDash answers the request; an unpublish is recorded just after, so the prompt looks again for up to about two seconds. If a future EmDash release changes those API paths, the prompt stops appearing, but the Removed content list on the Redirects page keeps working.
 
 ### Export redirects from WordPress (Coywolf SEO)
 

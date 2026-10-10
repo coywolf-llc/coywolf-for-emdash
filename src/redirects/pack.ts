@@ -15,7 +15,7 @@ const FEATURES = [
 		id: TRASH_PROMPT_FEATURE,
 		label: "Removed content",
 		description:
-			"When a published entry is deleted or unpublished, list its old URL on the Redirects page to redirect it, mark it 410 Gone, or dismiss it.",
+			"When a published entry is trashed or unpublished, ask what its old URL should do: redirect it or return 410 Gone. Undecided URLs stay listed on the Redirects page.",
 		default: false,
 	},
 ];

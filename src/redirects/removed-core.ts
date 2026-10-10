@@ -97,3 +97,39 @@ export function buildPending(
 		at: now.toISOString(),
 	};
 }
+
+/**
+ * A redirect or 410 rule created from a removal decision, remembered so that
+ * restoring or republishing the entry can take the rule away again.
+ */
+export interface AppliedRule {
+	/** Same id as the decision: "<collection>:<entry id>". */
+	id: string;
+	collection: string;
+	entryId: string;
+	/** The former path the rule was created for. */
+	url: string;
+	ruleId: string;
+	action: "redirect" | "gone";
+	/** ISO time the rule was created. */
+	at: string;
+}
+
+const samePath = (a: string, b: string) => (a.length > 1 ? a.replace(/\/+$/, "") : a) === (b.length > 1 ? b.replace(/\/+$/, "") : b);
+
+/**
+ * Whether restoring or republishing an entry should delete the rule its
+ * removal created: only while the rule is still the one we made (same source,
+ * our "Removed:" note), and, on publish, only when the entry is back at the
+ * same URL (a new slug means the old URL still needs the rule).
+ */
+export function shouldDropApplied(
+	applied: Pick<AppliedRule, "url">,
+	rule: { source: string; note: string | null } | null,
+	currentUrl: string | null,
+	reason: "restore" | "publish",
+): boolean {
+	if (!rule || !samePath(rule.source, applied.url) || !rule.note?.startsWith("Removed:")) return false;
+	if (reason === "publish") return currentUrl !== null && samePath(currentUrl, applied.url);
+	return true;
+}

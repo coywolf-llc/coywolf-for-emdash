@@ -2,7 +2,9 @@
  * "Removed content" (feature "redirects.trashPrompt"): when a published entry
  * is deleted or unpublished, record its former URL as a pending decision in
  * plugin storage. The Redirects admin page lists them with Redirect to…,
- * Return 410 Gone, and Dismiss. Republishing or restoring the entry clears it.
+ * Return 410 Gone, and Dismiss; the admin also prompts right after a trash or
+ * unpublish (src/admin/trash-prompt.tsx). Republishing or restoring the entry
+ * clears it and undoes a rule its decision created.
  */
 import type { PluginContext } from "emdash";
 import { PluginRouteError, definePluginRoute } from "emdash";
@@ -10,23 +12,28 @@ import { z } from "zod";
 
 import { COLLECTION_SLUG, entryUrl, readCollections } from "../core/content-url.js";
 import { requireFeature } from "../core/features.js";
+import { REDIRECTS_TAG, purgePageCache } from "../pageCache/lib.js";
 import { parseInput, workerEnv } from "../shared.js";
 import { invalidateRedirectCache } from "./middleware.js";
 import {
+	type AppliedRule,
 	type EntrySnapshot,
 	type PendingDecision,
 	type RemovalReason,
 	buildPending,
 	pendingId,
 	snapshotFromContent,
+	shouldDropApplied,
 	snapshotFromRow,
 } from "./removed-core.js";
-import { RedirectValidationError, saveRule } from "./rules.js";
+import { RedirectValidationError, deleteRule, getRule, saveRule } from "./rules.js";
 
 export const TRASH_PROMPT_FEATURE = "redirects.trashPrompt";
 const STORE = "redirects_removed";
+/** Rules created from decisions, so restoring or republishing the entry can undo them. */
+const APPLIED = "redirects_applied";
 
-export const removedStorage = { [STORE]: { indexes: ["at"] } };
+export const removedStorage = { [STORE]: { indexes: ["at"] }, [APPLIED]: { indexes: ["at"] } };
 
 interface Options {
 	database?: string;
@@ -38,6 +45,13 @@ const store = (ctx: PluginContext) => (ctx.storage as Record<string, any>)[STORE
 	put(id: string, data: PendingDecision): Promise<void>;
 	delete(id: string): Promise<boolean>;
 	query(o: { orderBy?: Record<string, "asc" | "desc">; limit?: number }): Promise<{ items: Array<{ id: string; data: PendingDecision }> }>;
+};
+
+// biome-ignore lint/suspicious/noExplicitAny: plugin storage collections are untyped here.
+const applied = (ctx: PluginContext) => (ctx.storage as Record<string, any>)[APPLIED] as {
+	get(id: string): Promise<AppliedRule | null>;
+	put(id: string, data: AppliedRule): Promise<void>;
+	delete(id: string): Promise<boolean>;
 };
 
 /** A snapshot plus its former path, resolved while the row and its terms still exist. */
@@ -85,12 +99,40 @@ export function removedModule(options: Options) {
 		ctx.log.info("Removed content recorded", { url: pending.url, reason });
 	}
 
+	/**
+	 * The entry is back (restored, or republished): drop its pending decision,
+	 * and delete the rule its decision created while that rule is still ours
+	 * and, on publish, the entry is back at the same URL.
+	 */
+	async function comeBack(ctx: PluginContext, collection: string, content: Record<string, unknown>, reason: "restore" | "publish") {
+		const id = pendingId(collection, String(content.id));
+		await store(ctx).delete(id);
+		const done = await applied(ctx).get(id);
+		if (!done) return;
+		await applied(ctx).delete(id);
+		const d1 = await db();
+		if (!d1) return;
+		const rule = await getRule(d1, done.ruleId);
+		let currentUrl: string | null = null;
+		if (reason === "publish") {
+			const info = (await readCollections(d1, [collection])).get(collection);
+			currentUrl = await formerUrl(d1, collection, snapshotFromContent(content, info?.titleField ?? null));
+		}
+		if (!shouldDropApplied(done, rule, currentUrl, reason)) return;
+		await deleteRule(d1, done.ruleId);
+		invalidateRedirectCache();
+		await purgePageCache({ tags: [REDIRECTS_TAG] });
+		ctx.log.info("Removed content rule undone", { url: done.url, reason });
+	}
+
 	const hooks = {
-		"content:beforeDelete": async (event: { id: string; collection: string }) => {
+		"content:beforeDelete": async (event: { id: string; collection: string }, ctx: PluginContext) => {
 			try {
 				const taken = await snapshot(event.collection, event.id);
 				if (beforeDelete.size > 500) beforeDelete.clear(); // Deletes that never completed.
 				if (taken) beforeDelete.set(pendingId(event.collection, event.id), taken);
+				// Record now, before the delete's response, so the admin's prompt finds it at once.
+				await record(ctx, event.collection, "deleted", taken);
 			} catch {
 				// Never block a delete.
 			}
@@ -116,12 +158,12 @@ export function removedModule(options: Options) {
 		},
 
 		"content:afterPublish": async (event: { content: Record<string, unknown>; collection: string }, ctx: PluginContext) => {
-			await store(ctx).delete(pendingId(event.collection, String(event.content.id)));
+			await comeBack(ctx, event.collection, event.content, "publish");
 		},
 
-		// Restored entries come back as drafts; restoring says the content is coming back, so drop the decision.
+		// Restored entries come back as drafts; restoring says the content is coming back, so drop the decision and its rule.
 		"content:afterRestore": async (event: { content: Record<string, unknown>; collection: string }, ctx: PluginContext) => {
-			await store(ctx).delete(pendingId(event.collection, String(event.content.id)));
+			await comeBack(ctx, event.collection, event.content, "restore");
 		},
 	};
 
@@ -168,6 +210,15 @@ export function removedModule(options: Options) {
 						throw error;
 					}
 					invalidateRedirectCache();
+					await applied(ctx).put(pending.id, {
+						id: pending.id,
+						collection: pending.collection,
+						entryId: pending.entryId,
+						url: pending.url,
+						ruleId: rule.id,
+						action: input.action,
+						at: new Date().toISOString(),
+					});
 				}
 				await store(ctx).delete(pending.id);
 				ctx.log.info("Removed content resolved", { url: pending.url, action: input.action });
