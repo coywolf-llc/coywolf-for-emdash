@@ -333,18 +333,19 @@ async function variantsForUpload(id: string): Promise<void> {
 	forgetInfo(id);
 }
 
-const MEDIA_ITEM = /^\/_emdash\/api\/media\/([A-Za-z0-9_-]+)(?:\/(confirm|replace))?$/;
+const MEDIA_ITEM = /^\/_emdash\/api\/media\/([A-Za-z0-9_-]+)(?:\/(replace))?$/;
 const WP_MEDIA_IMPORT = "/_emdash/api/import/wordpress/media";
 
 /**
  * Keep stored sizes in step with media-library writes the hooks don't cover,
  * after a successful response (null when the request isn't one):
  * - a deleted image: its copies and record go (whether or not the feature is on);
- * - a confirmed direct upload (POST …/confirm): its sizes are made (the upload hook ran before the file existed);
  * - a replaced file (PUT …/replace, same key): its sizes are made again;
  * - a WordPress media import (EmDash's importer doesn't notify plugins): a new backfill run starts (its chain
  *   of steps, see startBackfillChain), only when the site turned on stored sizes for existing images (an
  *   import can be thousands of images). `origin` is the site's, for the chain's steps.
+ * New uploads aren't handled here: since EmDash 1.2.0 the media:afterUpload hook runs for every upload,
+ * direct (POST …/confirm) ones included, and makes their sizes (see the hook in imagesPack).
  */
 export function variantsAfterMediaWrite(method: string, pathname: string, featureOn: boolean, origin?: string): Promise<void> | null {
 	if (pathname === WP_MEDIA_IMPORT && method === "POST") {
@@ -363,14 +364,14 @@ export function variantsAfterMediaWrite(method: string, pathname: string, featur
 			forgetInfo(id);
 		})();
 	}
-	// EmDash 1.1: POST /media/<id>/confirm, PUT /media/<id>/replace.
-	if (((method === "POST" && action === "confirm") || (method === "PUT" && action === "replace")) && featureOn) {
+	// PUT /media/<id>/replace keeps the key but changes the file: EmDash runs no upload hook for it.
+	if (method === "PUT" && action === "replace" && featureOn) {
 		return (async () => {
 			const deps = await variantDeps();
 			if (!deps) return;
-			if (action === "replace") await forgetMedia(deps, id);
+			await forgetMedia(deps, id);
 			const row = await mediaRow(deps.db, id);
-			if (row) await processMedia(deps, row);
+			if (row) await processMedia(deps, row, undefined, { force: true });
 			forgetInfo(id);
 		})();
 	}
@@ -391,7 +392,9 @@ export function imagesPack(options: ImagesOptions = {}): PackModule {
 		adminPages: [{ path: "/images", label: "Clean Image URLs", icon: "image" }],
 		storage: { [VARIANTS_COLLECTION]: { indexes: [] } },
 		hooks: {
-			// Quick: the sizes are made after the upload's response (waitUntil), not during it.
+			// Every new upload (EmDash 1.2.0+ runs it for direct uploads too, after POST …/confirm). Quick: the
+			// sizes are made after the upload's response (waitUntil), not during it; an image whose sizes
+			// already exist is left alone (processMedia).
 			"media:afterUpload": async (event: { media: { id: string; mimeType?: string } }) => {
 				if (!eligible(event.media.mimeType, 1, 0)) return;
 				await afterResponse(variantsForUpload(event.media.id).catch((error) => console.error("coywolf-pack images: stored sizes failed", error)));

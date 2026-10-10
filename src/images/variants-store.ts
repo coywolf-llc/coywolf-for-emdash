@@ -125,12 +125,31 @@ export interface VariantDeps {
 	images: ImagesBinding;
 }
 
+/** Whether an image already has a record of this version with its sizes made (not a skip). */
+export async function hasCurrentVariants(db: Db, id: string): Promise<boolean> {
+	const row = await db
+		.prepare(
+			`SELECT 1 AS ok FROM _plugin_storage WHERE plugin_id = ?1 AND collection = ?2 AND id = ?3 AND json_extract(data, '$.v') = ?4 AND json_extract(data, '$.skip') IS NULL`,
+		)
+		.bind(PLUGIN_ID, VARIANTS_COLLECTION, id, VARIANTS_VERSION)
+		.first<{ ok: number }>();
+	return Boolean(row);
+}
+
 /**
  * Make (or skip) one image's widths and record them (crops come later, on first use). "done", "skipped" (it can't
  * have stored sizes: recorded so it isn't tried again), or "failed" (nothing
- * recorded; tried again on the next run).
+ * recorded; tried again on the next run). An image whose sizes of this version
+ * were already made is left alone ("done", no transformations) unless `force`:
+ * the upload hook, the backfill and a retry can reach the same image.
  */
-export async function processMedia(deps: VariantDeps, row: MediaRow, onError?: (error: unknown) => void): Promise<"done" | "skipped" | "failed"> {
+export async function processMedia(
+	deps: VariantDeps,
+	row: MediaRow,
+	onError?: (error: unknown) => void,
+	options: { force?: boolean } = {},
+): Promise<"done" | "skipped" | "failed"> {
+	if (!options.force && (await hasCurrentVariants(deps.db, row.id))) return "done";
 	const reason = ineligibleReason(row.mime_type, row.width, row.size);
 	if (reason) {
 		await writeVariantRecord(deps.db, row.id, { v: VARIANTS_VERSION, w: [], skip: reason, at: new Date().toISOString() });

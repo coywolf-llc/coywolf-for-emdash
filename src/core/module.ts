@@ -27,6 +27,8 @@ export interface AdminPageDef {
 	path: string;
 	label: string;
 	icon?: string;
+	/** Admin sidebar folder (EmDash 1.2.0+). The pack puts every page in the "Coywolf Pack" folder (see sidebar() in src/index.ts). */
+	group?: string;
 }
 
 export interface WidgetDef {

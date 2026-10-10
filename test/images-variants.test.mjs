@@ -335,7 +335,7 @@ test("legacy listed posters are upgraded to stored sizes; ones that can't be are
 
 // ── Media writes (middleware) ──────────────────────────────────────
 
-test("after media writes: a delete removes copies and record; uploads confirmed or replaced get sizes; imports run the backfill", async () => {
+test("after media writes: a delete removes copies and record; replaced files get sizes; imports run the backfill; confirms are left to the upload hook", async () => {
 	const { variantsAfterMediaWrite } = await import("../src/images/pack.ts");
 	const { setImageCdn } = await import("../src/images/lib.ts");
 	const db = d1();
@@ -346,7 +346,7 @@ test("after media writes: a delete removes copies and record; uploads confirmed 
 
 	assert.equal(variantsAfterMediaWrite("GET", "/_emdash/api/media/01D", true), null);
 	assert.equal(variantsAfterMediaWrite("DELETE", "/_emdash/api/media/folders/x", true), null);
-	assert.equal(variantsAfterMediaWrite("POST", "/_emdash/api/media/01D/confirm", false), null, "feature off: no new sizes");
+	assert.equal(variantsAfterMediaWrite("POST", "/_emdash/api/media/01D/confirm", true), null, "EmDash 1.2 runs media:afterUpload after a confirm");
 	await variantsAfterMediaWrite("DELETE", "/_emdash/api/media/01D", false);
 	assert.deepEqual([...b.objects.keys()], [`${v}/01E-400.webp`], "deleted even with the feature off");
 	assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS n FROM _plugin_storage").get().n, 0);
@@ -354,8 +354,20 @@ test("after media writes: a delete removes copies and record; uploads confirmed 
 	setImageCdn("https://media.example.com");
 	addMedia(db, "01F", "jpg", "image/jpeg", 700, 500);
 	b.objects.set("01F.jpg", { body: new Uint8Array([1]).buffer, options: {} });
-	await variantsAfterMediaWrite("POST", "/_emdash/api/media/01F/confirm", true);
-	assert.ok(b.objects.has(`${v}/01F-640.avif`));
+	assert.equal(variantsAfterMediaWrite("POST", "/_emdash/api/media/01F/confirm", true), null);
+	// The upload hook's work: sizes once; a second call (hook and backfill on the same image) makes nothing.
+	const imgs = images();
+	const deps = { db, bucket: b, images: imgs };
+	const row = await store.mediaRow(db, "01F");
+	assert.equal(await store.processMedia(deps, row), "done");
+	const made = imgs.calls.length;
+	assert.ok(made > 0 && b.objects.has(`${v}/01F-640.avif`));
+	assert.equal(await store.processMedia(deps, row), "done");
+	assert.equal(imgs.calls.length, made, "already made: no transformations");
+	const rev = () => db.sqlite.prepare("SELECT revision FROM _plugin_storage WHERE id = '01F'").get().revision;
+	const before = rev();
+	assert.equal(await store.processMedia(deps, row, undefined, { force: true }), "done");
+	assert.notEqual(rev(), before, "forced: done again and recorded");
 	assert.deepEqual(V.parseDoc(db.sqlite.prepare("SELECT data FROM _plugin_storage WHERE id = '01F'").get().data).w, [400, 640]);
 	assert.equal(variantsAfterMediaWrite("POST", "/_emdash/api/media/01F/replace", true), null, "EmDash replaces with PUT, not POST");
 	assert.equal(variantsAfterMediaWrite("PUT", "/_emdash/api/media/01F/confirm", true), null);

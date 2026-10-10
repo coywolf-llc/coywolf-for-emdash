@@ -1,13 +1,16 @@
 /**
  * Old-site URLs left in imported content: `/wp-content/uploads/…` images and
  * files, theme and plugin assets. EmDash's importer rewrites the media URLs
- * it knows (image blocks, galleries, columns) to the media library, but not
- * URLs inside HTML blocks, links in text, other blocks' fields (a
- * testimonial's photo, a video's poster), size variants of large images
- * (WordPress's `-scaled` original vs. `-1024x683` in content), or files that
- * were never media-library attachments. This finds them, maps each to a
- * media library file (size variants to their original), lists what isn't in
- * the library yet, rewrites content and builds redirect rules.
+ * it imported to the media library (1.2.0: image, gallery, column, cover,
+ * file and button blocks, embeds and HTML blocks, links in text and tables,
+ * and `-1024x683` sizes of an attachment's own file name), but not other
+ * blocks' fields (a testimonial's photo, a video's poster), sizes of large
+ * images whose attachment is the `-scaled` (or `-rotated`, edited) copy, or
+ * files that were never media-library attachments. This finds every old-site
+ * URL still in content (a generic scan, so what EmDash already rewrote just
+ * isn't found), maps each to a media library file (size variants to their
+ * original), lists what isn't in the library yet, rewrites content and builds
+ * redirect rules.
  *
  * Pure, no imports: runs in the Worker, the admin (browser) and tests.
  */
