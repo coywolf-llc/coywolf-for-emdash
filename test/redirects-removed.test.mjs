@@ -2,7 +2,9 @@ import "./ts-resolve.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { buildPending, snapshotFromRow, snapshotFromContent, pendingId } = await import("../src/redirects/removed-core.ts");
+const { buildPending, snapshotFromRow, snapshotFromContent, pendingId, shouldDropApplied, appliedStillOurs, idsByCollection } = await import(
+	"../src/redirects/removed-core.ts"
+);
 const { interpolateUrlPattern } = await import("../src/core/content-url.ts");
 
 const now = new Date("2026-10-03T12:00:00Z");
@@ -59,4 +61,46 @@ test("URL interpolation matches EmDash: encoding, {id}, repeated and trailing sl
 	assert.equal(interpolateUrlPattern({ pattern: "items/{id}", collection: "items", slug: "s", id: "42" }), "/items/42");
 	assert.equal(interpolateUrlPattern({ pattern: "/{year}/{slug}", collection: "p", slug: "s", id: "1", date: null }), "/{year}/s");
 	assert.equal(interpolateUrlPattern({ pattern: "/{year}/{month}/{day}/{slug}.html", collection: "p", slug: "s", id: "1", date: "2023-05-08 23:59:00" }), "/2023/05/08/s.html");
+});
+
+test("restore drops the rule its decision created (trailing slashes compared loosely)", () => {
+	const applied = { url: "/human-generated-content/" };
+	const rule = { source: "/human-generated-content", note: "Removed: Human content" };
+	assert.equal(shouldDropApplied(applied, rule, null, "restore"), true);
+});
+
+test("a rule that was edited, replaced, or deleted since is left alone", () => {
+	const applied = { url: "/a" };
+	assert.equal(shouldDropApplied(applied, null, null, "restore"), false);
+	assert.equal(shouldDropApplied(applied, { source: "/b", note: "Removed: A" }, null, "restore"), false);
+	assert.equal(shouldDropApplied(applied, { source: "/a", note: "Moved to the new guide" }, null, "restore"), false);
+	assert.equal(shouldDropApplied(applied, { source: "/a", note: null }, null, "restore"), false);
+});
+
+test("republishing drops the rule only when the entry is back at the same URL", () => {
+	const applied = { url: "/blog/coyotes" };
+	const rule = { source: "/blog/coyotes", note: "Removed: Coyotes" };
+	assert.equal(shouldDropApplied(applied, rule, "/blog/coyotes/", "publish"), true);
+	assert.equal(shouldDropApplied(applied, rule, "/blog/coyotes-2", "publish"), false);
+	assert.equal(shouldDropApplied(applied, rule, null, "publish"), false);
+});
+
+test("a rule is still ours only with the same source and our Removed: note", () => {
+	assert.equal(appliedStillOurs({ url: "/a/" }, { source: "/a", note: "Removed: A" }), true);
+	assert.equal(appliedStillOurs({ url: "/a" }, { source: "/a", note: "Moved" }), false);
+	assert.equal(appliedStillOurs({ url: "/a" }, { source: "/b", note: "Removed: A" }), false);
+	assert.equal(appliedStillOurs({ url: "/a" }, null), false);
+});
+
+test("entry ids are grouped by collection, without repeats", () => {
+	const grouped = idsByCollection([
+		{ collection: "posts", entryId: "1" },
+		{ collection: "pages", entryId: "9" },
+		{ collection: "posts", entryId: "2" },
+		{ collection: "posts", entryId: "1" },
+	]);
+	assert.deepEqual([...grouped], [
+		["posts", ["1", "2"]],
+		["pages", ["9"]],
+	]);
 });

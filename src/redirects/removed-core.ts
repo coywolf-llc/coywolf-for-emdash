@@ -97,3 +97,55 @@ export function buildPending(
 		at: now.toISOString(),
 	};
 }
+
+/**
+ * A redirect or 410 rule created from a removal decision, remembered so that
+ * restoring or republishing the entry can take the rule away again.
+ */
+export interface AppliedRule {
+	/** Same id as the decision: "<collection>:<entry id>". */
+	id: string;
+	collection: string;
+	entryId: string;
+	/** The former path the rule was created for. */
+	url: string;
+	ruleId: string;
+	action: "redirect" | "gone";
+	/** ISO time the rule was created. */
+	at: string;
+}
+
+const samePath = (a: string, b: string) => (a.length > 1 ? a.replace(/\/+$/, "") : a) === (b.length > 1 ? b.replace(/\/+$/, "") : b);
+
+/** Whether the rule is still the one a removal decision made: same source, our "Removed:" note. Edited, replaced, or deleted since: false. */
+export function appliedStillOurs(applied: Pick<AppliedRule, "url">, rule: { source: string; note: string | null } | null): boolean {
+	return rule !== null && samePath(rule.source, applied.url) && (rule.note?.startsWith("Removed:") ?? false);
+}
+
+/**
+ * Whether restoring or republishing an entry should delete the rule its
+ * removal created: only while the rule is still the one we made
+ * (appliedStillOurs), and, on publish, only when the entry is back at the
+ * same URL (a new slug means the old URL still needs the rule).
+ */
+export function shouldDropApplied(
+	applied: Pick<AppliedRule, "url">,
+	rule: { source: string; note: string | null } | null,
+	currentUrl: string | null,
+	reason: "restore" | "publish",
+): boolean {
+	if (!appliedStillOurs(applied, rule)) return false;
+	if (reason === "publish") return currentUrl !== null && samePath(currentUrl, applied.url);
+	return true;
+}
+
+/** Group pending decisions' entry ids by collection, for one "is it live?" query per collection. */
+export function idsByCollection(items: Array<Pick<PendingDecision, "collection" | "entryId">>): Map<string, string[]> {
+	const out = new Map<string, string[]>();
+	for (const item of items) {
+		const ids = out.get(item.collection) ?? [];
+		if (!ids.includes(item.entryId)) ids.push(item.entryId);
+		out.set(item.collection, ids);
+	}
+	return out;
+}
