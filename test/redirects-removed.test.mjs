@@ -2,7 +2,9 @@ import "./ts-resolve.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { buildPending, snapshotFromRow, snapshotFromContent, pendingId, shouldDropApplied } = await import("../src/redirects/removed-core.ts");
+const { buildPending, snapshotFromRow, snapshotFromContent, pendingId, shouldDropApplied, appliedStillOurs, idsByCollection } = await import(
+	"../src/redirects/removed-core.ts"
+);
 const { interpolateUrlPattern } = await import("../src/core/content-url.ts");
 
 const now = new Date("2026-10-03T12:00:00Z");
@@ -81,4 +83,24 @@ test("republishing drops the rule only when the entry is back at the same URL", 
 	assert.equal(shouldDropApplied(applied, rule, "/blog/coyotes/", "publish"), true);
 	assert.equal(shouldDropApplied(applied, rule, "/blog/coyotes-2", "publish"), false);
 	assert.equal(shouldDropApplied(applied, rule, null, "publish"), false);
+});
+
+test("a rule is still ours only with the same source and our Removed: note", () => {
+	assert.equal(appliedStillOurs({ url: "/a/" }, { source: "/a", note: "Removed: A" }), true);
+	assert.equal(appliedStillOurs({ url: "/a" }, { source: "/a", note: "Moved" }), false);
+	assert.equal(appliedStillOurs({ url: "/a" }, { source: "/b", note: "Removed: A" }), false);
+	assert.equal(appliedStillOurs({ url: "/a" }, null), false);
+});
+
+test("entry ids are grouped by collection, without repeats", () => {
+	const grouped = idsByCollection([
+		{ collection: "posts", entryId: "1" },
+		{ collection: "pages", entryId: "9" },
+		{ collection: "posts", entryId: "2" },
+		{ collection: "posts", entryId: "1" },
+	]);
+	assert.deepEqual([...grouped], [
+		["posts", ["1", "2"]],
+		["pages", ["9"]],
+	]);
 });

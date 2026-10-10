@@ -93,17 +93,19 @@ export interface CollectorOptions {
 
 /**
  * Collect removals and report the ones the server recorded a decision for.
- * Removals the server didn't record (drafts, entries without a URL) are dropped.
+ * Removals the server didn't record (drafts, entries without a URL) are
+ * dropped. A trash is recorded before its response, so only an unpublish
+ * that isn't listed yet is worth looking again for.
  */
 export function collectRemovals(options: CollectorOptions): (removal: Removal) => void {
 	const debounceMs = options.debounceMs ?? 700;
 	const retryMs = options.retryMs ?? [600, 1500];
 	const setTimer = options.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
 	const clearTimer = options.clearTimer ?? ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>));
-	let queued = new Set<string>();
+	let queued = new Map<string, Removal["reason"]>();
 	let timer: unknown = null;
 
-	const look = async (ids: Set<string>, attempt: number) => {
+	const look = async (removals: Map<string, Removal["reason"]>, attempt: number) => {
 		let list: Pending[] | null = null;
 		try {
 			list = await options.fetchPending();
@@ -111,22 +113,23 @@ export function collectRemovals(options: CollectorOptions): (removal: Removal) =
 			list = null;
 		}
 		if (!list) return;
-		const found = list.filter((item) => ids.has(item.id));
-		if (found.length < ids.size && attempt < retryMs.length) {
-			setTimer(() => void look(ids, attempt + 1), retryMs[attempt]);
+		const found = list.filter((item) => removals.has(item.id));
+		const missingUnpublish = [...removals].some(([id, reason]) => reason === "unpublished" && !found.some((item) => item.id === id));
+		if (missingUnpublish && attempt < retryMs.length) {
+			setTimer(() => void look(removals, attempt + 1), retryMs[attempt]);
 			return;
 		}
 		if (found.length) options.onReady(found);
 	};
 
 	return (removal) => {
-		queued.add(removal.id);
+		queued.set(removal.id, removal.reason);
 		if (timer !== null) clearTimer(timer);
 		timer = setTimer(() => {
 			timer = null;
-			const ids = queued;
-			queued = new Set();
-			void look(ids, 0);
+			const removals = queued;
+			queued = new Map();
+			void look(removals, 0);
 		}, debounceMs);
 	};
 }

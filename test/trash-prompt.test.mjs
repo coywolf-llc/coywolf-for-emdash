@@ -144,12 +144,38 @@ test("unpublish recorded late: retried until it shows up", async () => {
 	assert.deepEqual(ready, [["posts:5"]]);
 });
 
-test("drafts (never recorded) give up quietly after the retries", async () => {
+test("trashed drafts (never recorded) give up after one look: a trash is recorded before its response", async () => {
 	const timers = fakeTimers();
 	let looks = 0;
 	const ready = [];
 	const add = collectRemovals({ ...timers, fetchPending: async () => (looks++, []), onReady: (items) => ready.push(items) });
 	add({ id: "posts:draft", reason: "deleted" });
+	await timers.advance(10_000);
+	assert.equal(looks, 1);
+	assert.deepEqual(ready, []);
+});
+
+test("mixed bulk trash (published + drafts): the prompt comes after the first look, no waiting on the drafts", async () => {
+	const timers = fakeTimers();
+	let looks = 0;
+	const ready = [];
+	const add = collectRemovals({ ...timers, fetchPending: async () => (looks++, [item("posts:live")]), onReady: (items) => ready.push(items.map((i) => i.id)) });
+	add({ id: "posts:live", reason: "deleted" });
+	add({ id: "posts:draft", reason: "deleted" });
+	add({ id: "posts:draft2", reason: "deleted" });
+	await timers.advance(700);
+	assert.equal(looks, 1);
+	assert.deepEqual(ready, [["posts:live"]]);
+	await timers.advance(10_000);
+	assert.equal(looks, 1);
+});
+
+test("an unrecorded unpublish of a draft gives up quietly after the retries", async () => {
+	const timers = fakeTimers();
+	let looks = 0;
+	const ready = [];
+	const add = collectRemovals({ ...timers, fetchPending: async () => (looks++, []), onReady: (items) => ready.push(items) });
+	add({ id: "posts:draft", reason: "unpublished" });
 	await timers.advance(10_000);
 	assert.equal(looks, 3);
 	assert.deepEqual(ready, []);

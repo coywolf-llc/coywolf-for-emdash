@@ -20,13 +20,15 @@ import {
 	type EntrySnapshot,
 	type PendingDecision,
 	type RemovalReason,
+	appliedStillOurs,
 	buildPending,
+	idsByCollection,
 	pendingId,
 	snapshotFromContent,
 	shouldDropApplied,
 	snapshotFromRow,
 } from "./removed-core.js";
-import { RedirectValidationError, deleteRule, getRule, saveRule } from "./rules.js";
+import { RedirectValidationError, deleteRule, findExactRuleAny, getRule, saveRule } from "./rules.js";
 
 export const TRASH_PROMPT_FEATURE = "redirects.trashPrompt";
 const STORE = "redirects_removed";
@@ -102,28 +104,73 @@ export function removedModule(options: Options) {
 	/**
 	 * The entry is back (restored, or republished): drop its pending decision,
 	 * and delete the rule its decision created while that rule is still ours
-	 * and, on publish, the entry is back at the same URL.
+	 * and, on publish, the entry is back at the same URL. A rule kept because
+	 * the entry came back at another URL stays remembered, so a later publish
+	 * back at the old URL still undoes it.
 	 */
 	async function comeBack(ctx: PluginContext, collection: string, content: Record<string, unknown>, reason: "restore" | "publish") {
 		const id = pendingId(collection, String(content.id));
 		await store(ctx).delete(id);
 		const done = await applied(ctx).get(id);
 		if (!done) return;
-		await applied(ctx).delete(id);
 		const d1 = await db();
 		if (!d1) return;
 		const rule = await getRule(d1, done.ruleId);
+		if (!appliedStillOurs(done, rule)) {
+			await applied(ctx).delete(id); // Edited, replaced, or deleted since: no longer ours to undo.
+			return;
+		}
 		let currentUrl: string | null = null;
 		if (reason === "publish") {
 			const info = (await readCollections(d1, [collection])).get(collection);
 			currentUrl = await formerUrl(d1, collection, snapshotFromContent(content, info?.titleField ?? null));
 		}
 		if (!shouldDropApplied(done, rule, currentUrl, reason)) return;
+		await applied(ctx).delete(id);
 		await deleteRule(d1, done.ruleId);
 		invalidateRedirectCache();
 		await purgePageCache({ tags: [REDIRECTS_TAG] });
 		ctx.log.info("Removed content rule undone", { url: done.url, reason });
 	}
+
+	/**
+	 * Ids of these pending entries that are live after all (published, not in
+	 * the trash): a trash that failed after it was recorded, or a decision
+	 * recorded for an entry that was brought back without the hooks firing.
+	 * One query per collection; a collection that can't be read counts as
+	 * not live.
+	 */
+	async function liveIds(d1: D1Database, items: PendingDecision[]): Promise<Set<string>> {
+		const live = new Set<string>();
+		for (const [collection, ids] of idsByCollection(items)) {
+			if (!COLLECTION_SLUG.test(collection)) continue;
+			try {
+				const { results } = await d1
+					.prepare(`SELECT id FROM "ec_${collection}" WHERE status = 'published' AND deleted_at IS NULL AND id IN (${ids.map(() => "?").join(", ")})`)
+					.bind(...ids)
+					.all<{ id: string }>();
+				for (const row of results) live.add(pendingId(collection, String(row.id)));
+			} catch {
+				// Collection gone or renamed: nothing there is live.
+			}
+		}
+		return live;
+	}
+
+	/** Forget pending decisions whose entries are live again; the rest, in order. */
+	async function dropLive(ctx: PluginContext, items: PendingDecision[]): Promise<PendingDecision[]> {
+		if (!items.length) return items;
+		const d1 = await db();
+		if (!d1) return items;
+		const live = await liveIds(d1, items);
+		if (!live.size) return items;
+		for (const id of live) await store(ctx).delete(id);
+		ctx.log.info("Removed content forgotten: entries are live", { ids: [...live] });
+		return items.filter((item) => !live.has(item.id));
+	}
+
+	const describeRule = (rule: { type: number; target: string; enabled: boolean }) =>
+		`${rule.type === 410 ? "410 Gone" : `${rule.type} → ${rule.target}`}${rule.enabled ? "" : ", disabled"}`;
 
 	const hooks = {
 		"content:beforeDelete": async (event: { id: string; collection: string }, ctx: PluginContext) => {
@@ -173,7 +220,12 @@ export function removedModule(options: Options) {
 			handler: async (ctx: PluginContext) => {
 				await requireFeature(ctx, TRASH_PROMPT_FEATURE);
 				const { items } = await store(ctx).query({ orderBy: { at: "desc" }, limit: 100 });
-				return { items: items.map((i) => i.data) };
+				return {
+					items: await dropLive(
+						ctx,
+						items.map((i) => i.data),
+					),
+				};
 			},
 		},
 
@@ -198,6 +250,16 @@ export function removedModule(options: Options) {
 				if (input.action !== "dismiss") {
 					const d1 = await db();
 					if (!d1) throw PluginRouteError.badRequest("Redirects: missing database binding.");
+					if (!(await dropLive(ctx, [pending])).length) {
+						throw PluginRouteError.conflict(`“${pending.title}” is live again at ${pending.url}; there is nothing to redirect.`);
+					}
+					// Never overwrite a rule someone made for this path (and never adopt it: a restore would delete it).
+					const existing = await findExactRuleAny(d1, pending.url);
+					if (existing) {
+						throw PluginRouteError.conflict(
+							`A redirect already exists for ${existing.source} (${describeRule(existing)}). Keep it and dismiss this entry under Redirects → Removed content, or change it under Redirects.`,
+						);
+					}
 					try {
 						rule = await saveRule(d1, {
 							source: pending.url,
